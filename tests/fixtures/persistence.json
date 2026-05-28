@@ -1,0 +1,91 @@
+{
+  "tactic_id": "TA0003",
+  "tactic_name": "Persistence",
+  "case_id": "INC-2026-0003",
+  "evidence_id": "EV-FULL-001",
+  "started_at": "2026-05-03T08:00:00Z",
+  "finished_at": "2026-05-03T08:00:42Z",
+  "status": "completed",
+  "findings": [
+    {
+      "finding_id": "F-persistence-001",
+      "technique_id": "T1543.003",
+      "technique_name": "Create or Modify System Process — Windows Service",
+      "summary": "Service 'spoolfool' installed on WIN-77LTAPHIQ1R, suggestive of a Print Spooler-themed persistence service.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "d912954c80c5cfff515d84917c49e214",
+          "excerpt": "EventID 7045 Service Control Manager: Name: spoolfool"
+        }
+      ],
+      "reasoning": "System EventID 7045 records service installation. The service name 'spoolfool' mimics the legitimate Spooler service binary, which is a known PrintNightmare-era technique. Confidence is high because 7045 is direct, system-emitted evidence of a service registration."
+    },
+    {
+      "finding_id": "F-persistence-002",
+      "technique_id": "T1053.005",
+      "technique_name": "Scheduled Task / Job — Scheduled Task",
+      "summary": "Scheduled Task '\\CYAlyNSS' created on WIN-77LTAPHIQ1R with a randomised name typical of automated implants.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "77dc370227dbd053258f7631b955532e",
+          "excerpt": "EventID 4698 Security: TaskName: \\CYAlyNSS"
+        },
+        {
+          "source_artifact": "evtx",
+          "audit_id": "5241a368b3054646a1f13821dad5b1e7",
+          "excerpt": "EventID 4698 Security: TaskName: \\CYAlyNSS (duplicate record)"
+        }
+      ],
+      "reasoning": "Two 4698 records ~0ms apart for an identical task name — the second is the principal-side audit of the same creation. Random 7-char ASCII task name is uncommon for legitimate software; combined with the same-host service installation evidence, this is a high-confidence persistence claim."
+    },
+    {
+      "finding_id": "F-persistence-003",
+      "technique_id": "T1543.003",
+      "technique_name": "Create or Modify System Process — Windows Service",
+      "summary": "Service 'remotesvc' installed on WIN-77LTAPHIQ1R — generic implant naming pattern.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "9b48204b7071768f70e9b42a33821536",
+          "excerpt": "EventID 7045 Service Control Manager: Name: remotesvc"
+        }
+      ],
+      "reasoning": "A service named 'remotesvc' is generic enough that benign software does use it (some VPN clients), but in context of two other persistence findings on the same host within a 30-day window the medium-confidence call is to flag it for examiner review rather than dismiss."
+    }
+  ],
+  "negative_findings": [
+    {
+      "technique_id": "T1547.001",
+      "checked_via": [
+        "registry rows tagged TA0003 with KeyPath matching \\Microsoft\\Windows\\CurrentVersion\\Run"
+      ],
+      "rationale": "No registry hives were collected for this case; Run-key persistence cannot be confirmed or denied from EVTX alone."
+    }
+  ],
+  "open_questions": [
+    {
+      "technique_id": "T1546.012",
+      "question": "Is there an IFEO Debugger value redirecting a system binary?",
+      "next_step": "Collect SOFTWARE hive and re-run RECmd Kroll batch."
+    }
+  ],
+  "summary": "Two high-confidence service installs and one randomised scheduled task on WIN-77LTAPHIQ1R indicate active persistence activity. Registry-based persistence vectors remain unverified due to missing hive evidence.",
+  "audit": {
+    "iterations": 1,
+    "input_events": 200,
+    "model_id": "claude-sonnet-4-6",
+    "stop_reason": "end_turn",
+    "tokens_input": 48000,
+    "tokens_output": 1200,
+    "cache_read_input_tokens": 1772,
+    "duration_seconds": 42.1,
+    "skill_file": "skills/persistence.md",
+    "skill_sha256": "fixture-not-real-sha",
+    "validation_ok": true
+  }
+}

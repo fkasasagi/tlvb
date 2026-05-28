@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>FindEvil — DFIR Examiner</title>
+  <meta name="viewport" content="width=1280">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo">FE</span>
+      <span class="title">FindEvil</span>
+      <span class="subtitle">DFIR Examiner Portal</span>
+    </div>
+    <nav class="crumbs" id="crumbs"></nav>
+    <div class="meta" id="topMeta"></div>
+    <!-- Wave 32: language switcher (locale persists in localStorage) -->
+    <select id="lang-switcher"
+            title="UI language"
+            style="margin-left: auto; padding: 2px 6px; font-size: 11px;
+                   background: #15192a; color: #ccc; border: 1px solid #2a2e44;">
+      <option value="ja">日本語</option>
+      <option value="en">English</option>
+      <option value="zh">中文</option>
+      <option value="ko">한국어</option>
+      <option value="es">Español</option>
+    </select>
+  </header>
+  <main id="app"></main>
+  <div id="modal" class="modal-shade hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

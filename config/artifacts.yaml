@@ -1,0 +1,754 @@
+# config/artifacts.yaml
+#
+# P0 アーティファクト定義。ツールパスは docs/tool_inventory.md の実環境検証結果に準拠。
+# 全コマンドは read-only（証拠ファイルは入力のみ、出力は output_dir に隔離）。
+#
+# テンプレート変数:
+#   {input}      — ファイル単体パス（mode=file の場合）
+#   {input_dir}  — ディレクトリパス（mode=dir の場合）
+#   {output_dir} — パーサー出力先（CSV/JSON）
+#   {csv_name}   — 出力 CSV ファイル名（柔軟性のためテンプレート化）
+#
+# safety_tier: SAFE / CONFIRM / AUTO（Valhuntir の分類を踏襲、Review Gate 0 と直接対応）
+# provenance:  MCP > HOOK > SHELL > NONE。本ファイルで定義する全パーサーは MCP 経由なので MCP
+
+version: "0.1.0"
+schema: "findevil/artifacts/v1"
+
+# ============================================================================
+# P0 (MVP 必須)
+# ============================================================================
+
+artifacts:
+
+  # ------- Windows Event Logs --------------------------------------------------
+  - id: evtx
+    name: "Windows Event Logs"
+    tier: P0
+    safety_tier: SAFE
+    parser: parsers.evtx_parser
+    tool:
+      name: EvtxECmd
+      version: "1.5.2.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll
+    input:
+      mode: dir              # ディレクトリ単位で再帰処理
+      pattern: "*.evtx"
+    command_template: >
+      dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll
+      -d {input_dir}
+      --csv {output_dir}
+      --csvf {csv_name}
+      --maps /opt/zimmermantools/EvtxeCmd/Maps/
+    output:
+      format: csv
+      default_csv_name: evtx.csv
+    unified_event_mapping:
+      timestamp: TimeCreated
+      event_type: "evtx"
+      source_artifact: "evtx"
+      provider: Provider
+      event_id: EventId
+      computer: Computer
+      user_sid: UserId
+      raw_payload: PayloadData1   # PayloadData1..6 が EvtxECmd の補助フィールド
+    caveats:
+      - "TimeCreated は UTC として記録されているが、生成側の TZ 設定に依存して歪んだ EVTX が混入することがある。Computer の TimeZoneInformation 値を別途確認"
+      - "EventId 単独では悪性判断は不可。Provider + EventId + Channel の三点セットで意味が確定する"
+      - "Maps ディレクトリに対応する map がないイベントは PayloadData* に raw が残るのみ"
+
+  # ------- Amcache -------------------------------------------------------------
+  - id: amcache
+    name: "Amcache (Application Compatibility)"
+    tier: P0
+    safety_tier: SAFE
+    parser: parsers.amcache_parser
+    tool:
+      name: AmcacheParser
+      version: "1.5.2.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/AmcacheParser.dll
+    input:
+      mode: file
+      pattern: "Amcache.hve"
+    command_template: >
+      dotnet /opt/zimmermantools/AmcacheParser.dll
+      -f {input}
+      --csv {output_dir}
+      --csvf {csv_name}
+      -i               # Include linked associated entries
+    output:
+      format: csv
+      default_csv_name: amcache.csv
+    unified_event_mapping:
+      timestamp: FileKeyLastWriteTimestamp
+      event_type: "amcache"
+      source_artifact: "amcache"
+      file_path: FullPath
+      sha1: SHA1
+    caveats:
+      - "Amcache は **存在の証拠** であり、**実行の証拠ではない**。File entries は単に列挙された結果"
+      - "Win10 1709+ で SHA1 が記録されるが、それ以前のバージョンではフィールドが空"
+      - "FileKeyLastWriteTimestamp は Amcache キー作成時刻であり、ファイル作成時刻ではない"
+
+  # ------- Prefetch ------------------------------------------------------------
+  # 【Wave 12 / Issue #27】altpf primary、Plaso fallback。PECmd は Linux 不可
+  # のため chain から除外 (Wave 6 #17 で primary を Plaso に変えた経緯あるが、
+  # altpf 投入で primary がさらに更新)。
+  #   altpf: Linux ネイティブ Go バイナリ、PECmd 互換 CSV (LastRun + PreviousRun0..6)、
+  #          v17〜v31 自動判定、MAM/LZXPRESS Huffman を pure-Go で展開、
+  #          0.187s で 215 .pf を捌く高速さ。
+  #   Plaso: altpf が空 CSV を返すか起動失敗時の fallback。LastRun のみ。
+  - id: prefetch
+    name: "Prefetch"
+    tier: P0
+    safety_tier: SAFE
+    parser: parsers.prefetch_parser
+    tool:
+      name: altpf
+      version: ">=0.5.1"
+      binary: /opt/altpf/altpf
+      source: https://github.com/fkasasagi/altpf
+    input:
+      mode: dir
+      pattern: "*.pf"
+    command_template: >
+      /opt/altpf/altpf -d {input_dir} -q --csv {output_dir}
+    output:
+      format: csv
+      default_csv_name: "*_altpf_Output.csv"   # altpf が YYYYMMDDHHMMSS_ をプレフィクス
+    fallback:
+      name: Plaso (psteal)
+      version: ">=20240308"
+      binary: psteal.py
+      command_template: >
+        psteal.py --source {input_dir} --parsers prefetch
+        -o dynamic -w {output_dir}/prefetch_plaso.csv -q
+        [--output_time_zone {case_tz}]
+      output_csv_name: prefetch_plaso.csv
+    unified_event_mapping:
+      timestamp: LastRun                     # + PreviousRun0..6 が独立行で展開
+      event_type: "prefetch"
+      source_artifact: "prefetch"
+      executable_name: ExecutableName
+      run_count: RunCount
+      hash: Hash
+    caveats:
+      - "Prefetch は **実行されたことを示す**（Amcache と異なる）"
+      - "Server 系 Windows ではデフォルト無効。Workstation エディションのみ"
+      - "altpf は LastRun + PreviousRun0..6 を独立 unified_event 行として展開（run_kind フィールドで識別）"
+      - "ExecutableName が同名でもパスが異なれば別エントリ（Hash で区別）"
+      - "altpf SHA-256 が parse_results.notes に記録される（forensic 監査）"
+
+  # ------- Registry (RECmd / Kroll Batch) --------------------------------------
+  - id: registry
+    name: "Registry Hives (Kroll batch via RECmd)"
+    tier: P0
+    safety_tier: SAFE
+    parser: parsers.registry_parser
+    tool:
+      name: RECmd
+      binary: dotnet
+      dll: /opt/zimmermantools/RECmd/RECmd.dll
+    input:
+      mode: dir              # SOFTWARE / SYSTEM / SECURITY / SAM / NTUSER.DAT を含むディレクトリ
+      pattern: "*.hve;*.dat;SOFTWARE;SYSTEM;SECURITY;SAM;NTUSER*"
+    command_template: >
+      dotnet /opt/zimmermantools/RECmd/RECmd.dll
+      -d {input_dir}
+      --bn /opt/zimmermantools/RECmd/BatchExamples/Kroll_Batch.reb
+      --csv {output_dir}
+      --csvf {csv_name}
+      --nl false
+    output:
+      format: csv
+      default_csv_name: registry.csv
+    unified_event_mapping:
+      timestamp: LastWriteTimestamp
+      event_type: "registry"
+      source_artifact: "registry"
+      hive: HivePath
+      key: KeyPath
+      value: ValueName
+      data: ValueData
+    caveats:
+      - "LastWriteTimestamp は **キー** の最終書き込み時刻であり、特定の Value の変更時刻ではない"
+      - "Transaction Log (.LOG1/.LOG2) を別途適用しないと、未コミット変更が抜ける可能性"
+      - "Kroll_Batch.reb は IR で頻出のキーをカバーするが網羅ではない。特殊キーは個別 RegRipper plugin を併用"
+
+  # ------- Scheduled Tasks (pure-Python XML parser) ----------------------------
+  # 実装は parsers/scheduled_tasks_parser.py の純 Python XML パース
+  # (xml.etree.ElementTree)。外部ツール (Plaso 等) は呼ばない。
+  # フォーマットが単純なので独自パーサが直接フィールド抽出する方が
+  # フラグバージョン依存問題を回避できる。万一 Plaso を fallback として
+  # 入れる場合は、Wave 12 の prefetch_parser と同様 psteal.py 単段で
+  # 呼出すこと (log2timeline+psort 二段は避ける)。
+  - id: scheduled_tasks
+    name: "Scheduled Tasks (XML + Registry TaskCache)"
+    tier: P0
+    safety_tier: SAFE
+    parser: parsers.scheduled_tasks_parser
+    tool:
+      name: Python xml.etree.ElementTree (stdlib)
+      version: "(Python 3.11+)"
+      binary: python3
+    input:
+      mode: dir              # %SystemRoot%\System32\Tasks ディレクトリ
+      pattern: "*.xml"
+    command_template: >
+      (in-process — parsers/scheduled_tasks_parser.py が直接読む)
+    output:
+      format: jsonl          # CSV は経由せず直接 UnifiedEvent JSONL
+      default_csv_name: scheduled_tasks.jsonl
+    unified_event_mapping:
+      timestamp: registration_date_or_first_trigger
+      event_type: "scheduled_task"
+      source_artifact: "scheduled_tasks"
+      task_name: filename
+      raw_payload: message
+    caveats:
+      - "XML 単体ではタスク作成時刻が直接得られない。SOFTWARE\\Microsoft\\Windows NT\\Schedule\\TaskCache を併読推奨"
+      - "Win7 以前の .job バイナリ形式は別パーサー (winjob) で対応"
+      - "AT.exe で作成されたタスクは別ロケーションに格納される（At*.job）"
+
+  # ============================================================================
+  # P2-skeleton (Wave 37) — graceful-skip parsers
+  # ============================================================================
+  # 各 parser は tool / 入力データが揃わなければ fail() で install hint を残して skip
+
+  - id: sqlecmd
+    name: "SQLECmd — SQLite forensic CLI"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.sqlecmd_parser
+    tool:
+      name: SQLECmd
+      version: "1.x"
+      binary: /opt/zimmermantools/SQLECmd/SQLECmd.dll
+    input:
+      mode: file
+      pattern: "**/*.sqlite"
+    command_template: "(dotnet SQLECmd.dll)"
+    output:
+      format: jsonl
+      default_csv_name: sqlecmd.jsonl
+    unified_event_mapping:
+      timestamp: Timestamp
+      event_type: "sqlite_row"
+      source_artifact: "sqlecmd"
+    caveats:
+      - "Per-map column normalisation は Wave 37+ で別途"
+
+  - id: bulk_extractor
+    name: "bulk_extractor — IOC extraction"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.bulk_extractor_parser
+    tool:
+      name: bulk_extractor
+      version: "1.6.1"
+      binary: /usr/local/bin/bulk_extractor
+    input:
+      mode: file
+      pattern: "**/*.E01"
+    command_template: "(bulk_extractor binary)"
+    output:
+      format: jsonl
+      default_csv_name: bulk_extractor.jsonl
+    unified_event_mapping:
+      timestamp: ""
+      event_type: "ioc_*"
+      source_artifact: "bulk_extractor"
+    caveats:
+      - "email/url/domain/ip の 4 scanner のみ"
+
+  - id: yara
+    name: "YARA — rule-based file scanning"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.yara_parser
+    tool:
+      name: yara
+      version: "4.x"
+      binary: /usr/bin/yara
+    input:
+      mode: dir
+      pattern: "**/*"
+    command_template: "(yara binary)"
+    output:
+      format: jsonl
+      default_csv_name: yara.jsonl
+    unified_event_mapping:
+      timestamp: ""
+      event_type: "yara_match"
+      source_artifact: "yara"
+    caveats:
+      - "SIFT 標準は libyara10 のみ。apt install yara で CLI 導入"
+      - "ルールは /opt/yara-rules を operator provisioning"
+
+  - id: volatility3
+    name: "Volatility 3 — memory image"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.volatility3_parser
+    tool:
+      name: vol
+      version: "2.x"
+      binary: /opt/volatility3/bin/vol
+    input:
+      mode: file
+      pattern: "**/*.dmp"
+    command_template: "(vol binary)"
+    output:
+      format: jsonl
+      default_csv_name: volatility3.jsonl
+    unified_event_mapping:
+      timestamp: ""
+      event_type: "vol_*"
+      source_artifact: "volatility3"
+    caveats:
+      - "windows.pslist + windows.netscan のみ"
+
+  - id: w3c_iis
+    name: "W3C / IIS access log"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.w3c_iis_parser
+    tool:
+      name: "(in-process)"
+      version: "0.1.0"
+      binary: "(none — pure Python)"
+    input:
+      mode: dir
+      pattern: "**/*.log"
+    command_template: "(in-process W3C parser)"
+    output:
+      format: jsonl
+      default_csv_name: w3c_iis.jsonl
+    unified_event_mapping:
+      timestamp: "date+time"
+      event_type: "w3c_iis_request"
+      source_artifact: "w3c_iis"
+    caveats:
+      - "#Fields ヘッダ前提の W3C Extended Log Format"
+
+# ============================================================================
+# P1 (MVP+) — EZ Tools 拡張パーサ群
+# ============================================================================
+
+  # ------- Shimcache (AppCompatCache) -----------------------------------------
+  - id: shimcache
+    name: "Shimcache (AppCompatCache from SYSTEM hive)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.shimcache_parser
+    tool:
+      name: AppCompatCacheParser
+      version: "1.5.1.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/AppCompatCacheParser.dll
+    input:
+      mode: file
+      pattern: "SYSTEM"
+    command_template: >
+      dotnet /opt/zimmermantools/AppCompatCacheParser.dll
+      -f {input}
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: shimcache.csv
+    unified_event_mapping:
+      timestamp: LastModifiedTimeUTC
+      event_type: "shimcache"
+      source_artifact: "shimcache"
+      file_path: Path
+    caveats:
+      - "Shimcache は **存在の証拠**であり、**実行の証拠ではない**。Prefetch / Amcache / EVTX 4688 で裏取り必須"
+      - "Vista 以降、メモリ常駐でシャットダウン時に SYSTEM ハイブへフラッシュされる。動作中ホストのライブ取得では古い状態のことがある"
+
+  # ------- MFT ($MFT) ---------------------------------------------------------
+  - id: mft
+    name: "Master File Table ($MFT)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.mft_parser
+    tool:
+      name: MFTECmd
+      version: "1.3.0.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/MFTECmd.dll
+    input:
+      mode: file
+      pattern: "$MFT"
+    command_template: >
+      dotnet /opt/zimmermantools/MFTECmd.dll
+      -f {input}
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: mft.csv
+    unified_event_mapping:
+      timestamp: Created0x10
+      event_type: "mft"
+      source_artifact: "mft"
+      file_path: ParentPath
+    caveats:
+      - "$SI (0x10) タイムスタンプは user-mode で改竄可能 (timestomp)。$FN (0x30) と相互参照"
+      - "削除済みレコード (InUse=False) も含まれる。タイムスタンプは MFT エントリ最終更新時刻であり、削除時刻ではない"
+      - "本パーサは $MFT 専用。$J (USN), $Boot, $SDS, $I30 は別途追加検出が必要"
+
+  # ------- USN Journal ($J) ----------------------------------------------------
+  - id: usn_journal
+    name: "USN Journal ($J)"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.usn_journal_parser
+    tool:
+      name: MFTECmd
+      version: "1.3.0.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/MFTECmd.dll
+    input:
+      mode: file
+      pattern: "$J"
+    command_template: >
+      dotnet /opt/zimmermantools/MFTECmd.dll
+      -f {input}
+      --csv {output_dir}
+      --csvf {csv_name}
+      [-m {mft_sibling}]
+    output:
+      format: csv
+      default_csv_name: usn_journal.csv
+    unified_event_mapping:
+      timestamp: UpdateTimestamp
+      event_type: "usn_journal"
+      source_artifact: "usn_journal"
+      file_path: FullName
+    caveats:
+      - "$J は循環バッファ。古いエントリは Windows により上書きされる"
+      - "FileReference 番号→パスの解決には sibling $MFT が必要 (parser が自動検出)"
+      - "サブ秒精度の更新時刻を持ち、$MFT 単独では再構築できないリネーム/削除サイクルを補完する"
+
+  # ------- Shellbags ----------------------------------------------------------
+  - id: shellbags
+    name: "Shellbags (per-user Explorer navigation history)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.shellbags_parser
+    tool:
+      name: SBECmd
+      version: "2.1.0.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/SBECmd.dll
+    input:
+      mode: dir
+      pattern: "{NTUSER.DAT, UsrClass.DAT}"
+    command_template: >
+      dotnet /opt/zimmermantools/SBECmd.dll
+      -d {input_dir}
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: shellbags.csv
+    unified_event_mapping:
+      timestamp: LastWriteTime
+      event_type: "shellbags"
+      source_artifact: "shellbags"
+      shell_path: AbsolutePath
+    caveats:
+      - "ターゲットフォルダ削除後も残る → 存在しないパスへのアクセス痕跡として有用"
+      - "ユーザー単位アーティファクト。NTUSER.DAT / UsrClass.DAT それぞれが固有のバッグセットを持つ"
+
+  # ------- Jumplists ----------------------------------------------------------
+  - id: jumplists
+    name: "Jumplists (Windows Recent destinations)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.jumplists_parser
+    tool:
+      name: JLECmd
+      version: "1.5.1.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/JLECmd.dll
+    input:
+      mode: dir
+      pattern: "Recent"
+    command_template: >
+      dotnet /opt/zimmermantools/JLECmd.dll
+      -d {input_dir}
+      --all
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: jumplists.csv
+    unified_event_mapping:
+      timestamp: TargetCreated
+      event_type: "jumplists"
+      source_artifact: "jumplists"
+      file_path: TargetIDAbsolutePath
+    caveats:
+      - "ユーザー単位アーティファクト。AppId 値で起動アプリを特定可能"
+      - "TargetCreated/Modified/Accessed は jumplist エントリ書き込み時の値であり現在のファイル状態ではない"
+
+  # ------- LNK Shortcuts ------------------------------------------------------
+  - id: lnk
+    name: "LNK Shortcuts"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.lnk_parser
+    tool:
+      name: LECmd
+      version: "1.5.1.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/LECmd.dll
+    input:
+      mode: dir
+      pattern: "*.lnk"
+    command_template: >
+      dotnet /opt/zimmermantools/LECmd.dll
+      -d {input_dir}
+      --all
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: lnk.csv
+    unified_event_mapping:
+      timestamp: TargetCreated
+      event_type: "lnk"
+      source_artifact: "lnk"
+      file_path: LocalPath
+    caveats:
+      - "MachineID は作成元ホストの値。被解析ホストとは限らず、リムーバブルメディア経由の相関に使える"
+      - "ボリュームシリアル番号で対象ドライブを特定可能"
+
+  # ------- Recycle Bin --------------------------------------------------------
+  - id: recyclebin
+    name: "Recycle Bin ($Recycle.Bin index files)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.recyclebin_parser
+    tool:
+      name: RBCmd
+      version: "1.6.1.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/RBCmd.dll
+    input:
+      mode: dir
+      pattern: "$Recycle.Bin"
+    command_template: >
+      dotnet /opt/zimmermantools/RBCmd.dll
+      -d {input_dir}
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: recyclebin.csv
+    unified_event_mapping:
+      timestamp: DeletedOn
+      event_type: "recyclebin"
+      source_artifact: "recyclebin"
+      file_path: FileName
+    caveats:
+      - "親フォルダ名が削除時点のユーザー SID。ユーザー特定に使える"
+      - "ゴミ箱を空にしたファイルは痕跡が残らない。ハード削除は MFT $J (USN) と併読"
+
+  # ------- Windows 10/11 Timeline (ActivitiesCache.db) ------------------------
+  - id: win10timeline
+    name: "Windows 10/11 Timeline (Activities Cache)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.win10timeline_parser
+    tool:
+      name: WxTCmd
+      version: "1.1.0.0"
+      binary: dotnet
+      dll: /opt/zimmermantools/WxTCmd.dll
+    input:
+      mode: file
+      pattern: "ActivitiesCache.db"
+    command_template: >
+      dotnet /opt/zimmermantools/WxTCmd.dll
+      -f {input}
+      --csv {output_dir}
+      --csvf {csv_name}
+    output:
+      format: csv
+      default_csv_name: win10timeline.csv
+    unified_event_mapping:
+      timestamp: StartTime
+      event_type: "win10timeline"
+      source_artifact: "win10timeline"
+      file_path: ClipboardPayload
+    caveats:
+      - "Windows 11 22H2 以降は Timeline 機能自体が削除済み。空 / 不在は異常ではない"
+      - "ユーザー単位アーティファクト。各プロファイルに ActivitiesCache.db が存在"
+
+  # ------- Browser History (Chrome / Edge / Firefox) --------------------------
+  - id: browser_history
+    name: "Browser History (Chromium History DB / Firefox places.sqlite)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.browser_history_parser
+    tool:
+      name: "Python stdlib sqlite3 (read-only / immutable=1)"
+      version: "stdlib"
+      binary: python3
+      dll: ""   # not a .NET tool
+    input:
+      mode: file
+      pattern: "{History, places.sqlite}"
+    command_template: >
+      python3 -m parsers.browser_history_parser
+      --case-id {case_id} --evidence-id {evidence_id}
+      --input {input} --output-dir {output_dir}
+    output:
+      format: jsonl
+      default_csv_name: browser_history.jsonl
+    unified_event_mapping:
+      timestamp: visit_time         # WebKit μs (Chromium) or PRTime μs (Firefox); パーサで UTC ISO8601 に正規化
+      event_type: "browser_visit"
+      source_artifact: "browser_history"
+      url: url
+      title: title
+      transition: transition        # link / typed / bookmark / redirect / etc.
+      referrer_url: referrer_url
+    caveats:
+      - "ライブDB は browser プロセスが排他ロックを取るため失敗する。フォレンジック用にオフラインコピーを取った状態で使うこと"
+      - "Chromium は履歴を内部スケジュールで剪定するため visit_count が実使用回数を下回ることがある"
+      - "title はページロード完了時に書き込まれるので、開いて即閉じた URL では空のままだが visit_time は記録される"
+      - "Web 経由の侵入(driveby / phishing redirect / watering hole)の起点を追えるアーティファクト。Initial Access / Execution Tactic Agent の重要入力"
+
+  # ------- Washizukami-Collector audit log ------------------------------------
+  - id: washizukami_audit
+    name: "Washizukami-Collector collection.log (per-file SHA-256 audit trail)"
+    tier: P1
+    safety_tier: SAFE
+    parser: parsers.washizukami_audit_parser
+    tool:
+      name: "Python regex (stdlib)"
+      version: "stdlib"
+      binary: python3
+      dll: ""
+    input:
+      mode: file
+      pattern: "collection.log"
+    command_template: >
+      python3 -m parsers.washizukami_audit_parser
+      --case-id {case_id} --evidence-id {evidence_id}
+      --input {input} --output-dir {output_dir}
+    output:
+      format: jsonl
+      default_csv_name: washizukami_audit.jsonl
+    unified_event_mapping:
+      timestamp: ts                 # Washizukami の +0900 等を UTC に正規化
+      event_type: "evidence_collected"  # OK 行が大半。SKIP/FAIL/TOOL/MATCH は別 event_type
+      source_artifact: "washizukami_audit"
+      source_path: source_path      # ライブホスト上の元パス
+      sha256: sha256                # Washizukami が収集時に算出済の整合性ハッシュ
+    caveats:
+      - "Washizukami が flatten 前のオリジナルパスを保持しているため、Tactic Agent から元パスへの逆引きが可能になる"
+      - "SHA-256 は Washizukami 側で収集時に算出されたもの。改竄検知のリファレンスとして使える"
+      - "本パーサは collection.log だけを読む。実体ファイルは既存の各種パーサ(evtx/registry/mft/lnk/...) が拾う(Washizukami がカテゴリ配下にパス構造を保つため既存の **/ glob で拾える)"
+      - "FAIL / SKIP 行も 1 イベントとして残るので、収集失敗の盲点を Tactic Agent / Examiner が検知できる"
+
+
+  # ------- SRUM (System Resource Usage Monitor) ------------------------------
+  # Wave 13 / 2026-05-16: SrumECmd は ESE Windows API 依存で Linux 不可
+  # と判明。Plaso `psteal.py --parsers esedb/srum` を primary、SrumECmd を
+  # Windows 向け fallback に再設計。Linux 上で 1404 events / 3.2s 実機確認済。
+  - id: srum
+    name: "SRUM (System Resource Usage Monitor)"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.srum_parser
+    tool:
+      name: Plaso (psteal esedb/srum)
+      version: ">=20240308"
+      binary: psteal.py
+      command_template: >
+        psteal.py --source {input} --parsers esedb/srum
+        -o dynamic -w {output_dir}/srum_plaso.csv -q
+        [--output_time_zone {case_tz}]
+    fallback:
+      name: SrumECmd (Windows only)
+      version: "0.5.0.1+ (built from source)"
+      binary: dotnet
+      dll: /opt/zimmermantools/SrumECmd.dll
+      note: "ESE Windows API 依存で Linux では `Non-Windows platforms not supported` で
+             exit。Windows dev box でのみ意味があり、SIFT (Linux) では skip して
+             primary 結果を採用する。"
+    input:
+      mode: file
+      pattern: "SRUDB.dat"
+    command_template: >
+      dotnet /opt/zimmermantools/SrumECmd.dll
+      -f {input}
+      --csv {output_dir}
+      [-r {software_sibling}]
+    output:
+      format: csv
+      default_csv_name: srum_*.csv
+    unified_event_mapping:
+      timestamp: Timestamp
+      event_type: "srum_<table>"
+      source_artifact: "srum"
+    caveats:
+      - "SRUM は ~60 日分の 60 秒粒度スナップショットを保持。それ以前は粗いバケットに集約される"
+      - "PrefetchCmd 非対応サーバ SKU でも実行記録が残るため、Prefetch 不在時の補完証拠として有効"
+      - "SrumECmd は SIFT 標準ではインストールされない。なければパーサが install hint を残して skip"
+
+  # ------- Hayabusa (Sigma-based EVTX threat hunting) ------------------------
+  - id: hayabusa
+    name: "Hayabusa (Sigma-based EVTX threat hunting)"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.hayabusa_parser
+    tool:
+      name: hayabusa
+      version: "2.x (optional — not on stock SIFT)"
+      binary: /usr/local/bin/hayabusa
+    input:
+      mode: dir
+      pattern: "*.evtx"
+    command_template: >
+      hayabusa csv-timeline
+      -d {input_dir}
+      -o {output_dir}/hayabusa_timeline.csv
+      --no-color --quiet --UTC
+    output:
+      format: csv
+      default_csv_name: hayabusa_timeline.csv
+    unified_event_mapping:
+      timestamp: Timestamp
+      event_type: "hayabusa_detection"
+      source_artifact: "hayabusa"
+    caveats:
+      - "Hayabusa は SIFT 標準ではインストールされない。なければパーサが install hint を残して skip"
+      - "evtx パーサと併用すると同じ EVTX をダブルパスする。Hayabusa は Sigma 検知だけを補足する補助的なシグナル源として扱う"
+
+# ============================================================================
+# 共通設定
+# ============================================================================
+
+defaults:
+  timeout_seconds: 600       # 1 アーティファクトあたりの最大実行時間
+  output_encoding: utf-8
+  timezone: UTC              # 全タイムスタンプを UTC で正規化
+  unified_event_schema: "findevil/unified-event/v1"
+
+# UnifiedEvent JSON Lines 出力共通フィールド (パーサーが必ず出力)
+unified_event_required_fields:
+  - timestamp           # ISO8601 UTC
+  - event_type          # アーティファクト種別 (evtx/amcache/prefetch/registry/scheduled_task)
+  - source_artifact     # 同上（互換性のため二重で持つ）
+  - case_id
+  - evidence_id
+  - parser_version      # トレース用
+  - audit_id            # forensic-knowledge 由来の用語、provenance 紐付け

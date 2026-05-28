@@ -1,0 +1,885 @@
+/* FindEvil — Examiner Portal dark theme.
+   Palette is intentionally narrow (5 base colors + 3 confidence accents)
+   so the UI reads as forensic, not consumer. Monospace everywhere. */
+
+:root {
+  --bg:        #1a1a2e;
+  --card:      #16213e;
+  --card-hi:   #1e2a4d;
+  --accent:    #0f3460;
+  --accent-hi: #1d4d8c;
+  --text:      #e0e0e0;
+  --muted:     #8794ad;
+  --border:    #2a3556;
+
+  --conf-high:    #e74c3c;
+  --conf-medium:  #f39c12;
+  --conf-low:     #2ecc71;
+  --approved:     #2ecc71;
+  --rejected:     #e74c3c;
+  --pending:      #6b7a99;
+
+  --tactic-init:  #c0392b;
+  --tactic-exec:  #d35400;
+  --tactic-pers:  #8e44ad;
+  --tactic-priv:  #c0a000;
+  --tactic-evas:  #16a085;
+  --tactic-cred:  #2980b9;
+  --tactic-disc:  #27ae60;
+  --tactic-late:  #e67e22;
+  --tactic-coll:  #5d6d7e;
+  --tactic-imp:   #c0392b;
+
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  height: 100%;
+}
+
+a { color: #5fa8ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+button {
+  font-family: inherit;
+  font-size: 12px;
+  background: var(--accent);
+  color: var(--text);
+  border: 1px solid var(--accent-hi);
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.12s ease;
+}
+button:hover  { background: var(--accent-hi); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.danger { background: #6e2330; border-color: #913040; }
+button.danger:hover { background: #913040; }
+button.ghost  { background: transparent; border-color: var(--border); color: var(--muted); }
+button.ghost:hover { color: var(--text); border-color: var(--accent-hi); }
+button.primary { background: var(--accent-hi); border-color: #2a64a8; }
+
+input, select, textarea {
+  font-family: inherit; font-size: 12px;
+  background: #0e1530; color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 3px;
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent-hi);
+}
+
+/* ------- header ------- */
+.app-header {
+  display: flex; align-items: center; gap: 24px;
+  padding: 10px 20px;
+  background: linear-gradient(180deg, #0f1530 0%, #1a1a2e 100%);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .logo {
+  background: var(--accent-hi); padding: 4px 8px; border-radius: 3px;
+  font-weight: bold; letter-spacing: 1px;
+}
+.brand .title { font-weight: bold; font-size: 15px; }
+.brand .subtitle { color: var(--muted); font-size: 11px; }
+
+.crumbs { flex: 1; color: var(--muted); font-size: 12px; }
+.crumbs a { color: var(--text); }
+.crumbs .sep { color: var(--muted); padding: 0 6px; }
+
+.meta { color: var(--muted); font-size: 11px; }
+
+/* ------- main layout ------- */
+main {
+  padding: 20px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+h1, h2, h3, h4 { color: #fff; margin: 0 0 12px 0; font-weight: 600; }
+h1 { font-size: 18px; }
+h2 { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+h3 { font-size: 13px; color: #c0d0e8; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.row { display: flex; gap: 12px; }
+.row.wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+.muted { color: var(--muted); }
+.kbd { background: #0a0f24; border: 1px solid var(--border); padding: 1px 5px; border-radius: 2px; font-size: 11px; }
+
+/* ------- dashboard cases table ------- */
+.cases-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.case-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.case-card:hover { border-color: var(--accent-hi); background: var(--card-hi); }
+.case-card .case-id { font-weight: bold; color: #fff; font-size: 13px; }
+.case-card .case-name { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.case-card .badges { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+
+.badge {
+  display: inline-block; padding: 2px 7px; border-radius: 3px;
+  font-size: 10px; font-weight: bold; letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: var(--border); color: var(--muted);
+}
+.badge.ok      { background: #1e3a3a; color: var(--approved); }
+.badge.warn    { background: #3d2c14; color: var(--conf-medium); }
+.badge.err     { background: #3a1e1e; color: var(--conf-high); }
+.badge.high    { background: #3a1e1e; color: var(--conf-high); }
+.badge.medium  { background: #3d2c14; color: var(--conf-medium); }
+.badge.low     { background: #1e3a1e; color: var(--conf-low); }
+.badge.approved { background: #1e3a3a; color: var(--approved); }
+.badge.rejected { background: #3a1e1e; color: var(--rejected); }
+.badge.pending  { background: #2a3556; color: var(--pending); }
+.badge.tactic   { background: #2a3556; color: #b8c8e0; font-weight: normal; }
+/* Wave 15: NOT_PRESENT — "artefact wasn't in this input" — visually
+   distinct from FAIL (red) and EMPTY (amber). Grey because no action
+   is needed: it's informational, not a problem. */
+.badge.missing  { background: #2a2a2a; color: #999; }
+.pr-row-not-present { opacity: 0.65; }
+.pr-row-not-present td { font-style: italic; }
+
+/* ------- new-case form ------- */
+.form-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.form-row label { width: 110px; color: var(--muted); font-size: 11px; }
+.form-row input, .form-row select { max-width: 320px; }
+
+/* ------- pipeline buttons ------- */
+/* Issue #1: layout was a single non-wrapping flex row, so on typical
+   widths the 4 buttons + 4 progress blocks + 3 arrows overflowed and the
+   user had to scroll right (or the box clipped). Now: the outer .pipeline
+   uses flex-wrap, and each step is a .pipeline-step wrap-unit so the
+   button + progress + arrow stay together when the row breaks. */
+.pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;          /* row gap larger than column gap */
+  align-items: stretch;
+  background: #0a1228;
+  border: 1px solid var(--border);
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+.pipeline button { min-width: 130px; flex-shrink: 0; }
+.pipeline .arrow { color: var(--muted); flex-shrink: 0; }
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 320px;          /* min 320px before wrapping; grow to fill */
+  min-width: 0;             /* let the inner ellipsis honour the constraint */
+}
+
+/* Per-step status block — replaces the old single-line .progress span. */
+.progress-block {
+  flex: 1 1 0;
+  min-width: 0;             /* allow shrink so ellipsis kicks in */
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+.progress-block .progress-text {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.progress-block.running   .progress-text { color: var(--conf-medium); }
+.progress-block.succeeded .progress-text { color: var(--approved); }
+.progress-block.failed    .progress-text { color: var(--conf-high); }
+.progress-block.canceled  .progress-text { color: var(--muted); font-style: italic; }
+.progress-block.canceled  .progress-bar-fill { background: var(--muted); }
+
+/* Issue #2 + 2026-05-16: 「最終状態」(succeeded / failed / canceled) の
+   テキストは結果サマリ情報なので途切れさせない。multi-line wrap + 必要な
+   ら scroll を許可。running / idle は遷移途中の短文なので ellipsis のまま
+   コンパクトにしておく。 */
+.progress-block.succeeded .progress-text,
+.progress-block.canceled  .progress-text {
+  white-space: normal;
+  overflow: auto;
+  max-height: 160px;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.progress-block.failed .progress-text {
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 240px;
+  background: #2a1517;
+  border-left: 3px solid var(--conf-high);
+  padding: 6px 8px;
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.progress-block .progress-bar-track {
+  background: #0a0f24;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  height: 6px;
+  overflow: hidden;
+}
+.progress-block .progress-bar-fill {
+  background: var(--accent-hi);
+  height: 100%;
+  transition: width 0.3s ease-out;
+}
+.progress-block.running .progress-bar-fill {
+  background: var(--conf-medium);
+}
+.progress-block .progress-meta {
+  color: var(--muted);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+/* ------- tabs ------- */
+.tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab {
+  padding: 8px 16px; cursor: pointer; color: var(--muted);
+  border: 1px solid transparent; border-bottom: 2px solid transparent;
+  font-size: 12px;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--text); border-color: var(--border) var(--border) var(--bg);
+  border-bottom: 2px solid var(--accent-hi);
+  background: var(--card);
+}
+
+/* ------- findings toolbar (Issue #4 #5 #10) ------- */
+.findings-toolbar {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  position: sticky;
+  top: 50px;        /* below the app-header */
+  z-index: 5;
+}
+.findings-toolbar button[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* row hidden by the filter — kept in the DOM so scroll position is
+   stable and the row's checkbox state survives toggling the filter */
+.finding.filtered-out { display: none; }
+
+/* per-row + per-tactic select checkboxes */
+.tactic-header .tactic-select-all {
+  margin-right: 6px;
+  cursor: pointer;
+}
+.tactic-header .tactic-toggle {
+  color: var(--muted);
+  margin-right: 4px;
+}
+.finding .row-select {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+/* ------- findings list ------- */
+.tactic-group {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+.tactic-group .tactic-header {
+  padding: 10px 14px;
+  background: var(--card-hi);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px;
+  cursor: pointer;
+}
+.tactic-group .tactic-header .name { font-weight: bold; color: #fff; }
+.tactic-group .tactic-header .count { color: var(--muted); font-size: 11px; }
+.tactic-group .findings { padding: 6px 0; }
+.finding {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.finding:last-child { border-bottom: none; }
+.finding .header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+}
+.finding .technique-id { font-weight: bold; color: #fff; }
+.finding .technique-name { color: var(--muted); }
+.finding .summary { margin: 6px 0 8px 0; }
+.finding .reasoning {
+  background: #0a1228; padding: 8px 12px; border-radius: 3px;
+  border-left: 3px solid var(--accent-hi);
+  color: var(--muted); font-size: 12px;
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+.finding .evidence-toggle {
+  cursor: pointer; color: var(--muted); font-size: 11px; user-select: none;
+}
+.finding .evidence-toggle:hover { color: var(--text); }
+.finding .evidence-list {
+  margin-top: 8px; padding-left: 16px;
+  border-left: 2px solid var(--border);
+}
+.finding .evidence-item {
+  margin-bottom: 10px; padding: 6px 0; font-size: 11px;
+  border-bottom: 1px dashed var(--border);
+}
+.finding .evidence-item:last-child { border-bottom: none; }
+.finding .evidence-item .evidence-head { display: flex; gap: 8px; align-items: baseline; }
+.finding .evidence-item .source { color: var(--accent-hi); font-weight: bold; }
+.finding .evidence-item .audit-id { color: var(--muted); }
+.finding .evidence-item .excerpt { color: var(--text); margin: 2px 0 4px 0; }
+.finding .evidence-item .evidence-meta {
+  color: var(--muted); font-size: 11px; margin: 4px 0 2px 0;
+}
+.finding .evidence-item .evidence-payload {
+  margin-top: 2px; max-width: none; min-width: 0; max-height: 360px;
+  white-space: pre-wrap; word-break: break-all;
+}
+.finding .actions {
+  margin-top: 10px; display: flex; gap: 8px; align-items: center;
+}
+.finding.approved { background: #16291f; }
+.finding.rejected { background: #2a1517; }
+
+/* ------- timeline ------- */
+.timeline-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.timeline-table th, .timeline-table td {
+  text-align: left; padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.timeline-table th { background: var(--card-hi); color: var(--muted); font-weight: normal; font-size: 11px; }
+.timeline-table tr:hover { background: var(--card-hi); }
+.timeline-table .ts { white-space: nowrap; color: var(--muted); }
+.timeline-table .summary { max-width: 600px; }
+
+/* Kill chain diagram */
+.killchain {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  background: #0a1228; padding: 16px;
+  border-radius: 4px; border: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.killchain .step {
+  background: var(--card);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 10px 14px; min-width: 160px;
+  position: relative;
+}
+.killchain .step .num { color: var(--muted); font-size: 10px; }
+.killchain .step .tactic { color: #fff; font-weight: bold; margin-top: 2px; }
+.killchain .step .ts { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.killchain .step:not(:last-child)::after {
+  content: "→"; position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
+  color: var(--accent-hi); font-size: 16px;
+}
+
+/* ------- IOC list ------- */
+.ioc-group { margin-bottom: 16px; }
+.ioc-group h3 {
+  display: flex; gap: 8px; align-items: center;
+  background: var(--card-hi); padding: 6px 12px; border-radius: 3px;
+}
+.ioc-group h3 .count { color: var(--muted); font-size: 11px; }
+.ioc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ioc-table td {
+  padding: 4px 10px; border-bottom: 1px solid var(--border);
+  font-family: inherit;
+}
+.ioc-table .value { color: #fff; word-break: break-all; }
+.ioc-table .src { color: var(--muted); font-size: 11px; }
+
+/* ------- mitre matrix ------- */
+.mitre-matrix {
+  display: grid; grid-template-columns: 220px 1fr;
+  gap: 8px;
+}
+.mitre-matrix .tactic-col {
+  background: var(--card-hi); padding: 8px 10px;
+  border-radius: 3px;
+}
+.mitre-matrix .tactic-col .name { font-weight: bold; color: #fff; }
+.mitre-matrix .tactic-col .id { color: var(--muted); font-size: 10px; }
+.mitre-matrix .technique-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  align-content: flex-start;
+}
+.mitre-cell {
+  padding: 6px 10px; border-radius: 3px;
+  background: var(--card); border: 1px solid var(--border);
+  cursor: pointer; min-width: 120px;
+  transition: transform 0.08s ease;
+}
+.mitre-cell:hover { transform: translateY(-1px); border-color: var(--accent-hi); }
+.mitre-cell .id { color: var(--muted); font-size: 10px; }
+.mitre-cell .name { font-size: 11px; color: #e0e0e0; }
+.mitre-cell .count { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.mitre-cell.high   { background: #3a1e1e; border-color: var(--conf-high); }
+.mitre-cell.medium { background: #3d2c14; border-color: var(--conf-medium); }
+.mitre-cell.low    { background: #1e3a1e; border-color: var(--conf-low); }
+
+/* ------- audit log ------- */
+.audit-list { font-size: 12px; }
+.audit-item {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 3px; padding: 8px 12px; margin-bottom: 6px;
+  display: grid;
+  grid-template-columns: 18px 180px 130px 100px 1fr;
+  gap: 10px; align-items: baseline;
+}
+.audit-item .ts    { color: var(--muted); font-size: 11px; }
+.audit-item .actor { color: #c0d0e8; font-weight: bold; font-size: 11px; }
+.audit-item .kind  { color: var(--accent-hi); font-size: 11px; }
+.audit-item .body  {
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.audit-item.failed { border-color: var(--conf-high); }
+
+/* Issue #14: full-text expansion of audit row details. */
+.audit-toggle {
+  background: transparent; border: none; color: var(--accent-hi);
+  cursor: pointer; font-size: 11px; padding: 0;
+  align-self: center;
+}
+.audit-toggle:hover { color: var(--text); }
+.audit-toggle-placeholder {
+  display: inline-block; width: 18px;
+}
+.audit-detail {
+  display: none;
+  grid-column: 1 / -1;
+  margin: 8px 0 0; padding: 8px 10px;
+  background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px;
+  color: var(--text);
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 320px; overflow-y: auto;
+}
+.audit-item.expanded .audit-detail { display: block; }
+
+/* ------- modal ------- */
+.modal-shade {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal-shade.hidden { display: none; }
+.modal {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 4px; padding: 20px; min-width: 420px; max-width: 600px;
+}
+.modal h3 { margin-top: 0; }
+.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ------- toast ------- */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--card); border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-hi);
+  padding: 10px 16px; border-radius: 3px;
+  z-index: 200; font-size: 12px;
+  max-width: 400px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.toast.hidden { display: none; }
+.toast.error { border-left-color: var(--conf-high); }
+.toast.success { border-left-color: var(--approved); }
+
+/* ------- report iframe ------- */
+.report-frame {
+  width: 100%; height: 800px;
+  background: white; border: 1px solid var(--border); border-radius: 3px;
+}
+
+/* ------- events tab ------- */
+.events-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.events-table th, .events-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.events-table th {
+  background: var(--card-hi); color: var(--muted);
+  font-size: 11px; font-weight: normal;
+  position: sticky; top: 0;
+}
+.events-table tr:hover { background: var(--card-hi); }
+.events-table .ts { white-space: nowrap; color: var(--muted); }
+.events-table .audit-id-cell { font-family: inherit; color: var(--muted); }
+.events-table .command {
+  max-width: 600px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.filter-row {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  align-items: end;
+  background: #0a1228; padding: 12px;
+  border: 1px solid var(--border); border-radius: 3px;
+  margin-top: 8px;
+}
+.filter-row .f-field { display: flex; flex-direction: column; gap: 4px; }
+.filter-row .f-field label { color: var(--muted); font-size: 11px; }
+.filter-row .f-field input,
+.filter-row .f-field select { min-width: 140px; }
+
+.payload-pre {
+  background: #0a0f24;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 12px;
+  max-height: 480px;
+  max-width: 720px;
+  min-width: 540px;
+  overflow: auto;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  white-space: pre;
+  margin: 0;
+}
+
+/* ------- chat assistant (FAB + slide-in drawer) ------- */
+.chat-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent-hi);
+  color: #fff;
+  border: 2px solid var(--accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.chat-fab:hover { transform: translateY(-2px); background: #2a64a8; }
+.chat-fab.has-unread::after {
+  content: "";
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 10px; height: 10px;
+  background: var(--conf-high);
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+}
+
+.chat-drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 480px;
+  max-width: 100vw;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.18s ease-out;
+}
+.chat-drawer.open { transform: translateX(0); }
+
+.chat-header {
+  padding: 12px 16px;
+  background: linear-gradient(180deg, #0f1530 0%, var(--card) 100%);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chat-header .title { font-weight: bold; color: #fff; }
+.chat-header .ctx { color: var(--muted); font-size: 11px; }
+.chat-header .close-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 4px;
+}
+.chat-header .close-btn:hover { color: var(--text); }
+
+.chat-toolbar {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  background: #0a1228;
+}
+.chat-toolbar select { width: auto; min-width: 130px; padding: 3px 6px; }
+.chat-toolbar .clear-btn { font-size: 11px; padding: 3px 8px; margin-left: auto; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chat-msg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.chat-msg .avatar {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: bold;
+  color: #fff;
+}
+.chat-msg.assistant .avatar { background: var(--accent-hi); }
+.chat-msg.user .avatar { background: #2c3e50; }
+.chat-msg .bubble {
+  background: var(--card-hi);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  flex: 1;
+  min-width: 0;
+}
+.chat-msg.user .bubble { background: #1a2540; }
+.chat-msg .bubble code {
+  background: #0a0f24;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: inherit;
+}
+.chat-msg .bubble pre {
+  background: #0a0f24;
+  padding: 8px;
+  border-radius: 3px;
+  overflow-x: auto;
+  margin: 6px 0;
+  font-size: 11px;
+}
+.chat-msg .meta {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.chat-input-row {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  gap: 8px;
+  background: #0a1228;
+}
+.chat-input-row textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 38px;
+  max-height: 200px;
+  font-size: 12px;
+}
+.chat-input-row button {
+  align-self: flex-end;
+}
+
+.chat-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.chat-loading {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  align-items: center;
+}
+
+/* ------- Status tab (Wave 20g) ------- */
+.status-overview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: #15192a;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+.status-phase {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 18px;
+  min-width: 140px;
+  background: #0d1124;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  transition: border-color 0.2s ease;
+}
+.status-phase.running    { border-color: var(--conf-medium); }
+.status-phase.succeeded  { border-color: var(--approved); }
+.status-phase.failed     { border-color: var(--conf-high); }
+.status-phase.canceled   { border-color: var(--muted); }
+.status-phase-symbol {
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 1;
+  color: var(--muted);
+}
+.status-phase.running    .status-phase-symbol { color: var(--conf-medium); animation: status-pulse 1.6s ease-in-out infinite; }
+.status-phase.succeeded  .status-phase-symbol { color: var(--approved); }
+.status-phase.failed     .status-phase-symbol { color: var(--conf-high); }
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+.status-phase-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.status-arrow {
+  color: var(--muted);
+  font-size: 18px;
+  padding: 0 4px;
+}
+.status-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.status-detail-card {
+  margin: 0;
+}
+.status-event-log {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px 14px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.status-event-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid #0a1228;
+}
+.status-event-row:last-child { border-bottom: none; }
+.status-event-ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 64px;
+}
+.status-event-kind {
+  font-weight: 600;
+  flex-shrink: 0;
+  min-width: 90px;
+}
+.status-event-kind.running   { color: var(--conf-medium); }
+.status-event-kind.succeeded { color: var(--approved); }
+.status-event-kind.failed    { color: var(--conf-high); }
+.status-event-text {
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* ------- Cross-evidence correlations panel (Wave 27) ------- */
+.cross-evidence-panel {
+  margin: 16px 0;
+  padding: 12px 16px;
+  background: #15192a;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--conf-medium);
+  border-radius: 4px;
+}
+.cross-evidence-panel h3 { margin-top: 0; }
+
+/* ------- Review Gate 2 — Timeline row coloring (Wave 21) ------- */
+.timeline-row.approved td { background: rgba(46, 160, 67, 0.08); }
+.timeline-row.rejected td { background: rgba(248, 81, 73, 0.08); color: var(--muted); text-decoration: line-through; }
+.timeline-row.pending  td { /* default */ }
+
+/* ------- misc ------- */
+.empty { padding: 32px; text-align: center; color: var(--muted); font-style: italic; }
+.code  { font-family: inherit; background: #0a1228; padding: 1px 5px; border-radius: 2px; font-size: 11px; }
+.spinner {
+  display: inline-block; width: 10px; height: 10px;
+  border: 2px solid var(--border); border-top-color: var(--accent-hi);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+  vertical-align: middle; margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.hidden { display: none !important; }

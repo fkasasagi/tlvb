@@ -1,0 +1,58 @@
+# config/staging.yaml
+#
+# Tier 0 ステージング設定 (v0.4 REQ-1)
+#
+# parsers/orchestrator.py::stage_input が Evidence をワークスペースに展開する
+# 際に参照するパラメータ群。コードにマジックナンバーを書かないために本ファイル
+# に集約する。値の読み出しは parsers._archive.load_config() 経由。
+#
+# 全項目に既定値がコード側にハードコードされており、本ファイルが欠落しても動
+# 作する(graceful)。本番で閾値を変えたい場合のみ本ファイルを上書きする。
+
+version: "0.1.0"
+schema: "findevil/staging/v1"
+
+# ---------------------------------------------------------------------------
+# ネスト アーカイブ再帰展開 (REQ-1)
+# ---------------------------------------------------------------------------
+nested_archive:
+  # 対応拡張子。拡張子+マジックバイト両方で形式判定する。
+  # ここに含まれないものは検出対象外(展開せず、検出ループも素通り)。
+  supported_extensions:
+    - .zip
+    - .7z
+    - .tar
+    - .tar.gz
+    - .tgz
+    - .tar.bz2
+    - .tbz2
+    - .tar.xz
+    - .txz
+    - .gz   # 裸の単体ファイル gzip(例: SYSTEM.gz)
+
+  # これ以上深いネストは skip:depth_exceeded として除外する。
+  # 0 = ネスト展開を無効化(現行 v0.3 と等価)。
+  max_depth: 4
+
+  # 累積展開サイズの上限(バイト)。これを超えたら以降の展開を停止。
+  # 既定 50 GiB。50 * 1024^3 = 53687091200。
+  max_total_extracted_bytes: 53687091200
+
+  # 個々のメンバーの非圧縮サイズ上限。超えるとそのアーカイブを skip。
+  # 既定 4 GiB(zip bomb 対策)。
+  max_member_uncompressed_bytes: 4294967296
+
+  # 圧縮比(合計非圧縮 / 圧縮)の上限。
+  # 通常: 200, LZMA(7z/tar.xz): 500(LZMA は本質的に高圧縮なので別枠)。
+  compression_ratio_cap: 200
+  compression_ratio_cap_lzma: 500
+
+  # パスワード付き暗号化アーカイブの扱い。
+  # skip(既定): result="skip:encrypted" として展開しない。
+  # fail: アーカイブを致命エラー扱い(現状は未対応、将来 UI 入力を導入する場合用)。
+  on_encrypted: skip
+
+  # py7zr が import できない場合の挙動。
+  # skip(既定): .7z のみ result="skip:missing_backend"、他形式は影響なし。
+  # fail: ステージング全体を中止(本番では推奨しない)。
+  on_missing_backend: skip

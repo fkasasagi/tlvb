@@ -1,0 +1,57 @@
+# External reference repos (cloned per-developer, not vendored)
+reference/*/
+
+# log2timeline.py drops a rotating *.log.gz in CWD on every invocation
+log2timeline-*.log.gz
+
+# Runtime case data — real evidence, never committable
+outputs/cases/*
+!outputs/cases/.gitkeep
+outputs/cases/*/extractions/
+outputs/cases/*/extractions/**
+
+# Cross-case DuckDB stays out (regenerable + would re-introduce the
+# excluded extractions inline).
+outputs/*.duckdb
+outputs/*.duckdb.wal
+outputs/*.duckdb.tmp
+outputs/*.duckdb.bak.*
+
+# Go build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Secrets / local config
+*.local.yaml
+.env
+.env.local
+
+# Logs
+*.log
+
+# Plaso intermediate storage. psteal.py / log2timeline.py drop
+# <TIMESTAMP>-<source-basename>.plaso in CWD when not given a workspace-scoped
+# `-w`; interactive srum_parser dev runs at the repo root left 19 of these
+# behind by 2026-05-19 (Wave 20d cleanup). All intermediate, never committable.
+*.plaso

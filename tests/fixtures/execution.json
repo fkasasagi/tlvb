@@ -1,0 +1,86 @@
+{
+  "tactic_id": "TA0002",
+  "tactic_name": "Execution",
+  "case_id": "INC-2026-0003",
+  "evidence_id": "EV-FULL-001",
+  "started_at": "2026-05-03T08:00:43Z",
+  "finished_at": "2026-05-03T08:01:18Z",
+  "status": "completed",
+  "findings": [
+    {
+      "finding_id": "F-execution-001",
+      "technique_id": "T1569.002",
+      "technique_name": "System Services — Service Execution",
+      "summary": "Service 'remotesvc' was registered (7045) — once started, this is the execution vehicle for the persistence claim by the Persistence Agent.",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "9b48204b7071768f70e9b42a33821536",
+          "excerpt": "EventID 7045 Service Control Manager: Name: remotesvc"
+        }
+      ],
+      "reasoning": "Service install (7045) is also an Execution signal because the SCM runs the service binary on each start. Without a paired 7036 'Service started' event in window we cannot say it actually ran — confidence is therefore medium. The Persistence Agent surfaces the same audit_id as F-persistence-003; the cluster will dedupe."
+    },
+    {
+      "finding_id": "F-execution-002",
+      "technique_id": "T1059.003",
+      "technique_name": "Command and Scripting Interpreter — Windows Command Shell",
+      "summary": "Sysmon 1 process create on PC01 with ParentProcess=cmd.exe — interactive shell originating subsequent activity.",
+      "confidence": "low",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "b1c4120730f9088998164b19755d7e0a",
+          "excerpt": "Sysmon 1: ParentProcess: C:\\Windows\\System32\\cmd.exe"
+        }
+      ],
+      "reasoning": "A child of cmd.exe is a normal pattern for many admin operations. Without command-line context this single Sysmon 1 row is not by itself evidence of malicious execution — kept at low confidence so the examiner is alerted to the parent chain but not asked to act."
+    },
+    {
+      "finding_id": "F-execution-003",
+      "technique_id": "T1106",
+      "technique_name": "Native API",
+      "summary": "Sysmon 1 process create on PC01 with ParentProcess=UI0Detect.exe — service-process spawning a foreground process.",
+      "confidence": "low",
+      "evidence": [
+        {
+          "source_artifact": "evtx",
+          "audit_id": "c13e908fcd17f3776b8955b43002492f",
+          "excerpt": "Sysmon 1: ParentProcess: C:\\Windows\\System32\\UI0Detect.exe"
+        }
+      ],
+      "reasoning": "UI0Detect.exe spawning a child can indicate Session-0 isolation interaction; in itself benign for kiosk-style apps, suspicious in a domain workstation context. Low confidence pending parent/child image hashes."
+    }
+  ],
+  "negative_findings": [
+    {
+      "technique_id": "T1059.001",
+      "checked_via": [
+        "EVTX rows containing 'powershell.exe' or '-EncodedCommand' in CommandLine"
+      ],
+      "rationale": "No PowerShell encoded-command invocations were observed in the input window for TA0002."
+    }
+  ],
+  "open_questions": [
+    {
+      "technique_id": "T1569.002",
+      "question": "Did 'remotesvc' actually start? (need EVTX 7036 for the same service)",
+      "next_step": "Re-query EVTX with Provider='Service Control Manager' AND EventId='7036' AND payload contains 'remotesvc'."
+    }
+  ],
+  "summary": "Service-execution evidence ties to the Persistence finding via shared service registration (remotesvc). Two additional low-confidence process-create observations require additional context before classifying.",
+  "audit": {
+    "iterations": 1,
+    "input_events": 200,
+    "model_id": "claude-sonnet-4-6",
+    "stop_reason": "end_turn",
+    "tokens_input": 43696,
+    "tokens_output": 950,
+    "cache_read_input_tokens": 1115,
+    "duration_seconds": 35.4,
+    "skill_file": "skills/execution.md",
+    "skill_sha256": "fixture-not-real-sha",
+    "validation_ok": true
+  }
+}
