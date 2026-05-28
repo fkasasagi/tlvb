@@ -1,0 +1,9 @@
+[submodule "rules/sigma/upstream"]
+	path = rules/sigma/upstream
+	url = https://github.com/SigmaHQ/sigma.git
+[submodule "rules/hayabusa/upstream"]
+	path = rules/hayabusa/upstream
+	url = https://github.com/Yamato-Security/hayabusa-rules.git
+[submodule "rules/stix/mitre-attack"]
+	path = rules/stix/mitre-attack
+	url = https://github.com/mitre/cti.git
