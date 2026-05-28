@@ -151,16 +151,7 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 			row_count    BIGINT,
 			PRIMARY KEY (case_id, artifact_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS unified_events (
-			case_id       VARCHAR NOT NULL,
-			evidence_id   VARCHAR,
-			artifact_id   VARCHAR NOT NULL,
-			audit_id      VARCHAR NOT NULL,
-			ts_utc        TIMESTAMP,
-			event_type    VARCHAR NOT NULL,
-			computer      VARCHAR,
-			payload_json  VARCHAR NOT NULL
-		)`,
+		UnifiedEventsDDL,
 		`CREATE INDEX IF NOT EXISTS idx_unified_events_lookup
 			ON unified_events(case_id, artifact_id, ts_utc)`,
 	}

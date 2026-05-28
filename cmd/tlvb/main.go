@@ -101,6 +101,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "calibrate: %v\n", err)
 			os.Exit(1)
 		}
+	case "rules":
+		// TLVB Tier 1A — build / list the rule SQL cache.
+		if err := runRules(args); err != nil {
+			fmt.Fprintf(os.Stderr, "rules: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -124,6 +130,8 @@ Usage:
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
   tlvb run CASE_ID --evidence PATH [--engine claude-code]
   tlvb serve [--port 8080] [--db PATH] [--outputs DIR]
+  tlvb rules build [--dry-run] [--budget-yen N] [--max-rules N] [--source sigma|hayabusa|stix] [--force]
+  tlvb rules list  [--source sigma|hayabusa|stix] [--state pending|built|failed] [--show-sql]
   tlvb version
 
 Run 'tlvb <subcommand> -h' for subcommand options.
