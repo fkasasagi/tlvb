@@ -129,7 +129,10 @@ Usage:
   tlvb synthesize CASE_ID [--correct] [--findings-dir DIR] [--out PATH]
   tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
-  tlvb run CASE_ID --evidence PATH [--engine claude-code]
+  tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy findevil pipeline
+  tlvb run CASE_ID --tier all --evidence PATH [--active-search]              # TLVB v0.1 one-shot pipeline
+       [--skip-parse|--skip-1a|--skip-1b|--skip-2|--skip-report]
+       [--format html,csv,json] [--language ja|en]
   tlvb serve [--port 8080] [--db PATH] [--outputs DIR]
   tlvb rules build [--dry-run] [--budget-yen N] [--max-rules N] [--source sigma|hayabusa|stix] [--force]
   tlvb rules list  [--source sigma|hayabusa|stix] [--state pending|built|failed] [--show-sql]
@@ -1361,6 +1364,23 @@ func runFullPipeline(args []string) error {
 	rest := args[1:]
 	if strings.HasPrefix(caseID, "-") {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
+	}
+
+	// TLVB v0.1: `tlvb run CASE_ID --tier all --evidence PATH` runs the
+	// new TLVB pipeline (parse → analyze 1a → analyze 1b → synthesize 2
+	// → report 3). Without --tier, the legacy findevil tactic-based
+	// pipeline runs. Same prescan pattern as analyze / synthesize / report.
+	for i, a := range rest {
+		if a == "--tier" && i+1 < len(rest) && strings.ToLower(rest[i+1]) == "all" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+2:]...)
+			return runPipelineTLVB(caseID, inner)
+		}
+		if strings.ToLower(a) == "--tier=all" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+1:]...)
+			return runPipelineTLVB(caseID, inner)
+		}
 	}
 
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
