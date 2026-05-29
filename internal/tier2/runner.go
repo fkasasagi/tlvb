@@ -179,8 +179,11 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	// for one case-wide story. Keep prompt small (cluster summaries only).
 	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skillBytes), &audit)
 	if err != nil {
+		// Fall back to a deterministic per-cluster stitch so the report
+		// still has SOMETHING in the Executive Summary slot.
 		emit(cfg, Event{Phase: "llm",
-			Message: fmt.Sprintf("overall synthesis skipped: %v", err)})
+			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
+		overall = fallbackOverallStory(clusters)
 	}
 
 	emit(cfg, Event{Phase: "writing",
@@ -243,25 +246,74 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	systemPrompt string, audit *SynthAudit) (string, error) {
 
-	userMsg, err := buildOverallUserMessage(clusters)
-	if err != nil {
-		return "", err
+	// Try with full per-cluster narratives first. If claude CLI fails
+	// (commonly exit 1 with no stderr — usually transient or context-size
+	// driven), retry once with compacted narratives (each truncated to
+	// 1500 chars). Both attempts share the same overall LLM duration /
+	// token counters.
+	for attempt := 1; attempt <= 2; attempt++ {
+		compacted := attempt == 2
+		userMsg, err := buildOverallUserMessage(clusters, compacted)
+		if err != nil {
+			return "", err
+		}
+		subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
+		startedAt := time.Now()
+		out, err := callClaudeCLI(subCtx, cfg, systemPrompt, userMsg)
+		dur := time.Since(startedAt)
+		audit.LLMDurationS += dur.Seconds()
+		audit.LLMCallsTotal++
+		cancel()
+		if err == nil {
+			audit.InputTokensTotal += out.InputTokens
+			audit.OutputTokensTotal += out.OutputTokens
+			return strings.TrimSpace(out.Result), nil
+		}
+		// transient — wait a bit before retry, but only if there are
+		// more attempts.
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
+		} else {
+			// last attempt failed → return error so the caller can
+			// build a fallback overall_story locally.
+			return "", err
+		}
 	}
-	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
-	defer cancel()
+	return "", fmt.Errorf("analyseOverallLLM: exhausted retries")
+}
 
-	startedAt := time.Now()
-	out, err := callClaudeCLI(subCtx, cfg, systemPrompt, userMsg)
-	dur := time.Since(startedAt)
-	audit.LLMDurationS += dur.Seconds()
-	audit.LLMCallsTotal++
-	if err != nil {
-		return "", err
+// fallbackOverallStory builds a deterministic overall_story by stitching
+// together each cluster's narrative. Called when the LLM-based overall
+// pass fails — the operator still gets a coherent case-level summary
+// instead of an empty section in the report.
+func fallbackOverallStory(clusters []Cluster) string {
+	var sb strings.Builder
+	sb.WriteString("(LLM overall synthesis unavailable; auto-stitched per-cluster narratives follow.)\n\n")
+	for i, c := range clusters {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		fmt.Fprintf(&sb, "Cluster #%d", c.ID)
+		if !c.StartTS.IsZero() && !c.EndTS.IsZero() {
+			fmt.Fprintf(&sb, " (%s ~ %s)",
+				c.StartTS.UTC().Format(time.RFC3339),
+				c.EndTS.UTC().Format(time.RFC3339))
+		}
+		if c.AttackPhase != "" {
+			fmt.Fprintf(&sb, " — %s", c.AttackPhase)
+		}
+		sb.WriteString(":\n")
+		if c.Narrative != "" {
+			sb.WriteString(c.Narrative)
+		} else {
+			sb.WriteString("(no narrative)")
+		}
 	}
-	audit.InputTokensTotal += out.InputTokens
-	audit.OutputTokensTotal += out.OutputTokens
-
-	return strings.TrimSpace(out.Result), nil
+	return sb.String()
 }
 
 type clusterAnalysisResp struct {
@@ -354,7 +406,7 @@ ClusterContext:
 	return prelude + string(body), nil
 }
 
-func buildOverallUserMessage(clusters []Cluster) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool) (string, error) {
 	type clite struct {
 		ID              int      `json:"cluster_id"`
 		AttackPhase     string   `json:"attack_phase,omitempty"`
@@ -364,12 +416,17 @@ func buildOverallUserMessage(clusters []Cluster) (string, error) {
 		WindowEnd       string   `json:"window_end,omitempty"`
 		FindingCount    int      `json:"finding_count"`
 	}
+	const compactMaxChars = 1500
 	var cls []clite
 	for _, c := range clusters {
+		narrative := c.Narrative
+		if compactNarratives && len(narrative) > compactMaxChars {
+			narrative = narrative[:compactMaxChars] + "...[truncated for retry]"
+		}
 		cl := clite{
 			ID:              c.ID,
 			AttackPhase:     c.AttackPhase,
-			Narrative:       c.Narrative,
+			Narrative:       narrative,
 			MITRETechniques: c.MITRETechniques,
 			FindingCount:    len(c.Findings),
 		}
