@@ -56,3 +56,4 @@ venv/
 # behind by 2026-05-19 (Wave 20d cleanup). All intermediate, never committable.
 *.plaso
 libSQLite.Interop.so
+/tlvb
