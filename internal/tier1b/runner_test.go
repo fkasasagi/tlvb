@@ -146,6 +146,76 @@ func TestBuildCandidatesExcludesPriorAudits(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesArtifactDiversityBoost(t *testing.T) {
+	// A0 should add score for non-EVTX artifacts even when no other lens fires.
+	db, _ := setupDB(t)
+	defer db.Close()
+	t1 := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC) // business hours
+	// Flood baseline EVTX + MFT (8 each) so neither hits the rare-process lens.
+	for i := 0; i < 8; i++ {
+		insertEvent(t, db, "C1", "evtx-"+string(rune('a'+i)), "evtx", t1,
+			`{"ExecutableInfo":"C:\\Windows\\System32\\svchost.exe","EventId":"4624"}`)
+		insertEvent(t, db, "C1", "mft-"+string(rune('a'+i)), "mft", t1,
+			`{"FullPath":"C:\\Windows\\System32\\file.dll"}`)
+	}
+	// Add a lone LNK row — A0 boost should pull it into the window.
+	insertEvent(t, db, "C1", "lnk-1", "lnk", t1,
+		`{"TargetPath":"C:\\Windows\\System32\\cmd.exe"}`)
+
+	bundle, err := buildCandidates(context.Background(), db, "C1", &priorContext{}, 10)
+	if err != nil {
+		t.Fatalf("buildCandidates: %v", err)
+	}
+	var lnkFound bool
+	for _, c := range bundle.Events {
+		if c.AuditID == "lnk-1" {
+			lnkFound = true
+			if !containsStr(c.Lenses, "A0") {
+				t.Errorf("lnk-1 missing A0 lens: %v", c.Lenses)
+			}
+		}
+	}
+	if !lnkFound {
+		t.Error("lnk-1 should have been selected via A0 artifact boost")
+	}
+}
+
+func TestQueryStratifiedExcludesEVTXNoiseEventIDs(t *testing.T) {
+	db, _ := setupDB(t)
+	defer db.Close()
+	t1 := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC)
+	// Insert noisy + signal EVTX rows.
+	insertEvent(t, db, "C1", "noise-4658", "evtx", t1, `{"EventId":"4658"}`)
+	insertEvent(t, db, "C1", "noise-4656", "evtx", t1, `{"EventId":"4656"}`)
+	insertEvent(t, db, "C1", "noise-5158", "evtx", t1, `{"EventId":"5158"}`)
+	insertEvent(t, db, "C1", "signal-4624", "evtx", t1, `{"EventId":"4624"}`)
+	insertEvent(t, db, "C1", "signal-4688", "evtx", t1, `{"EventId":"4688"}`)
+
+	rows, err := queryStratified(context.Background(), db, "C1", 100)
+	if err != nil {
+		t.Fatalf("queryStratified: %v", err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var aid, ts, art, comp, p string
+		if err := rows.Scan(&aid, &ts, &art, &comp, &p); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen[aid] = true
+	}
+	for _, noise := range []string{"noise-4658", "noise-4656", "noise-5158"} {
+		if seen[noise] {
+			t.Errorf("EVTX noise EventID %s should have been excluded", noise)
+		}
+	}
+	for _, signal := range []string{"signal-4624", "signal-4688"} {
+		if !seen[signal] {
+			t.Errorf("EVTX signal EventID %s should have been kept", signal)
+		}
+	}
+}
+
 func TestBuildCandidatesAdjacencyLens(t *testing.T) {
 	db, _ := setupDB(t)
 	defer db.Close()
