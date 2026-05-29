@@ -967,6 +967,22 @@ func runReport(args []string) error {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
 	}
 
+	// TLVB v0.1: `tlvb report CASE_ID --tier 3` renders Tier 2's
+	// CaseSynthesis (TLVB schema) instead of the legacy findevil
+	// reporter (TacticReport schema).
+	for i, a := range rest {
+		if a == "--tier" && i+1 < len(rest) && rest[i+1] == "3" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+2:]...)
+			return runReportTier3(caseID, inner)
+		}
+		if strings.ToLower(a) == "--tier=3" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+1:]...)
+			return runReportTier3(caseID, inner)
+		}
+	}
+
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	formatStr := fs.String("format", "html,csv,json",
 		"comma-separated subset of html,csv,json")
