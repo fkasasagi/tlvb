@@ -1,0 +1,85 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/tlvb/tlvb/internal/tier1b"
+)
+
+// runAnalyzeTier1B is the CLI entry point for `tlvb analyze CASE_ID --tier 1b`.
+// Reads prior Tier 1A findings + raw timeline, runs the skill-driven
+// anomaly hunter via claude CLI, writes findings/by-skill/anomaly_hunter.json.
+func runAnalyzeTier1B(caseID string, args []string) error {
+	fs := flag.NewFlagSet("analyze --tier 1b", flag.ContinueOnError)
+	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
+	skillsDir := fs.String("skills-dir", "skills", "skill markdown root")
+	outDir := fs.String("out-dir", "",
+		"findings base dir (default: outputs/cases/<id>/findings; tier1b writes to <base>/by-skill/)")
+	maxEvents := fs.Int("max-events", 200, "anomaly candidate cap shown to LLM")
+	model := fs.String("model", "",
+		"model id (empty = let claude CLI default)")
+	timeoutMin := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
+	dryRun := fs.Bool("dry-run", false, "build prompt and stats, skip the LLM call")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *outDir == "" {
+		*outDir = filepath.Join("outputs", "cases", caseID, "findings")
+	}
+
+	cfg := tier1b.Config{
+		CaseID:          caseID,
+		SkillsDir:       *skillsDir,
+		FindingsBaseDir: *outDir,
+		DBPath:          *dbPath,
+		MaxEvents:       *maxEvents,
+		Model:           *model,
+		Timeout:         time.Duration(*timeoutMin) * time.Minute,
+		DryRun:          *dryRun,
+		ProgressFn:      tier1bProgress(),
+	}
+	fmt.Fprintf(os.Stderr, "tier 1B (Skills-driven Anomaly) — case=%s findings_base=%s\n",
+		caseID, *outDir)
+	rep, err := tier1b.Run(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	printTier1BReport(rep, *dryRun)
+	return nil
+}
+
+func tier1bProgress() func(tier1b.Event) {
+	return func(ev tier1b.Event) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)
+	}
+}
+
+func printTier1BReport(rep *tier1b.Report, dryRun bool) {
+	fmt.Printf("\nTier 1B summary — case=%s\n", rep.CaseID)
+	fmt.Printf("  prior findings consumed:  %d\n", rep.PriorFindings)
+	fmt.Printf("  events scanned:           %d\n", rep.EventsScanned)
+	fmt.Printf("  candidates (in window):   %d  (truncated=%v)\n",
+		rep.EventsInWindow, rep.Truncated)
+	if dryRun {
+		fmt.Printf("\n  (dry-run: LLM call skipped)\n")
+		return
+	}
+	fmt.Printf("  LLM call duration:        %.1fs\n", rep.LLMCallDurationS)
+	fmt.Printf("  new findings:             %d\n", len(rep.NewFindings))
+	if rep.OutputPath != "" {
+		fmt.Printf("  output:                   %s\n", rep.OutputPath)
+	}
+	if len(rep.NewFindings) > 0 {
+		fmt.Printf("\nFindings:\n")
+		for _, f := range rep.NewFindings {
+			fmt.Printf("  [%s/%s] %d evidence  — %s\n",
+				f.Severity, f.Lens, f.AuditCount, truncateStr(f.Summary, 110))
+		}
+	}
+}

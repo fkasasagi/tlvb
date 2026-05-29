@@ -647,8 +647,12 @@ func runAnalyze(args []string) error {
 				inner := append([]string{}, rest[:i]...)
 				inner = append(inner, rest[i+2:]...)
 				return runAnalyzeTier1A(caseID, inner)
-			case "1b", "2":
-				return fmt.Errorf("--tier %s not implemented yet (Tier 1A is the only tier with a v0.1 runtime)", rest[i+1])
+			case "1b":
+				inner := append([]string{}, rest[:i]...)
+				inner = append(inner, rest[i+2:]...)
+				return runAnalyzeTier1B(caseID, inner)
+			case "2":
+				return fmt.Errorf("--tier 2 not implemented yet")
 			}
 		}
 		if strings.HasPrefix(a, "--tier=") {
@@ -658,8 +662,12 @@ func runAnalyze(args []string) error {
 				inner := append([]string{}, rest[:i]...)
 				inner = append(inner, rest[i+1:]...)
 				return runAnalyzeTier1A(caseID, inner)
-			case "1b", "2":
-				return fmt.Errorf("--tier %s not implemented yet", val)
+			case "1b":
+				inner := append([]string{}, rest[:i]...)
+				inner = append(inner, rest[i+1:]...)
+				return runAnalyzeTier1B(caseID, inner)
+			case "2":
+				return fmt.Errorf("--tier 2 not implemented yet")
 			}
 		}
 	}
