@@ -27,6 +27,10 @@ func runAnalyzeTier1A(caseID string, args []string) error {
 		"run exactly one rule by rule_id (debugging)")
 	maxEvidence := fs.Int("max-evidence", 100,
 		"cap evidence rows retained per finding (matches beyond this still count toward MatchCount)")
+	skipHayabusa := fs.Bool("skip-hayabusa-passthrough", false,
+		"skip the Hayabusa pass-through pass (Tier 0 pre-detected events → findings)")
+	includeInfoLevel := fs.Bool("include-info-level", false,
+		"include Hayabusa info/low-level hits in pass-through (off by default to reduce noise)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,7 +66,18 @@ func runAnalyzeTier1A(caseID string, args []string) error {
 	if err != nil {
 		return err
 	}
-	printTier1AReport(rep)
+	printTier1AReport(rep, "cached SQL")
+
+	if !*skipHayabusa {
+		fmt.Fprintf(os.Stderr, "\ntier 1A — Hayabusa pass-through pass\n")
+		passRep, err := tier1a.RunHayabusaPassthrough(context.Background(), cfg,
+			tier1a.HayabusaPassthroughOptions{IncludeInfoLevel: *includeInfoLevel})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Hayabusa pass-through: %v\n", err)
+			return nil
+		}
+		printTier1AReport(passRep, "Hayabusa pass-through")
+	}
 	return nil
 }
 
@@ -88,8 +103,8 @@ func tier1aProgress() func(tier1a.Event) {
 	}
 }
 
-func printTier1AReport(rep *tier1a.Report) {
-	fmt.Printf("\nTier 1A summary — case=%s\n", rep.CaseID)
+func printTier1AReport(rep *tier1a.Report, label string) {
+	fmt.Printf("\nTier 1A summary (%s) — case=%s\n", label, rep.CaseID)
 	fmt.Printf("  total rules:        %d\n", rep.TotalRules)
 	fmt.Printf("  matched:            %d  (findings written)\n", rep.Matched)
 	fmt.Printf("  no match:           %d\n", rep.NoMatch)
