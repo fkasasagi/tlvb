@@ -124,7 +124,8 @@ Usage:
   tlvb case init --case-id ID --name NAME --examiner NAME [--timezone TZ]
   tlvb parse --case-id ID --evidence-id ID --input PATH [--workspace DIR]
   tlvb parse --case-id ID --inputs PATH1,PATH2,... [--evidence-ids EV1,EV2,...]   ★ multi-evidence
-  tlvb analyze CASE_ID --tactic NAME [--engine claude-code|anthropic-api]
+  tlvb analyze CASE_ID --tactic NAME [--engine claude-code|anthropic-api]    # legacy tactic-based
+  tlvb analyze CASE_ID --tier 1a [--source S] [--rule R] [--max-evidence N]   # Tier 1A signature SQL runtime
   tlvb synthesize CASE_ID [--correct] [--findings-dir DIR] [--out PATH]
   tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
@@ -633,6 +634,34 @@ func runAnalyze(args []string) error {
 	rest := args[1:]
 	if strings.HasPrefix(caseID, "-") {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
+	}
+
+	// TLVB v0.1: `tlvb analyze CASE_ID --tier 1a` routes to the cached-SQL
+	// signature runner instead of the legacy tactic-based agent flow.
+	// Detected with a sloppy pre-scan because the existing analyze flag set
+	// is large and we don't want to thread a --tier flag through 300 lines.
+	for i, a := range rest {
+		if a == "--tier" && i+1 < len(rest) {
+			switch strings.ToLower(rest[i+1]) {
+			case "1a":
+				inner := append([]string{}, rest[:i]...)
+				inner = append(inner, rest[i+2:]...)
+				return runAnalyzeTier1A(caseID, inner)
+			case "1b", "2":
+				return fmt.Errorf("--tier %s not implemented yet (Tier 1A is the only tier with a v0.1 runtime)", rest[i+1])
+			}
+		}
+		if strings.HasPrefix(a, "--tier=") {
+			val := strings.ToLower(strings.TrimPrefix(a, "--tier="))
+			switch val {
+			case "1a":
+				inner := append([]string{}, rest[:i]...)
+				inner = append(inner, rest[i+1:]...)
+				return runAnalyzeTier1A(caseID, inner)
+			case "1b", "2":
+				return fmt.Errorf("--tier %s not implemented yet", val)
+			}
+		}
 	}
 
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)

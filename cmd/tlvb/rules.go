@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,7 +50,9 @@ func runRulesBuild(args []string) error {
 	force := fs.Bool("force", false,
 		"rebuild rules even when cache signature matches")
 	model := fs.String("model", "claude-sonnet-4-6",
-		"Anthropic model id used for SQL generation")
+		"model id used for SQL generation (engine-specific)")
+	engine := fs.String("engine", "claude-code",
+		"build engine: claude-code (uses local `claude` CLI, no API key needed) | anthropic-api")
 	rateIn := fs.Float64("rate-yen-per-m-input", 450.0,
 		"cost rate: yen per 1M input tokens (Sonnet 4.6 list price default)")
 	rateOut := fs.Float64("rate-yen-per-m-output", 2250.0,
@@ -74,12 +77,24 @@ func runRulesBuild(args []string) error {
 	}
 	defer db.Close()
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if !*dryRun && apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY not set (use --dry-run to plan without calling the LLM)")
+	var builder rulebuild.Builder
+	switch *engine {
+	case "anthropic-api":
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if !*dryRun && apiKey == "" {
+			return fmt.Errorf("--engine anthropic-api requires ANTHROPIC_API_KEY (use --dry-run to plan, or --engine claude-code)")
+		}
+		builder = rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
+	case "claude-code":
+		if !*dryRun {
+			if _, err := exec.LookPath("claude"); err != nil {
+				return fmt.Errorf("--engine claude-code requires the `claude` binary on PATH (install Claude Code CLI, or use --engine anthropic-api)")
+			}
+		}
+		builder = rulebuild.NewClaudeCodeBuilder(*model, casedb.SchemaDoc())
+	default:
+		return fmt.Errorf("unknown --engine %q (want claude-code | anthropic-api)", *engine)
 	}
-
-	builder := rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
 	pipeline := &rulebuild.Pipeline{
 		Loaders:   loaders,
 		Builder:   builder,
