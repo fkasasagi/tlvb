@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/rulesdb"
 )
 
 // runStatus implements `tlvb status CASE_ID` — a one-shot inspector that
@@ -30,6 +31,8 @@ func runStatus(args []string) error {
 	}
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
+	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
+		"rule SQL cache DB path (Tier 1A build artifacts)")
 	caseRoot := fs.String("case-root", "",
 		"case workspace root (default: outputs/cases/<id>)")
 	verbose := fs.Bool("v", false,
@@ -140,6 +143,14 @@ func runStatus(args []string) error {
 		fmt.Printf("Synthesis: (none — run `tlvb synthesize CASE_ID --tier 2` first)\n\n")
 	}
 
+	// 4.5. Rule SQL cache (Tier 1A build state) — case-independent.
+	if _, err := os.Stat(*rulesDBPath); err == nil {
+		printRuleCacheStats(*rulesDBPath, ctx)
+	} else {
+		fmt.Printf("Rule SQL cache: (no %s — run `tlvb rules build` first)\n\n",
+			*rulesDBPath)
+	}
+
 	// 5. Reports.
 	reportsDir := filepath.Join(*caseRoot, "reports")
 	if _, err := os.Stat(reportsDir); err == nil {
@@ -165,6 +176,51 @@ func runStatus(args []string) error {
 	}
 
 	return nil
+}
+
+// printRuleCacheStats opens the rule SQL cache DB read-only and prints
+// state breakdown (built / pending / failed) and source breakdown.
+func printRuleCacheStats(path string, ctx context.Context) {
+	rdb, err := rulesdb.Open(path, rulesdb.ReadOnly)
+	if err != nil {
+		fmt.Printf("Rule SQL cache: %s (could not open: %v)\n\n", path, err)
+		return
+	}
+	defer rdb.Close()
+	counts, err := rdb.CountByState(ctx)
+	if err != nil {
+		fmt.Printf("Rule SQL cache: %s (count failed: %v)\n\n", path, err)
+		return
+	}
+	fmt.Printf("Rule SQL cache: %s\n", path)
+	totals := 0
+	for _, n := range counts {
+		totals += n
+	}
+	fmt.Printf("  total rows:           %s\n", commaInt64(int64(totals)))
+	fmt.Printf("  built:                %d\n", counts[rulesdb.StateBuilt])
+	if counts[rulesdb.StatePending] > 0 {
+		fmt.Printf("  pending:              %d\n", counts[rulesdb.StatePending])
+	}
+	if counts[rulesdb.StateFailed] > 0 {
+		fmt.Printf("  failed:               %d\n", counts[rulesdb.StateFailed])
+	}
+	// Built breakdown by source.
+	rows, err := rdb.ListAll(ctx, "", rulesdb.StateBuilt)
+	if err == nil && len(rows) > 0 {
+		bySource := map[string]int{}
+		for _, r := range rows {
+			bySource[r.RuleSource]++
+		}
+		if len(bySource) > 0 {
+			fmt.Printf("  built by source:\n")
+			keys := sortedKeys(bySource)
+			for _, k := range keys {
+				fmt.Printf("    %-20s %d\n", k+":", bySource[k])
+			}
+		}
+	}
+	fmt.Println()
 }
 
 // ----------------------------------------------------------------------------
