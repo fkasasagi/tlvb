@@ -46,6 +46,10 @@ type Pipeline struct {
 	// Optional source filter (e.g. only "sigma"). Empty = all.
 	SourceFilter string
 
+	// Optional rule_id allowlist. Non-nil + non-empty narrows the build to
+	// the specified IDs only. Used for targeted rebuild / debugging.
+	RuleIDsFilter []string
+
 	// Force re-build even if cache signature matches.
 	Force bool
 
@@ -269,6 +273,19 @@ func (p *Pipeline) loadAll(ctx context.Context) ([]rulesrepo.RawRule, error) {
 			return nil, fmt.Errorf("loader %s: %w", l.Source(), err)
 		}
 		all = append(all, rules...)
+	}
+	if len(p.RuleIDsFilter) > 0 {
+		allow := map[string]bool{}
+		for _, id := range p.RuleIDsFilter {
+			allow[id] = true
+		}
+		filtered := make([]rulesrepo.RawRule, 0, len(p.RuleIDsFilter))
+		for _, r := range all {
+			if allow[r.RuleID] {
+				filtered = append(filtered, r)
+			}
+		}
+		all = filtered
 	}
 	return all, nil
 }

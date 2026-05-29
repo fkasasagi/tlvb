@@ -11,6 +11,10 @@ func TestValidateSQL_OK(t *testing.T) {
 		"select * from unified_events where case_id = ?",
 		"WITH x AS (SELECT 1) SELECT audit_id FROM unified_events WHERE case_id = ?",
 		"", // empty SQL = LLM said "no SQL applicable", allowed
+		// Detection patterns embedding 'delete' / 'create' inside string
+		// literals must be accepted — those are search terms, not statements.
+		"SELECT audit_id FROM unified_events WHERE case_id = ? AND payload_json ILIKE '%vssadmin delete shadows%'",
+		"SELECT audit_id FROM unified_events WHERE case_id = ? AND payload_json ILIKE '%schtasks /create /tn%'",
 	}
 	for i, s := range cases {
 		if err := validateSQL(s); err != nil {
@@ -36,6 +40,8 @@ func TestValidateSQL_Rejects(t *testing.T) {
 		// SELECT with embedded DROP — dangerous-keyword check fires before
 		// the semicolon check.
 		{"SELECT audit_id FROM unified_events WHERE case_id = ?; DROP TABLE foo", "disallowed"},
+		// Statement-level DROP outside any string literal — must be rejected.
+		{"SELECT audit_id FROM unified_events WHERE case_id = ? UNION SELECT 1 FROM (DROP TABLE foo)", "disallowed"},
 	}
 	for i, c := range cases {
 		err := validateSQL(c.sql)

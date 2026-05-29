@@ -49,6 +49,9 @@ func runRulesBuild(args []string) error {
 		"stop when running cost exceeds this many yen (0 = no limit)")
 	force := fs.Bool("force", false,
 		"rebuild rules even when cache signature matches")
+	ruleIDsCSV := fs.String("rule-ids", "",
+		"comma-separated rule_ids to build (debugging / targeted rebuild). "+
+			"Other rules are filtered out entirely.")
 	model := fs.String("model", "claude-sonnet-4-6",
 		"model id used for SQL generation (engine-specific)")
 	engine := fs.String("engine", "claude-code",
@@ -111,6 +114,7 @@ func runRulesBuild(args []string) error {
 		SourceFilter: *source,
 		Force:        *force,
 		Progress:     progressPrinter(),
+		RuleIDsFilter: splitCSV(*ruleIDsCSV),
 	}
 
 	ctx := context.Background()
@@ -295,6 +299,25 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// splitCSV trims and splits a comma-separated list. Empty input returns nil.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // commaInt formats an integer with comma thousands separators (no extra deps).

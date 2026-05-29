@@ -27,20 +27,27 @@ const UnifiedEventsDDL = `CREATE TABLE IF NOT EXISTS unified_events (
     payload_json  VARCHAR NOT NULL
 )`
 
-// SchemaVersion returns a short stable hash of UnifiedEventsDDL.
-// Used as one of the three cache invalidation keys in rule_sql_cache.
+// SchemaVersion returns a short stable hash of both UnifiedEventsDDL and
+// SchemaDoc. Used as one of the three cache invalidation keys in
+// rule_sql_cache — touching either input invalidates all cached SQL so
+// the next build regenerates it against the new schema description.
 func SchemaVersion() string {
-	h := sha256.Sum256([]byte(UnifiedEventsDDL))
-	return "uev-" + hex.EncodeToString(h[:8])
+	h := sha256.New()
+	h.Write([]byte(UnifiedEventsDDL))
+	h.Write([]byte{0})
+	h.Write([]byte(SchemaDoc()))
+	sum := h.Sum(nil)
+	return "uev-" + hex.EncodeToString(sum[:8])
 }
 
 // SchemaDoc returns a human/LLM-readable description of the unified_events
 // schema, used in Tier 1A build prompts.
 //
-// The doc intentionally documents the *query interface* (column meaning +
-// DuckDB JSON extraction syntax) rather than the per-artifact payload
-// shape — payloads differ per artifact_id and are documented separately
-// per-artifact (TODO: config/payload_schemas/<artifact_id>.json).
+// The doc documents BOTH the query interface (unified_events columns +
+// DuckDB JSON syntax) AND the per-artifact payload_json shape (so the LLM
+// knows what fields each artifact actually exposes). We document the EVTX
+// payload most thoroughly because it's the densest and most-targeted
+// artifact for Sigma rules.
 func SchemaDoc() string {
 	return `Table: unified_events  (DuckDB)
   case_id       VARCHAR  — required filter key (always filter by this)
@@ -53,23 +60,102 @@ func SchemaDoc() string {
   audit_id      VARCHAR  — SHA-256 prefix of canonical payload, unique per case
   ts_utc        TIMESTAMP — event time in UTC; NULL for artifacts without
                             per-event timestamps (e.g. shimcache)
-  event_type    VARCHAR  — coarse category, e.g. "process_creation",
-                            "logon", "file_modify", "registry_write"
+  event_type    VARCHAR  — coarse category, currently always equal to artifact_id
+                            for EVTX rows (refine per-rule via payload fields)
   computer      VARCHAR  — hostname (optional)
   payload_json  VARCHAR  — JSON-encoded artifact-specific payload
 
 DuckDB JSON extraction:
-  json_extract(payload_json, '$.EventID')                    → JSON value
-  json_extract_string(payload_json, '$.User')                → string
-  json_extract(payload_json, '$.Process.CommandLine')        → JSON value
-  CAST(json_extract(payload_json, '$.EventID') AS INTEGER)   → integer
+  json_extract_string(payload_json, '$.Channel')             → string
+  json_extract(payload_json, '$.EventId')                    → JSON value
+  CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER)  → integer
+  Use ILIKE for case-insensitive substring, LIKE for case-sensitive.
+
+===== artifact_id='evtx' (Windows Event Log via EvtxECmd) =====
+
+Payload structure (top-level fields):
+  TimeCreated      VARCHAR — "YYYY-MM-DD HH:MM:SS.fffffff" (also reflected in ts_utc)
+  EventId          VARCHAR — Event ID as STRING (e.g. "4688", "4624", "4625", "4104", "3008"). CAST to INTEGER when comparing.
+  Channel          VARCHAR — "Security" | "System" | "Application" |
+                            "Microsoft-Windows-PowerShell/Operational" |
+                            "Microsoft-Windows-DNS-Client/Operational" |
+                            "Microsoft-Windows-Sysmon/Operational" | etc.
+  Provider         VARCHAR — e.g. "Microsoft-Windows-Security-Auditing"
+  Level            VARCHAR — "LogAlways" | "Info" | "Warning" | "Error" | etc.
+  Computer         VARCHAR — hostname
+  UserId           VARCHAR — SID
+  MapDescription   VARCHAR — human description, e.g. "A new process has been created"
+  PayloadData1..6  VARCHAR — pre-extracted important fields. For 4688:
+                              PayloadData1 = "Parent process: <path>" (parent image)
+                              PayloadData2 = "PID: 0x<hex>"
+                              PayloadData3 = "Parent PID: 0x<hex>"
+                            For 4624/4625 these hold logon-related fields.
+  ExecutableInfo   VARCHAR — FULL command line of the new process (for 4688).
+                            This is the canonical place to look for process
+                            commandlines + arguments.
+  raw              JSON object — original full event:
+    raw.UserName   — DOMAIN\user
+    raw.Payload    — original Windows EventData (stringified JSON). Contains
+                     fields named NewProcessName, NewProcessId, CommandLine,
+                     ParentProcessName, TargetUserName, IpAddress, etc.
+                     Extract via:
+                       json_extract_string(payload_json,
+                         '$.raw.Payload') ILIKE '%CommandLine%'
+                     or for direct nested access (less reliable, depends on
+                     how DuckDB sees nested JSON):
+                       json_extract_string(payload_json, '$.raw.UserName')
+
+Recommended Windows EVTX SQL patterns:
+  - 4688 with command line containing "X":
+      WHERE artifact_id='evtx'
+        AND CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER) = 4688
+        AND json_extract_string(payload_json, '$.ExecutableInfo') ILIKE '%X%'
+  - 4625 failed logon:
+      WHERE artifact_id='evtx'
+        AND CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER) = 4625
+  - PowerShell 4104 script block:
+      WHERE artifact_id='evtx'
+        AND json_extract_string(payload_json, '$.Channel')
+              = 'Microsoft-Windows-PowerShell/Operational'
+        AND CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER) = 4104
+        AND json_extract_string(payload_json, '$.PayloadData1') ILIKE '%-enc%'
+  - DNS-Client 3008 NXDOMAIN:
+      WHERE artifact_id='evtx'
+        AND json_extract_string(payload_json, '$.Channel')
+              = 'Microsoft-Windows-DNS-Client/Operational'
+        AND CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER) = 3008
+
+===== artifact_id='hayabusa' (precomputed Sigma matches) =====
+
+Hayabusa runs at parse-time and writes one row per matched EVTX event.
+Payload fields:
+  RuleTitle       VARCHAR — Sigma rule title that matched (e.g. "Proc Exec")
+  Level           VARCHAR — "info" | "low" | "med" | "high"
+  RuleAuthor      VARCHAR
+  EventTitle      VARCHAR — normalised event description
+  Channel         VARCHAR — same as evtx
+  EventID         VARCHAR — original Windows EventId
+  Details         VARCHAR — combined detail line (often contains command line)
+
+===== other artifacts =====
+
+Each artifact has its own payload_json schema. Common fields when present:
+  - registry rows: $.KeyPath, $.ValueName, $.ValueData, $.LastWriteTimestamp
+  - lnk rows:      $.SourceFile, $.TargetPath, $.WorkingDirectory, $.Arguments
+  - prefetch:      $.ExecutableName, $.LastRun, $.PreviousRunN
+  - mft:           $.FullPath, $.IsDirectory, $.FileSize
+  - amcache:       $.FullPath, $.SHA1, $.LastModifiedTime
+  - browser_history: $.URL, $.Title, $.LastVisited
 
 Constraints for generated SQL:
   - MUST include WHERE case_id = ? as the first predicate (parameterised)
   - SHOULD include AND artifact_id = '<id>' when the rule targets a single source
   - Output column list MUST start with: audit_id, ts_utc, artifact_id, event_type
-    (plus any rule-specific extracted fields). The runtime maps these to
-    finding evidence references.
-  - Use LIKE / regexp_matches for substring patterns
-  - Use ILIKE for case-insensitive substring match (DuckDB-specific)`
+    (plus rule-specific extracted columns the runtime stores in Extra)
+  - Use json_extract_string for VARCHAR comparisons; CAST to INTEGER for EventId
+  - For Sigma "process_creation" rules that use Sysmon field names like
+    Image/CommandLine/ParentImage: in our schema this data lives in
+      $.ExecutableInfo  (full cmdline of the new process)
+      $.PayloadData1    (parent process path on 4688)
+    Use ILIKE on those, NOT a literal "$.Image".`
 }

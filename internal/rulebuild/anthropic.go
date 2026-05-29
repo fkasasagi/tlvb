@@ -169,7 +169,15 @@ func parseBuilderJSON(text string) (*BuiltSQL, error) {
 
 // validateSQL rejects obviously dangerous statements. The empty-SQL case is
 // allowed because that's how the LLM tells us "this rule isn't expressible".
-var dangerousSQL = regexp.MustCompile(`(?i)\b(insert|update|delete|drop|alter|attach|detach|create|pragma|copy|export)\b`)
+//
+// Detection patterns frequently embed words like "delete" / "create" inside
+// SQL string literals (e.g. ILIKE '%vssadmin delete shadows%'). Those are
+// fine. We strip quoted strings BEFORE the dangerous-keyword check so only
+// statement-level uses are flagged.
+var (
+	dangerousSQL    = regexp.MustCompile(`(?i)\b(insert|update|delete|drop|alter|attach|detach|create|pragma|copy|export)\b`)
+	singleQuoteLits = regexp.MustCompile(`'(?:[^']|'')*'`) // matches 'foo', 'it''s', etc.
+)
 
 func validateSQL(s string) error {
 	s = strings.TrimSpace(s)
@@ -180,8 +188,9 @@ func validateSQL(s string) error {
 	if !strings.HasPrefix(lower, "select ") && !strings.HasPrefix(lower, "with ") {
 		return fmt.Errorf("SQL must start with SELECT or WITH")
 	}
-	if dangerousSQL.MatchString(s) {
-		return fmt.Errorf("SQL contains disallowed keyword (insert/update/delete/drop/alter/attach/create/pragma/copy/export)")
+	stripped := singleQuoteLits.ReplaceAllString(s, "''")
+	if dangerousSQL.MatchString(stripped) {
+		return fmt.Errorf("SQL contains disallowed keyword (insert/update/delete/drop/alter/attach/create/pragma/copy/export) at statement level")
 	}
 	if !strings.Contains(s, "case_id") {
 		return fmt.Errorf("SQL missing required case_id predicate")

@@ -54,32 +54,39 @@ type sigmaLogsource struct {
 	Definition string `yaml:"definition"`
 }
 
-// sysmonCategories lists Sigma logsource.category values that are
-// effectively Sysmon-only on Windows. Rules with logsource.service=sysmon
-// are also treated as Sysmon-only.
+// sysmonCategories lists Sigma logsource.category values that have NO
+// Windows-builtin equivalent. Rules with these categories require Sysmon
+// to produce data at all, so we skip them when --include-sysmon is off.
+//
+// NOTE: process_creation is intentionally NOT in this list. Sigma intends
+// process_creation as abstract — backends can compile it to Sysmon EID 1
+// OR Security EID 4688. Our LLM prompt (SchemaDoc) documents both field
+// layouts so the generated SQL covers 4688 as well.
+//
+// dns_query is also NOT in this list — the Windows-builtin
+// Microsoft-Windows-DNS-Client/Operational channel provides equivalent
+// data (EventId 3008 etc.).
 var sysmonCategories = map[string]bool{
-	"process_creation":       true,
-	"network_connection":     true,
-	"dns_query":              true,
-	"image_load":             true,
-	"file_event":             true,
-	"registry_event":         true,
-	"registry_set":           true,
-	"registry_add":           true,
-	"registry_delete":        true,
-	"create_remote_thread":   true,
-	"create_stream_hash":     true,
-	"pipe_created":           true,
-	"process_access":         true,
-	"process_tampering":      true,
-	"raw_access_thread":      true,
-	"wmi_event":              true,
-	"driver_load":            true,
-	"sysmon_status":          true,
-	"sysmon_error":           true,
-	"file_change":            true,
-	"file_delete":            true,
-	"file_rename":            true,
+	"network_connection":       true,
+	"image_load":               true,
+	"file_event":               true,
+	"registry_event":           true,
+	"registry_set":             true,
+	"registry_add":             true,
+	"registry_delete":          true,
+	"create_remote_thread":     true,
+	"create_stream_hash":       true,
+	"pipe_created":             true,
+	"process_access":           true,
+	"process_tampering":        true,
+	"raw_access_thread":        true,
+	"wmi_event":                true,
+	"driver_load":              true,
+	"sysmon_status":            true,
+	"sysmon_error":             true,
+	"file_change":              true,
+	"file_delete":              true,
+	"file_rename":              true,
 	"file_executable_detected": true,
 }
 

@@ -140,9 +140,11 @@ description: A fixture YAML with no id — must be ignored without error.
 		t.Fatal("expected all 3 fixtures to be loaded")
 	}
 
-	// win_proc: Sysmon-only category → Skip with RequiresSysmon
-	if !win_proc.RequiresSysmon || !win_proc.Skip {
-		t.Errorf("win_proc should be skipped as sysmon: skip=%v sysmon=%v reason=%q",
+	// win_proc: process_creation is NOT Sysmon-only — Sigma intends it to
+	// compile to either Sysmon EID 1 or Security 4688, and we handle 4688
+	// via SchemaDoc. So this rule should be buildable (not skipped).
+	if win_proc.Skip || win_proc.RequiresSysmon {
+		t.Errorf("win_proc (process_creation) should NOT be skipped: skip=%v sysmon=%v reason=%q",
 			win_proc.Skip, win_proc.RequiresSysmon, win_proc.SkipReason)
 	}
 	if got := win_proc.MITRETechniques; len(got) != 1 || got[0] != "T1059.001" {
@@ -169,15 +171,17 @@ description: A fixture YAML with no id — must be ignored without error.
 
 func TestSigmaLoaderIncludeSysmonFlag(t *testing.T) {
 	dir := t.TempDir()
-	mkRule(t, dir, "win_proc.yml", `
-title: Sysmon Test
-id: 11111111-2222-3333-4444-555555555555
+	// Use an actual Sysmon-only category (image_load) — process_creation
+	// is now treated as Sigma-abstract and never skipped.
+	mkRule(t, dir, "win_imgload.yml", `
+title: Sysmon Image Load Test
+id: 22222222-3333-4444-5555-666666666666
 logsource:
     product: windows
-    category: process_creation
+    category: image_load
 detection:
     selection:
-        Image|endswith: '\cmd.exe'
+        ImageLoaded|endswith: '\amsi.dll'
     condition: selection
 level: low
 `)
