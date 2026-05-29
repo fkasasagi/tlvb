@@ -290,27 +290,20 @@ func listArtifacts(ctx context.Context, db *sql.DB, caseID string) ([]string, er
 }
 
 // extractImage attempts to pull the process image path from a payload.
-// EvtxECmd uses ExecutableInfo; some artifacts use Image (Sysmon) or
-// FullPath (amcache/MFT).
+// EvtxECmd uses ExecutableInfo; some artifacts use Image (Sysmon),
+// NewProcessName (Security 4688 raw EventData), FullPath (amcache/MFT),
+// or executable (prefetch).
 func extractImage(payload string) string {
-	// Cheap string scan — avoid json.Unmarshal for performance over 1000s of rows.
-	for _, key := range []string{`"ExecutableInfo":"`, `"Image":"`, `"NewProcessName":"`, `"FullPath":"`, `"ExecutableName":"`} {
-		i := strings.Index(payload, key)
-		if i < 0 {
+	for _, key := range []string{"ExecutableInfo", "Image", "NewProcessName", "FullPath", "ExecutableName", "executable"} {
+		val, ok := extractFieldValue(payload, key)
+		if !ok || val == "" {
 			continue
 		}
-		i += len(key)
-		j := strings.Index(payload[i:], `"`)
-		if j < 0 {
-			continue
-		}
-		val := payload[i : i+j]
 		// ExecutableInfo holds the whole command line — return only the
-		// first whitespace-separated token (the binary path).
-		if key == `"ExecutableInfo":"` {
+		// first .exe-terminated token (the binary path).
+		if key == "ExecutableInfo" {
 			val = strings.TrimSpace(val)
-			// strip the leading executable from "C:\path\bin.exe args..."
-			if idx := strings.Index(val, ".exe"); idx > 0 {
+			if idx := strings.Index(strings.ToLower(val), ".exe"); idx > 0 {
 				val = val[:idx+len(".exe")]
 			}
 		}
@@ -385,21 +378,59 @@ func shrinkPayload(artifactID, payload string) map[string]any {
 		return out
 	}
 	for _, k := range keys {
-		needle := `"` + k + `":"`
-		i := strings.Index(payload, needle)
-		if i < 0 {
-			continue
+		if v, ok := extractFieldValue(payload, k); ok {
+			if len(v) > 200 {
+				v = v[:200] + "..."
+			}
+			out[k] = v
 		}
-		i += len(needle)
-		j := strings.Index(payload[i:], `"`)
-		if j < 0 {
-			continue
-		}
-		val := payload[i : i+j]
-		if len(val) > 200 {
-			val = val[:200] + "..."
-		}
-		out[k] = val
 	}
 	return out
+}
+
+// extractFieldValue is a tolerant string-level extraction that matches
+// both compact "key":"v" and space-padded "key": "v" JSON formatting
+// (Python's default json.dumps emits the latter). See
+// internal/tier2/timeline.go for the same implementation — duplicated
+// here to keep tier1b/tier2 packages decoupled.
+func extractFieldValue(payload, key string) (string, bool) {
+	needle := `"` + key + `"`
+	i := strings.Index(payload, needle)
+	if i < 0 {
+		return "", false
+	}
+	i += len(needle)
+	for i < len(payload) && (payload[i] == ' ' || payload[i] == '\t') {
+		i++
+	}
+	if i >= len(payload) || payload[i] != ':' {
+		return "", false
+	}
+	i++
+	for i < len(payload) && (payload[i] == ' ' || payload[i] == '\t') {
+		i++
+	}
+	if i >= len(payload) {
+		return "", false
+	}
+	if payload[i] == '"' {
+		i++
+		start := i
+		for i < len(payload) {
+			if payload[i] == '\\' && i+1 < len(payload) {
+				i += 2
+				continue
+			}
+			if payload[i] == '"' {
+				return payload[start:i], true
+			}
+			i++
+		}
+		return "", false
+	}
+	start := i
+	for i < len(payload) && payload[i] != ',' && payload[i] != '}' && payload[i] != ']' && payload[i] != '\n' {
+		i++
+	}
+	return strings.TrimSpace(payload[start:i]), true
 }

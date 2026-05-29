@@ -1,0 +1,145 @@
+// Package tier2 is the Timeline Analysis Agent — Tier 2 of TLVB.
+//
+// Input: outputs/cases/<id>/findings/by-rule/**.json (Tier 1A)
+//        outputs/cases/<id>/findings/by-skill/*.json  (Tier 1B)
+// Output: outputs/cases/<id>/synthesis.json
+//
+// Tier 2 (v0.1 MVP scope):
+//   - Load both finding sources, normalise to a unified Finding type
+//   - Cluster findings temporally (within 30 min → same cluster)
+//   - For each cluster, query unified_events for ±N min raw timeline
+//     (artifact-stratified, noise EIDs excluded)
+//   - LLM (claude CLI) reads cluster findings + raw timeline →
+//     produces attack-chain narrative + MITRE mapping + open questions
+//   - Write CaseSynthesis to synthesis.json
+//
+// Deferred to v0.2:
+//   - Active wide-range SQL generation (hypothesis-driven exploration)
+//   - Consistency rules R1-R4 (findevil-style)
+//   - Cross-evidence correlation across multiple evidences in one case
+package tier2
+
+import "time"
+
+// Finding is the unified shape Tier 2 reasons about. Sources:
+//   - Tier 1A "cached SQL hit" — by-rule/<source>/<id>.json (one Finding per file)
+//   - Tier 1A Hayabusa pass-through — by-rule/hayabusa/<id>.json (same shape)
+//   - Tier 1B anomaly_hunter — by-skill/anomaly_hunter.json (wrapped array)
+type Finding struct {
+	FindingID  string
+	Source     string // "sigma" | "hayabusa" | "stix" | "custom" | "anomaly_hunter"
+	RuleID     string // upstream id (Sigma UUID, Hayabusa UUID, T-number, or skill lens id)
+	Title      string
+	Description string // populated for Tier 1B; empty for Tier 1A signature hits
+	Severity   string // critical | high | medium | low | informational
+	MITRETechniques []string
+	MITRETactic     string
+	Evidence        []FindingEvidence
+	OriginPath      string // file path the finding came from (for audit)
+}
+
+// FindingEvidence is one unified_events row that supports a Finding.
+type FindingEvidence struct {
+	AuditID    string
+	TsUTC      time.Time
+	HasTS      bool
+	ArtifactID string
+	EventType  string
+	// Extra is opaque artifact-specific projection (Tier 1A SQL output columns,
+	// or selected payload fields for pass-through).
+	Extra map[string]any
+}
+
+// FirstTimestamp returns the earliest evidence ts for the finding, or zero
+// time if none. Used for temporal clustering.
+func (f Finding) FirstTimestamp() time.Time {
+	var earliest time.Time
+	for _, e := range f.Evidence {
+		if !e.HasTS {
+			continue
+		}
+		if earliest.IsZero() || e.TsUTC.Before(earliest) {
+			earliest = e.TsUTC
+		}
+	}
+	return earliest
+}
+
+// Cluster is a temporal grouping of findings whose evidence falls within
+// a configurable max gap (default 30 min) of each other.
+type Cluster struct {
+	ID            int
+	StartTS       time.Time
+	EndTS         time.Time
+	Findings      []Finding
+	// Narrative is filled in by the LLM pass.
+	Narrative          string
+	MITRETechniques    []string // union of finding-level + LLM-added
+	OpenQuestions      []string
+	AttackPhase        string // e.g. "initial-access", "execution", "impact"
+	RawTimelineExcerpt []TimelineEvent // ±N min around the cluster (raw events)
+}
+
+// TimelineEvent is one raw unified_events row used as context for the LLM.
+type TimelineEvent struct {
+	AuditID    string
+	TsUTC      time.Time
+	ArtifactID string
+	EventType  string
+	Excerpt    map[string]any // shrunken payload (artifact-aware)
+}
+
+// CaseSynthesis is the final Tier 2 output. Serialised to synthesis.json.
+type CaseSynthesis struct {
+	CaseID        string          `json:"case_id"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+	ModelID       string          `json:"model_id,omitempty"`
+	TotalFindings int             `json:"total_findings"`
+	ClusterCount  int             `json:"cluster_count"`
+	Clusters      []SynthCluster  `json:"clusters"`
+	OverallStory  string          `json:"overall_story"`
+	MITREMapping  []MITREEntry    `json:"mitre_mapping"`
+	OpenQuestions []string        `json:"open_questions,omitempty"`
+	Audit         SynthAudit      `json:"audit"`
+}
+
+// SynthCluster is the cluster shape in synthesis.json. Drops the heavy
+// fields (raw timeline excerpt) — those stay only as Tier 2 input.
+type SynthCluster struct {
+	ID                int             `json:"id"`
+	StartTS           time.Time       `json:"start_ts"`
+	EndTS             time.Time       `json:"end_ts"`
+	AttackPhase       string          `json:"attack_phase,omitempty"`
+	Narrative         string          `json:"narrative"`
+	FindingRefs       []FindingRef    `json:"finding_refs"`
+	MITRETechniques   []string        `json:"mitre_techniques,omitempty"`
+	OpenQuestions     []string        `json:"open_questions,omitempty"`
+}
+
+// FindingRef is a compact reference to a Tier 1 finding inside a cluster.
+type FindingRef struct {
+	Source   string `json:"source"`
+	RuleID   string `json:"rule_id"`
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+}
+
+// MITREEntry is one (tactic, technique, evidence_count) row in the
+// case-wide MITRE mapping.
+type MITREEntry struct {
+	Tactic       string `json:"tactic,omitempty"`
+	Technique    string `json:"technique"`
+	FindingCount int    `json:"finding_count"`
+	ClusterIDs   []int  `json:"cluster_ids"`
+}
+
+// SynthAudit captures provenance for the synthesis.
+type SynthAudit struct {
+	LLMCallsTotal      int     `json:"llm_calls_total"`
+	LLMDurationS       float64 `json:"llm_duration_s"`
+	InputTokensTotal   int     `json:"input_tokens_total,omitempty"`
+	OutputTokensTotal  int     `json:"output_tokens_total,omitempty"`
+	ClustersAnalysed   int     `json:"clusters_analysed"`
+	ClustersSkippedNoLLM int   `json:"clusters_skipped_no_llm,omitempty"`
+	SkillSHA256        string  `json:"skill_sha256,omitempty"`
+}

@@ -1037,6 +1037,23 @@ func runSynthesize(args []string) error {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
 	}
 
+	// TLVB v0.1: `tlvb synthesize CASE_ID --tier 2` routes to the new
+	// Tier 2 Timeline Analysis Agent. Without --tier, the legacy
+	// findevil synthesizer runs (still works for TacticReport-format
+	// findings). Same prescan pattern as analyze --tier 1a|1b.
+	for i, a := range rest {
+		if a == "--tier" && i+1 < len(rest) && rest[i+1] == "2" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+2:]...)
+			return runSynthesizeTier2(caseID, inner)
+		}
+		if strings.ToLower(a) == "--tier=2" {
+			inner := append([]string{}, rest[:i]...)
+			inner = append(inner, rest[i+1:]...)
+			return runSynthesizeTier2(caseID, inner)
+		}
+	}
+
 	fs := flag.NewFlagSet("synthesize", flag.ContinueOnError)
 	findingsDir := fs.String("findings-dir", "",
 		"directory containing TacticReport JSONs "+
