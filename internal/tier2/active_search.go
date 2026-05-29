@@ -122,19 +122,8 @@ func buildActiveSearchPrompt(c *Cluster) (string, error) {
 }
 
 func parseActiveSearchEntries(text string) ([]activeSearchSQLEntry, error) {
-	s := strings.TrimSpace(text)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "["); i > 0 {
-		s = s[i:]
-	}
-	if j := strings.LastIndex(s, "]"); j >= 0 && j < len(s)-1 {
-		s = s[:j+1]
-	}
 	var out []activeSearchSQLEntry
-	if err := json.Unmarshal([]byte(s), &out); err != nil {
+	if err := decodeFirstJSON(text, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -225,6 +225,12 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 
 	resp, err := parseClusterAnalysis(out.Result)
 	if err != nil {
+		// Persist the raw LLM output for triage and degrade gracefully:
+		// keep the raw text as the cluster's narrative so the operator
+		// still gets the analysis instead of an empty cluster.
+		dumpRawResponse(cfg, c.ID, "cluster_analysis", out.Result)
+		c.Narrative = "(LLM returned non-JSON output; raw text follows)\n\n" +
+			strings.TrimSpace(out.Result)
 		return err
 	}
 	c.Narrative = resp.Narrative
@@ -266,19 +272,8 @@ type clusterAnalysisResp struct {
 }
 
 func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
-	s := strings.TrimSpace(text)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "{"); i > 0 {
-		s = s[i:]
-	}
-	if j := strings.LastIndex(s, "}"); j >= 0 && j < len(s)-1 {
-		s = s[:j+1]
-	}
 	var out clusterAnalysisResp
-	if err := json.Unmarshal([]byte(s), &out); err != nil {
+	if err := decodeFirstJSON(text, &out); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w (head: %s)", err, truncate(text, 200))
 	}
 	return &out, nil
@@ -558,6 +553,18 @@ func countFindings(clusters []Cluster) int {
 		n += len(c.Findings)
 	}
 	return n
+}
+
+// dumpRawResponse saves an LLM response that failed to parse so the
+// operator can triage it after the fact. Path: outputs/cases/<id>/synthesis_debug/.
+func dumpRawResponse(cfg Config, clusterID int, label, text string) {
+	dir := filepath.Join(filepath.Dir(cfg.OutputPath), "synthesis_debug")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	name := fmt.Sprintf("cluster%02d_%s_%s.txt", clusterID, label,
+		time.Now().UTC().Format("20060102T150405Z"))
+	_ = os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644)
 }
 
 func writeSynthesis(path string, cs CaseSynthesis) error {
