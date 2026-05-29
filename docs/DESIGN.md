@@ -1,7 +1,10 @@
 # TLVB システム設計書 (v0.1)
 
 **最終更新**: 2026-05-29
-**ステータス**: Tier 1A の build 基盤まで実装済。runtime 以降は未着手 (`docs/STATUS.md` 参照)
+**ステータス**: **v0.1 主要パイプライン (a)-(g) 完走済**。
+Tier 0 / 1A (build + runtime + Hayabusa pass-through) / 1B (MVP + 強化済 prefilter)
+/ 2 (受動 + 能動 + lenient JSON parser + fallback) / 3 (HTML/CSV/JSON Reporter) すべて
+動作確認済。残りは (d) Review UI と coverage 拡張のみ。詳細は `docs/STATUS.md`
 
 ## 0. 設計思想
 
@@ -131,21 +134,31 @@ SQL を validateSQL() で検証:
 実機 dry-run: 1210 件 build で **est ~2011 yen (worst case)**。prompt-cache
 で実コストは 30-60% 程度になる見込み。
 
-### 3.4 Runtime (★未実装)
+### 3.4 Runtime
 
-cached SQL を実行して finding 出力する部分。設計は決まっているが実装は次セッション。
+実装: `internal/tier1a/runner.go::Run`。
 
 ```
 ケース C のロード時:
-  1. rulesdb から state='built' な行を全件取得
+  1. rulesdb から state='built' な行を全件取得 (ListAll filter)
   2. 各行について:
      a. row.prefilter_artifacts が case の parse_results に含まれていなければ skip
      b. row.sql を `WHERE case_id = ?` の `?` に case_id を bind して実行
-     c. 結果行が 1 件以上あれば finding 生成
-  3. severity ベースで Review Gate 1A の auto-approve / require-review 振り分け
+     c. 結果行が 1 件以上あれば finding 生成 (cap MaxEvidence 行)
+  3. severity ベースで Review Gate 1A の auto-approve (medium 以下) / require-review
+     (critical/high) を AutoApproveByLevel が振り分け
+  4. 1 SQL のエラーで全体は止めない (graceful)
 ```
 
-finding スキーマ (案):
+加えて **Hayabusa pass-through pass** (`internal/tier1a/hayabusa_passthrough.go`):
+- Tier 0 で Hayabusa が事前検知した unified_events (`artifact_id='hayabusa'`) を
+  RuleID でグループ化、rule_source="hayabusa" として findings 化
+- 1 SQL クエリで全部取得 → ストリーミング処理 (cluster ごと 1 Finding)
+- level info/low はデフォルト除外 (`--include-info-level` で opt-in)
+
+CLI: `tlvb analyze CASE_ID --tier 1a [--skip-hayabusa-passthrough] [--include-info-level]`
+
+finding スキーマ (実装後):
 ```json
 {
   "finding_id": "<uuid>",
@@ -175,62 +188,137 @@ finding スキーマ (案):
 これにより「後日 Sysmon ありケースが来た」ときに再 build 不要で自動 ON。
 v0.1 では sysmon を含めない方針 (CLI flag `--include-sysmon` で opt-in)。
 
-## 4. Tier 1B — Skills-driven Anomaly Agent (★未実装)
+## 4. Tier 1B — Skills-driven Anomaly Agent (MVP 実装済)
 
 findevil の `skills/*.md` 12 個 (10 tactic + anomaly_hunter + timeline_review)
-をそのまま流用。runtime の流れ:
+をそのまま流用。v0.1 MVP では skill 1 つ (`anomaly_hunter.md`) のみ active。
+
+実装: `internal/tier1b/`(runner / prior / prefilter / types)
+
+### 4.1 v0.1 MVP の Runtime
 
 ```
-1. skill から派生した cached SQL 群を実行 (build 時に skill ごとに canonical query を生成)
-2. SQL 結果 + Tier 1A findings を LLM プロンプトに同梱
-3. LLM が skill の観点で「これは怪しい」を判定 → finding 化
-4. LLM が「もう一段別の角度で見たい」と判断すれば新 SQL を考案
-   → cache に類似 query があれば再利用、なければ新規生成して cache に追記
-   → 実行 → 結果を 2. のループに戻す
+1. findings/by-rule/**/*.json から Tier 1A の prior findings を読み込む
+   → 既存 audit_ids + key timestamps + (source, level) 集計を作る
+2. unified_events を stratified サンプリング (per-artifact LIMIT、
+   EVTX ノイズ EID 4656/4658/4663/4703/5152/5156/5158 等を SQL 除外)
+3. 候補に 5 lens でスコアリング:
+   A0 — artifact diversity boost (非 evtx へ +1〜+3)
+   A1 — off-hours (h<6 or h>=22 UTC)
+   A2 — suspicious path (Temp / AppData / Public / ProgramData)
+   A4 — rare process (image_count < 3)
+   A5 — adjacency (±30 min around prior finding timestamps)
+4. top N (default 200) を skill prompt + AnomalyContext JSON と一緒に
+   claude CLI に渡す
+5. LLM が JSON 配列 [{lens, summary, description, severity, audit_ids,
+   technique_id, tactic}, ...] を返す
+6. findings/by-skill/anomaly_hunter.json に AnomalyReport として保存
 ```
+
+CLI: `tlvb analyze CASE_ID --tier 1b [--dry-run] [--max-events N]
+                                     [--include-info-level] [--model M]`
+
+### 4.2 v0.2 で実装予定の Hybrid Cache
 
 cache hit 判定は **LLM 自身**に任せる:
 - cache 一覧 (skill / intent_summary / SQL fingerprint) を LLM に見せて
   「これを使う or 新規作る」を判断させる
-- cache 肥大化したら RAG で事前絞り込み (v0.2 以降)
+- cache 肥大化したら RAG で事前絞り込み
 
 build パイプラインも skill の canonical query 部分は Tier 1A と同じ
 `rule_sql_cache` を再利用する (rule_source = "skill")。
 
-## 5. Tier 2 — Timeline Analysis Agent
+### 4.3 検証済の Tier 1B 独自価値
 
-### 5.1 受動モード (findevil 同方向、再設計予定)
+実機 Win11 で 4 件の new finding を生成、いずれも Tier 1A (Hayabusa pass-through
+含む) が拾えなかった artifact 経由:
+- [critical/A2] mimi.exe + procdump64 in C:\Users\Public — credential dumping
+- [high/A4] Discovery burst @ 13:54Z (whoami / systeminfo / nltest cascade)
+- [high/A4] **Anti-recovery cluster** @ 14:00Z — vssadmin / wbadmin / bcdedit /
+  wbengine / vds (テストシナリオ Step 7 を 1 件で完全捕捉)
+- [medium/A5] RDPINPUT.EXE first-run @ 06:32Z next morning
+
+## 5. Tier 2 — Timeline Analysis Agent (MVP + 能動モード 実装済)
+
+実装: `internal/tier2/` (loader / cluster / timeline / runner /
+active_search / json_lenient)
+
+### 5.1 受動モード
 
 `findings/by-rule/` と `findings/by-skill/` 全体を時間軸で cluster
-(例: 30 分以内は同じ cluster)。各 cluster について:
-- 中心時刻の ±N 分 raw timeline をクエリ
-- 攻撃連鎖の物語を LLM に再構成させる
-- 矛盾チェック (R1-R4、findevil から流用)
+(default 30 分 gap):
+1. `LoadFindings` で by-rule/** + by-skill/* を統一 Finding 配列に
+2. `EnrichTimestamps` で Tier 1B audit_id → ts_utc を bulk lookup
+3. `ClusterFindings` で時間軸ソート + gap 閾値内を merge
+4. 各 cluster について `FetchClusterTimeline` で ±5 分の raw events を
+   stratified サンプリング (per-artifact、EVTX ノイズ EID 除外)
+5. per-cluster LLM call: skill (`skills/timeline_review.md`) + cluster
+   context (findings + raw timeline) → JSON {narrative, attack_phase,
+   mitre_techniques, open_questions}
+6. overall LLM call: per-cluster narratives → case-wide story
 
-実装は findevil の `internal/synthesizer/synthesizer.go` を中心に改修。
+LLM 出力の JSON parse は `json_lenient.go` の `decodeFirstJSON` で 3 段リカバリ:
+markdown fence / prose preamble / 末尾 trailing junk / double `}}` / 期待型と
+逆の wrap (struct ↔ array) を許容。失敗時は raw response を
+`outputs/cases/<id>/synthesis_debug/cluster<N>_*.txt` に保存して、narrative
+には raw text を入れる degraded 動作。
 
-### 5.2 能動モード (★新規)
+overall LLM は retry + fallback 戦略:
+- 1 回目: 完全な per-cluster narrative
+- 失敗時 3 秒待機 → 2 回目: 1500 char に truncate (context size 対策)
+- 2 回目も失敗 → `fallbackOverallStory` で per-cluster を決定論的に連結
 
-LLM が「X が起きたなら Y がその前 / 後 / 全期間にあるはず」と仮説を立て、
-wide-range SQL を生成して timeline を探索。Tier 1B と同じ hybrid cache。
+CLI: `tlvb synthesize CASE_ID --tier 2 [--cluster-gap-minutes N]
+                                       [--timeline-window-minutes N]
+                                       [--active-search] [--dry-run]`
 
-例: 「Persistence の Run キー書き込みを 1A が検出 →
-  Tier 2 の能動モードが『その後 7 日間以内に Run キーから起動された
-  プロセスがあるはず』という仮説で wide-range クエリを生成」
+### 5.2 能動モード (★実装済)
 
-これにより Mandiant の dwell time 7 日問題 (findevil で課題だった
-「時間幅が広いケースで Persistence の後段が検出されない」) を解消する狙い。
+実装: `internal/tier2/active_search.go::RunActiveSearch`
+
+cluster の open_questions に対し LLM が SQL を最大 3 本提案 →
+`validateActiveSearchSQL` で安全検証(case_id=? prefix / SELECT only /
+single ? / no DDL/DML / no trailing ;)→ DuckDB で実行 →
+LLM が結果を解釈して narrative addendum を書く。
+
+各 SQL は最大 50 行を `TimelineEvent` で retain、総 hits 数は別途カウント。
+SynthAudit に `ActiveSearchEnabled`, `ActiveSQLAttempted`, `ActiveSQLSucceeded`
+を集計。
+
+実機 Win11: 6 SQL 全部成功し、「procdump→mimi.exe リネーム masquerade」を
+amcache の同一 SHA1 で完全裏付け、LSASS dump artifact の不在を honest
+報告、RDP source IP の field path 修正必要を明示するなど、forensic
+report 品質の補強として機能。
 
 ### 5.3 出力
 
-`synthesis.json` に attack chain + cross-evidence correlation を出力。
+`synthesis.json` に CaseSynthesis = (clusters + overall_story +
+mitre_mapping + open_questions + audit) を出力。
+SynthCluster は (id, start_ts, end_ts, attack_phase, narrative,
+finding_refs, mitre_techniques, open_questions, active_search) を含む。
 Tier 3 はこれだけ読めばよい。
 
-## 6. Tier 3 — Reporter (findevil 流用)
+## 6. Tier 3 — Reporter (TLVB v0.1 新規実装)
 
-`internal/reporter/` を流用。HTML 11 セクション / CSV / JSON、ja/en。
-finding 入力形式が by-rule になるので、HTML テンプレを tactic 軸で集計する
-小改修が必要 (synthesis.json で集計済みなので最小)。
+実装: `internal/tier3/` (types / render / html / csv)
+
+synthesis.json を入力に、3 形式の output を `outputs/cases/<id>/reports/` に
+書き出す:
+
+- **HTML**: 単一 self-contained ファイル (~26 KB)、inline CSS、外部 JS なし、
+  dark mode 対応 (prefers-color-scheme)、severity badge (critical/high/medium/
+  low/info の 5 段階カラー)、MITRE technique セルに attack.mitre.org の
+  絶対 URL リンク、ja/en の UI ラベル辞書(narrative は LLM 出力を verbatim)
+- **CSV**: findings.csv / mitre.csv / clusters.csv の 3 本、UTF-8 BOM 付き
+  で Excel 自動検出可
+- **JSON**: synthesis.json の pretty-print コピー(reports/ ディレクトリを
+  self-contained にするための archival 用)
+
+CLI: `tlvb report CASE_ID --tier 3 [--format html,csv,json] [--language ja|en]
+                                   [--synthesis PATH] [--out-dir DIR]`
+
+注: 旧 `internal/reporter/` (findevil の TacticReport 用) はそのまま残置、
+v0.1 では `--tier 3` の付かない `tlvb report` で起動可能(legacy 経路)。
 
 ## 7. データモデル
 
@@ -285,18 +373,31 @@ outputs/cases/<id>/
 ## 10. CLI
 
 ```
-tlvb case init|export|import|vacuum ...        ← findevil 流用
-tlvb parse --case-id ... --input PATH          ← findevil 流用
-tlvb rules build [--dry-run] [--budget-yen N] [--max-rules N]
-                 [--source sigma|hayabusa|stix] [--force]
+tlvb case init|export|import|vacuum ...          (findevil 流用)
+tlvb parse --case-id ... --input PATH            (findevil 流用)
+tlvb rules build [--engine claude-code|anthropic-api] [--dry-run]
+                 [--budget-yen N] [--max-rules N] [--source S]
+                 [--rule-ids ID1,ID2,...] [--force]
 tlvb rules list  [--source S] [--state pending|built|failed] [--show-sql]
-tlvb analyze CASE_ID [--tier 1a|1b|2] [--rule|--skill|--tactic]   ← v0.1 後半
-tlvb synthesize CASE_ID [--active-search]                          ← v0.1 後半
-tlvb report CASE_ID [--format html,csv,json] [--language ja|en]   ← findevil 流用
+tlvb analyze CASE_ID --tier 1a [--source S] [--rule ID] [--max-evidence N]
+                               [--skip-hayabusa-passthrough]
+                               [--include-info-level]
+tlvb analyze CASE_ID --tier 1b [--max-events N] [--model M] [--dry-run]
+                               [--timeout-minutes N]
+tlvb synthesize CASE_ID --tier 2 [--cluster-gap-minutes N]
+                                 [--timeline-window-minutes N]
+                                 [--max-rows-per-cluster N]
+                                 [--active-search] [--model M] [--dry-run]
+tlvb report CASE_ID --tier 3 [--format html,csv,json] [--language ja|en]
+                             [--synthesis PATH] [--out-dir DIR]
 tlvb review CASE_ID [--gate 0|1a|1b|2] [--examiner NAME]
-tlvb run CASE_ID --evidence PATH                                  ← 全パイプライン一括
-tlvb serve [--port 8080]                                          ← Web UI
-tlvb mcp-serve                                                    ← MCP server
+tlvb run CASE_ID --tier all --evidence PATH                        TLVB one-shot
+       [--skip-parse|--skip-1a|--skip-1b|--skip-2|--skip-report]
+       [--active-search] [--format html,csv,json] [--language ja|en]
+tlvb run CASE_ID --evidence PATH                                   legacy findevil pipeline
+tlvb status CASE_ID [-v] [--db PATH] [--rules-db PATH] [--case-root DIR]
+tlvb serve [--port 8080]                                           Web UI
+tlvb mcp-serve                                                     MCP server (stdio)
 tlvb version
 ```
 
@@ -305,11 +406,31 @@ tlvb version
 1. **Build cost guard の token 推定が worst-case**: 実際は prompt cache で
    30-60% 削減される。dry-run 表示にも注記しているが、より精度の高い推定
    モデル (cache hit rate 推定) は v0.2 で検討。
-2. **Tier 1B の cache hit 判定を LLM 任せ**: cache が大きくなったら LLM の
-   選択が重くなる懸念。RAG 事前絞り込みは v0.2。
+2. **Tier 1B の hybrid cache 未実装**: MVP では cache hit 判定 + 都度新 SQL
+   生成 + cache 追記の hybrid フローは未実装。LLM 任せの hit 判定は cache
+   が大きくなったら選択が重くなる懸念もあり、RAG 事前絞り込みも併せて
+   v0.2 で実装予定。
 3. **Forensic 系ルール (LOLBAS / Atomic Red Team / DFIR Report)** は未取り込み。
-   v0.1 では Sigma が大半をカバーしている想定。v0.2 で LOLBAS を追加検討。
-4. **能動 SQL モード (Tier 2)** の hypothesis 生成戦略は未検証。実装後に
-   実ケースで挙動を観察してチューニング。
-5. **findevil → TLVB のリネーム移行**: ドキュメント / scripts に findevil
+   v0.1 では Sigma + Hayabusa が大半をカバー (Hayabusa pass-through で 32
+   ルール、Sigma cached SQL で 3 ルール検知の実績)。
+4. **能動 SQL モード (Tier 2)** の hypothesis 生成戦略は実機 1 case で検証
+   済み (6 SQL 全部成功)。複数 case での挙動観察 + プロンプトチューニングは
+   今後の課題。
+5. **(d) Review UI Gate 1A** 未実装。CLI でも `tlvb review CASE_ID --gate 1a`
+   経由で承認可能だが、Web UI 経由の severity badge + cluster 単位バルク UI
+   は v0.2 候補。
+6. **findevil → TLVB のリネーム移行**: ドキュメント / scripts に findevil
    名義が残存。CLAUDE.md「★ findevil → TLVB リネーム移行中」参照。
+
+## 12. v0.1 実装サマリ
+
+| 区分 | パッケージ / ファイル | 目的 |
+|---|---|---|
+| Tier 0 | `parsers/`, `internal/casedb/` | 17 アーティファクトパース、unified_events ingest (findevil 流用) |
+| Tier 1A build | `internal/rulesrepo/`, `internal/rulebuild/`, `internal/rulesdb/` | Sigma/Hayabusa/STIX loader, LLM → SQL, rule_sql_cache |
+| Tier 1A runtime | `internal/tier1a/` | cached SQL 実行、Hayabusa pass-through |
+| Tier 1B | `internal/tier1b/` | skill-driven prefilter + LLM 推論 |
+| Tier 2 | `internal/tier2/` | cluster + per-cluster LLM + overall + active-search + lenient JSON |
+| Tier 3 | `internal/tier3/` | HTML / CSV / JSON renderer |
+| CLI | `cmd/tlvb/` | dispatcher、status、run --tier all |
+| Doc | `README.md`, `docs/DESIGN.md`, `docs/STATUS.md`, `CLAUDE.md` | 設計と運用ガイド |
