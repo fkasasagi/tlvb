@@ -28,6 +28,8 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	maxRowsPerCluster := fs.Int("max-rows-per-cluster", 300,
 		"raw timeline rows per cluster (stratified across artifacts)")
 	timeoutMinutes := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
+	activeSearch := fs.Bool("active-search", false,
+		"enable hypothesis-driven SQL pass per cluster (LLM proposes SQL to answer open_questions, executes against unified_events, then writes an addendum to the narrative)")
 	dryRun := fs.Bool("dry-run", false, "skip LLM calls")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -52,6 +54,7 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		TimelineWindow:    time.Duration(*windowMinutes) * time.Minute,
 		MaxRowsPerCluster: *maxRowsPerCluster,
 		PerClusterTimeout: time.Duration(*timeoutMinutes) * time.Minute,
+		ActiveSearch:      *activeSearch,
 		DryRun:            *dryRun,
 		ProgressFn: func(ev tier2.Event) {
 			fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)

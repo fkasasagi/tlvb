@@ -32,6 +32,7 @@ type Config struct {
 	TimelineWindow    time.Duration // default 5 min
 	MaxRowsPerCluster int           // default 300
 	PerClusterTimeout time.Duration // default 5 min
+	ActiveSearch      bool          // enable hypothesis-driven SQL pass per cluster
 	DryRun            bool
 	ProgressFn        func(Event)
 }
@@ -164,6 +165,15 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 				clusters[i].ID, len(clusters[i].Findings))})
 	}
 	rep.ClustersAnalyzed = audit.ClustersAnalysed
+
+	// Active search pass — hypothesis-driven SQL for each cluster's
+	// open_questions. Runs only when --active-search is enabled, and
+	// graceful-fails per-cluster.
+	if cfg.ActiveSearch {
+		emit(cfg, Event{Phase: "llm",
+			Message: "active-search pass for open_questions"})
+		clusters, _ = RunActiveSearch(ctx, cfg, db, clusters, &audit)
+	}
 
 	// Overall synthesis call: feed the per-cluster narratives back to LLM
 	// for one case-wide story. Keep prompt small (cluster summaries only).
@@ -464,6 +474,7 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			Narrative:       c.Narrative,
 			MITRETechniques: c.MITRETechniques,
 			OpenQuestions:   c.OpenQuestions,
+			ActiveSearch:    c.ActiveSearch,
 		}
 		for _, f := range c.Findings {
 			sc.FindingRefs = append(sc.FindingRefs, FindingRef{

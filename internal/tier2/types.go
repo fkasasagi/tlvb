@@ -78,6 +78,20 @@ type Cluster struct {
 	OpenQuestions      []string
 	AttackPhase        string // e.g. "initial-access", "execution", "impact"
 	RawTimelineExcerpt []TimelineEvent // ±N min around the cluster (raw events)
+	// ActiveSearch holds wide-range hypothesis-driven query results.
+	// Populated only when --active-search is enabled. Each entry pairs an
+	// open question with the SQL that tried to answer it.
+	ActiveSearch []ActiveSearchResult
+}
+
+// ActiveSearchResult is one "open question → SQL → answer" round-trip.
+type ActiveSearchResult struct {
+	Question string          // the open_question being investigated
+	SQL      string          // the SELECT the LLM proposed
+	Hits     int             // total matching rows (may exceed len(Evidence))
+	Evidence []TimelineEvent // up to MaxEvidenceActive rows from the SQL
+	Answer   string          // LLM's interpretation written after seeing the evidence
+	Error    string          // populated when SQL validation / execution failed
 }
 
 // TimelineEvent is one raw unified_events row used as context for the LLM.
@@ -106,14 +120,15 @@ type CaseSynthesis struct {
 // SynthCluster is the cluster shape in synthesis.json. Drops the heavy
 // fields (raw timeline excerpt) — those stay only as Tier 2 input.
 type SynthCluster struct {
-	ID                int             `json:"id"`
-	StartTS           time.Time       `json:"start_ts"`
-	EndTS             time.Time       `json:"end_ts"`
-	AttackPhase       string          `json:"attack_phase,omitempty"`
-	Narrative         string          `json:"narrative"`
-	FindingRefs       []FindingRef    `json:"finding_refs"`
-	MITRETechniques   []string        `json:"mitre_techniques,omitempty"`
-	OpenQuestions     []string        `json:"open_questions,omitempty"`
+	ID              int                  `json:"id"`
+	StartTS         time.Time            `json:"start_ts"`
+	EndTS           time.Time            `json:"end_ts"`
+	AttackPhase     string               `json:"attack_phase,omitempty"`
+	Narrative       string               `json:"narrative"`
+	FindingRefs     []FindingRef         `json:"finding_refs"`
+	MITRETechniques []string             `json:"mitre_techniques,omitempty"`
+	OpenQuestions   []string             `json:"open_questions,omitempty"`
+	ActiveSearch    []ActiveSearchResult `json:"active_search,omitempty"`
 }
 
 // FindingRef is a compact reference to a Tier 1 finding inside a cluster.
@@ -135,11 +150,14 @@ type MITREEntry struct {
 
 // SynthAudit captures provenance for the synthesis.
 type SynthAudit struct {
-	LLMCallsTotal      int     `json:"llm_calls_total"`
-	LLMDurationS       float64 `json:"llm_duration_s"`
-	InputTokensTotal   int     `json:"input_tokens_total,omitempty"`
-	OutputTokensTotal  int     `json:"output_tokens_total,omitempty"`
-	ClustersAnalysed   int     `json:"clusters_analysed"`
-	ClustersSkippedNoLLM int   `json:"clusters_skipped_no_llm,omitempty"`
-	SkillSHA256        string  `json:"skill_sha256,omitempty"`
+	LLMCallsTotal        int     `json:"llm_calls_total"`
+	LLMDurationS         float64 `json:"llm_duration_s"`
+	InputTokensTotal     int     `json:"input_tokens_total,omitempty"`
+	OutputTokensTotal    int     `json:"output_tokens_total,omitempty"`
+	ClustersAnalysed     int     `json:"clusters_analysed"`
+	ClustersSkippedNoLLM int     `json:"clusters_skipped_no_llm,omitempty"`
+	ActiveSearchEnabled  bool    `json:"active_search_enabled,omitempty"`
+	ActiveSQLAttempted   int     `json:"active_sql_attempted,omitempty"`
+	ActiveSQLSucceeded   int     `json:"active_sql_succeeded,omitempty"`
+	SkillSHA256          string  `json:"skill_sha256,omitempty"`
 }
