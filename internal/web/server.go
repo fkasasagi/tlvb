@@ -140,12 +140,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/cases/{id}/report/csv/{name}", s.handleGetReportCSV)
 	s.mux.HandleFunc("GET /api/cases/{id}/report/json", s.handleGetReportJSON)
 
-	s.mux.HandleFunc("GET /api/cases/{id}/findings", s.handleListFindings)
-	s.mux.HandleFunc("GET /api/cases/{id}/findings/{tactic}", s.handleListFindingsByTactic)
-	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/approve", s.handleApproveFinding)
-	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/reject", s.handleRejectFinding)
-	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/reset", s.handleResetFinding)
-	s.mux.HandleFunc("POST /api/cases/{id}/findings/bulk", s.handleBulkFindingsAction)
+	// Case-state snapshot (Status tab — parse / findings / synthesis / report).
+	s.mux.HandleFunc("GET /api/cases/{id}/summary", s.handleGetCaseSummary)
+
+	// Review Gate 1A — unified Tier 1A by-rule + Tier 1B by-skill findings.
+	// Implementation lives in review_gate_1a.go.
+	s.mux.HandleFunc("GET /api/cases/{id}/findings", s.handleListReviewFindings)
+	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/approve", s.handleApproveReviewFinding)
+	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/reject", s.handleRejectReviewFinding)
+	s.mux.HandleFunc("POST /api/cases/{id}/findings/{fid}/reset", s.handleResetReviewFinding)
+	s.mux.HandleFunc("POST /api/cases/{id}/findings/bulk", s.handleBulkReviewFindings)
 
 	s.mux.HandleFunc("GET /api/cases/{id}/timeline", s.handleGetTimeline)
 	s.mux.HandleFunc("GET /api/cases/{id}/iocs", s.handleGetIOCs)

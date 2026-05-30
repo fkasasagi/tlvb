@@ -23,11 +23,11 @@ import (
 //
 // Env vars:
 //
-//	FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC   default 5     (≥1; cost per event in seconds)
-//	FINDEVIL_LLM_TIMEOUT_BUFFER_SEC      default 300   (≥0; constant overhead — startup, JSON validation, prompt cache miss)
-//	FINDEVIL_LLM_TIMEOUT_FLOOR_SEC       default 600   (≥0; minimum wall-clock = 10 min — small cases still get breathing room)
-//	FINDEVIL_LLM_TIMEOUT_CEILING_SEC     default 3600  (≥0; absolute cap   = 60 min — runaway protection)
-//	FINDEVIL_LLM_TIMEOUT_ANOMALY_MULT    default 1.5   (>0; anomaly_hunter scale factor)
+//	TLVB_LLM_TIMEOUT_PER_EVENT_SEC   default 5     (≥1; cost per event in seconds)
+//	TLVB_LLM_TIMEOUT_BUFFER_SEC      default 300   (≥0; constant overhead — startup, JSON validation, prompt cache miss)
+//	TLVB_LLM_TIMEOUT_FLOOR_SEC       default 600   (≥0; minimum wall-clock = 10 min — small cases still get breathing room)
+//	TLVB_LLM_TIMEOUT_CEILING_SEC     default 3600  (≥0; absolute cap   = 60 min — runaway protection)
+//	TLVB_LLM_TIMEOUT_ANOMALY_MULT    default 1.5   (>0; anomaly_hunter scale factor)
 //
 // Example sizing for default values (per_event=5, buffer=300, floor=600,
 // ceiling=3600, anomaly_mult=1.5):
@@ -39,11 +39,11 @@ import (
 //	     500  2800s (= ~47 min)     3600s (ceiling)
 //	    1000  3600s (ceiling)       3600s (ceiling)
 func ComputeTimeout(tactic string, maxEvents int) time.Duration {
-	perEvent := envIntOr("FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC", 5)
-	buffer := envIntOr("FINDEVIL_LLM_TIMEOUT_BUFFER_SEC", 300)
-	floor := envIntOr("FINDEVIL_LLM_TIMEOUT_FLOOR_SEC", 600)
-	ceiling := envIntOr("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", 3600)
-	mult := envFloatOr("FINDEVIL_LLM_TIMEOUT_ANOMALY_MULT", 1.5)
+	perEvent := envIntOr("TLVB_LLM_TIMEOUT_PER_EVENT_SEC", 5)
+	buffer := envIntOr("TLVB_LLM_TIMEOUT_BUFFER_SEC", 300)
+	floor := envIntOr("TLVB_LLM_TIMEOUT_FLOOR_SEC", 600)
+	ceiling := envIntOr("TLVB_LLM_TIMEOUT_CEILING_SEC", 3600)
+	mult := envFloatOr("TLVB_LLM_TIMEOUT_ANOMALY_MULT", 1.5)
 
 	if maxEvents < 0 {
 		maxEvents = 0

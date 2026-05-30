@@ -49,11 +49,11 @@ func formatInt(n int) string {
 // slidingWindowDefault returns whether Tactic Agent runs should use the
 // chunked sliding-window execution. Wave 42 flipped this to default on so
 // large cases don't silently truncate to the oldest MaxEvents rows
-// (B1 indictment). Operators can opt out with FINDEVIL_SLIDING_WINDOW=0
-// (or false / off). FINDEVIL_SLIDING_WINDOW=1 was the old opt-in toggle
+// (B1 indictment). Operators can opt out with TLVB_SLIDING_WINDOW=0
+// (or false / off). TLVB_SLIDING_WINDOW=1 was the old opt-in toggle
 // — kept as a synonym so existing operators' env vars stay valid.
 func slidingWindowDefault() bool {
-	v := strings.ToLower(os.Getenv("FINDEVIL_SLIDING_WINDOW"))
+	v := strings.ToLower(os.Getenv("TLVB_SLIDING_WINDOW"))
 	if v == "0" || v == "false" || v == "off" || v == "no" {
 		return false
 	}
@@ -872,7 +872,7 @@ func runOneTacticScoped(ctx context.Context, caseID, evID, tactic, engine, model
 	//   - Timeout scales linearly: ~5s/event + 300s buffer, clamped to
 	//     [10 min, 60 min]. anomaly_hunter gets a 1.5× multiplier.
 	//   - Operator can override every knob via env var (see ComputeTimeout
-	//     docstring for the FINDEVIL_LLM_TIMEOUT_* family).
+	//     docstring for the TLVB_LLM_TIMEOUT_* family).
 	const maxEvents = 400
 	cfg := agents.Config{
 		Tactic:        tactic,
@@ -1177,254 +1177,8 @@ func isSafeName(s string) bool {
 	return true
 }
 
-// ----------------------------------------------------------------------------
-// Findings  (read + approve/reject)
-// ----------------------------------------------------------------------------
-
-type findingDTO struct {
-	agents.Finding
-	Tactic     string `json:"tactic"`      // slug, e.g. persistence
-	TacticID   string `json:"tactic_id"`
-	TacticName string `json:"tactic_name"`
-}
-
-// handleListFindings returns every finding across every TacticReport JSON.
-func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	dtos, err := s.collectFindings(id, "")
-	if err != nil {
-		writeError(w, 404, "%v", err)
-		return
-	}
-	writeJSON(w, 200, dtos)
-}
-
-func (s *Server) handleListFindingsByTactic(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	tactic := r.PathValue("tactic")
-	dtos, err := s.collectFindings(id, tactic)
-	if err != nil {
-		writeError(w, 404, "%v", err)
-		return
-	}
-	writeJSON(w, 200, dtos)
-}
-
-func (s *Server) collectFindings(caseID, tacticFilter string) ([]findingDTO, error) {
-	dir := filepath.Join(s.cfg.OutputsRoot, caseID, "findings")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("findings dir: %w", err)
-	}
-	var out []findingDTO
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		slug := strings.TrimSuffix(e.Name(), ".json")
-		if tacticFilter != "" && slug != tacticFilter {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var rep agents.TacticReport
-		if err := json.Unmarshal(body, &rep); err != nil {
-			continue
-		}
-		for _, f := range rep.Findings {
-			out = append(out, findingDTO{
-				Finding:    f,
-				Tactic:     slug,
-				TacticID:   rep.TacticID,
-				TacticName: rep.TacticName,
-			})
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].TacticID != out[j].TacticID {
-			return out[i].TacticID < out[j].TacticID
-		}
-		return out[i].FindingID < out[j].FindingID
-	})
-	return out, nil
-}
-
-func (s *Server) handleApproveFinding(w http.ResponseWriter, r *http.Request) {
-	s.singleFindingAction(w, r, "approve", "")
-}
-
-func (s *Server) handleRejectFinding(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Reason string `json:"reason"`
-	}
-	_ = decodeJSON(r, &req)
-	s.singleFindingAction(w, r, "reject", req.Reason)
-}
-
-// handleResetFinding clears approved/rejected/reason/reviewer back to the
-// pre-review (pending) state. Issue #7 — examiners want to be able to
-// undo their decision and re-review.
-func (s *Server) handleResetFinding(w http.ResponseWriter, r *http.Request) {
-	s.singleFindingAction(w, r, "reset", "")
-}
-
-// handleBulkFindingsAction performs one of approve / reject / reset on a
-// list of finding_ids in a single request. Issue #5 (bulk select) +
-// Issue #10 (approve all). The returned counts let the UI update its
-// view incrementally rather than re-fetching everything.
-//
-// Body:
-//
-//	{
-//	  "finding_ids": ["F-persistence-001", "F-execution-002", ...],
-//	  "action":      "approve" | "reject" | "reset",
-//	  "reason":      "..."     // optional for action=reject (Issue #21)
-//	}
-func (s *Server) handleBulkFindingsAction(w http.ResponseWriter, r *http.Request) {
-	caseID := r.PathValue("id")
-	var req struct {
-		FindingIDs []string `json:"finding_ids"`
-		Action     string   `json:"action"`
-		Reason     string   `json:"reason"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, 400, "bad json: %v", err)
-		return
-	}
-	if len(req.FindingIDs) == 0 {
-		writeError(w, 400, "finding_ids[] required")
-		return
-	}
-	if req.Action != "approve" && req.Action != "reject" && req.Action != "reset" {
-		writeError(w, 400, "action must be approve|reject|reset")
-		return
-	}
-	examiner := r.Header.Get("X-Examiner")
-	if examiner == "" {
-		examiner = "examiner-web"
-	}
-	res, err := s.applyFindingMutations(caseID, req.FindingIDs, req.Action, req.Reason, examiner)
-	if err != nil {
-		writeError(w, 500, "%v", err)
-		return
-	}
-	writeJSON(w, 200, res)
-}
-
-func (s *Server) singleFindingAction(w http.ResponseWriter, r *http.Request, action, reason string) {
-	caseID := r.PathValue("id")
-	fid := r.PathValue("fid")
-	if fid == "" {
-		writeError(w, 400, "finding_id required")
-		return
-	}
-	examiner := r.Header.Get("X-Examiner")
-	if examiner == "" {
-		examiner = "examiner-web"
-	}
-	res, err := s.applyFindingMutations(caseID, []string{fid}, action, reason, examiner)
-	if err != nil {
-		writeError(w, 500, "%v", err)
-		return
-	}
-	if res.Updated == 0 {
-		writeError(w, 404, "finding %q not found", fid)
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"status":      "ok",
-		"finding_id":  fid,
-		"action":      action,
-		"reason":      reason,
-		"reviewed_by": examiner,
-	})
-}
-
-// findingMutationResult is the shape returned to the bulk caller.
-type findingMutationResult struct {
-	Updated  int      `json:"updated"`
-	NotFound []string `json:"not_found,omitempty"`
-}
-
-// applyFindingMutations is the single source of truth for editing finding
-// review state. Walks every TacticReport JSON once, applies every matching
-// finding_id in one pass, then writes each touched file once.
-func (s *Server) applyFindingMutations(
-	caseID string, findingIDs []string, action, reason, examiner string,
-) (*findingMutationResult, error) {
-	dir := filepath.Join(s.cfg.OutputsRoot, caseID, "findings")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("no findings: %w", err)
-	}
-	wanted := make(map[string]bool, len(findingIDs))
-	for _, id := range findingIDs {
-		wanted[id] = true
-	}
-	res := &findingMutationResult{}
-	now := time.Now().UTC()
-
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		body, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var rep agents.TacticReport
-		if err := json.Unmarshal(body, &rep); err != nil {
-			continue
-		}
-		changed := false
-		for i := range rep.Findings {
-			f := &rep.Findings[i]
-			if !wanted[f.FindingID] {
-				continue
-			}
-			switch action {
-			case "approve":
-				f.Approved = true
-				f.Rejected = false
-				f.RejectReason = ""
-				f.ReviewedAt = now
-				f.ReviewedBy = examiner
-			case "reject":
-				f.Approved = false
-				f.Rejected = true
-				f.RejectReason = reason
-				f.ReviewedAt = now
-				f.ReviewedBy = examiner
-			case "reset":
-				f.Approved = false
-				f.Rejected = false
-				f.RejectReason = ""
-				f.ReviewedAt = time.Time{}
-				f.ReviewedBy = ""
-			}
-			res.Updated++
-			delete(wanted, f.FindingID)
-			changed = true
-		}
-		if changed {
-			out, err := json.MarshalIndent(rep, "", "  ")
-			if err != nil {
-				return nil, fmt.Errorf("marshal: %w", err)
-			}
-			if err := os.WriteFile(path, out, 0o644); err != nil {
-				return nil, fmt.Errorf("write: %w", err)
-			}
-		}
-	}
-	for id := range wanted {
-		res.NotFound = append(res.NotFound, id)
-	}
-	sort.Strings(res.NotFound)
-	return res, nil
-}
+// Findings handlers are implemented in review_gate_1a.go (Review Gate 1A,
+// unified Tier 1A by-rule + Tier 1B by-skill view).
 
 // ----------------------------------------------------------------------------
 // Timeline / IOC / MITRE / Events / Audit

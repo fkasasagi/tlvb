@@ -26,10 +26,17 @@ type Finding struct {
 	MatchCount   int           `json:"match_count"`         // total matches (may exceed len(Evidence) if capped)
 	Truncated    bool          `json:"truncated,omitempty"` // true if MatchCount > MaxEvidence
 
-	// Review Gate 1A state.
-	Approved     bool   `json:"approved"`
-	ApprovedBy   string `json:"approved_by,omitempty"`   // "auto:severity-rule" | examiner name
-	RejectReason string `json:"reject_reason,omitempty"`
+	// Review Gate 1A state. Approved + Rejected are mutually exclusive;
+	// the pair (false, false) means "pending Examiner review".
+	// ApprovedBy is set when an examiner OR the auto-approve rule
+	// (AutoApproveByLevel) flipped Approved to true; ReviewedBy/At capture
+	// the most recent manual decision (approve or reject).
+	Approved     bool      `json:"approved"`
+	Rejected     bool      `json:"rejected,omitempty"`
+	ApprovedBy   string    `json:"approved_by,omitempty"`   // "auto:severity-rule" | examiner name
+	RejectReason string    `json:"reject_reason,omitempty"`
+	ReviewedAt   time.Time `json:"reviewed_at,omitempty"`
+	ReviewedBy   string    `json:"reviewed_by,omitempty"`
 
 	// Audit trail.
 	GeneratedAt time.Time `json:"generated_at"`
