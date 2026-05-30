@@ -229,11 +229,15 @@ func progressPrinter() func(rulebuild.BuildEvent) {
 				ev.Total, ev.CostYen)
 			return
 		case "building":
-			// Print every 25 to keep stderr readable.
-			if ev.Index-lastIdx < 25 && ev.State != "failed" {
+			// Print every 25 to keep stderr readable; always surface signals
+			// that an examiner cares about (failed + purged stale rows).
+			isAlwaysOn := ev.State == "failed" || ev.State == "skipped_loader_purged"
+			if ev.Index-lastIdx < 25 && !isAlwaysOn {
 				return
 			}
-			lastIdx = ev.Index
+			if !isAlwaysOn {
+				lastIdx = ev.Index
+			}
 			fmt.Fprintf(os.Stderr, "[build %d/%d] %s/%s -> %s  (cost so far: %.2f yen)",
 				ev.Index, ev.Total, ev.RuleSource, ev.RuleID, ev.State, ev.CostYen)
 			if ev.Error != "" {

@@ -217,6 +217,23 @@ func (m *Manager) MarkFailed(ctx context.Context, ruleID, ruleSource, errMsg str
 	return err
 }
 
+// Delete removes one cache row by (rule_id, rule_source). Used when the
+// loader newly classifies a rule as Skip — we no longer want a stale
+// failed/pending row to clutter status views or trigger retries.
+func (m *Manager) Delete(ctx context.Context, ruleID, ruleSource string) (bool, error) {
+	if m.mode == ReadOnly {
+		return false, errors.New("rulesdb opened read-only")
+	}
+	res, err := m.db.ExecContext(ctx,
+		`DELETE FROM rule_sql_cache WHERE rule_id = ? AND rule_source = ?`,
+		ruleID, ruleSource)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // ListPending returns all rows in 'pending' or 'failed' state that need
 // building (or rebuilding after a failure). Optional source filter.
 func (m *Manager) ListPending(ctx context.Context, sourceFilter string) ([]CacheRow, error) {

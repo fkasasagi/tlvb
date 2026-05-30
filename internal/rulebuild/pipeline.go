@@ -154,6 +154,15 @@ func (p *Pipeline) Build(ctx context.Context) (*BuildReport, error) {
 			return rep, ctx.Err()
 		}
 		if r.Skip {
+			// Newly-classified-as-skip rule: if it has a stale cache row from
+			// a previous loader version (e.g. when the new build run added a
+			// proxy/firewall/database/webserver category to the skip set),
+			// drop it so status views aren't littered with failed retries
+			// for rules we'll never attempt again.
+			if deleted, _ := p.RulesDB.Delete(ctx, r.RuleID, r.RuleSource); deleted {
+				p.emit(BuildEvent{Phase: "building", RuleID: r.RuleID, RuleSource: r.RuleSource,
+					State: "skipped_loader_purged", Index: i + 1, Total: len(rules), CostYen: rep.ActualCostYen})
+			}
 			rep.SkippedLoader++
 			p.emit(BuildEvent{Phase: "building", RuleID: r.RuleID, RuleSource: r.RuleSource,
 				State: "skipped_loader", Index: i + 1, Total: len(rules), CostYen: rep.ActualCostYen})
@@ -307,7 +316,14 @@ func (p *Pipeline) isAlreadyCached(ctx context.Context, r rulesrepo.RawRule) boo
 }
 
 func (p *Pipeline) addCost(rep *BuildReport, built *BuiltSQL) {
-	in := float64(built.InputTokens-built.CacheReadTokens) / 1_000_000 * p.Rates.YenPerMInputTokens
+	// Anthropic Usage already separates the three token buckets:
+	//   input_tokens             — uncached input (full rate)
+	//   cache_read_input_tokens  — cache hit  (discounted rate)
+	//   output_tokens            — completion (output rate)
+	// Earlier we double-subtracted CacheReadTokens from InputTokens, which
+	// pushed running cost negative on cache-heavy runs and disabled the
+	// budget guard.
+	in := float64(built.InputTokens) / 1_000_000 * p.Rates.YenPerMInputTokens
 	cache := float64(built.CacheReadTokens) / 1_000_000 * p.Rates.YenPerMCacheReadTokens
 	out := float64(built.OutputTokens) / 1_000_000 * p.Rates.YenPerMOutputTokens
 	rep.ActualCostYen += in + cache + out
