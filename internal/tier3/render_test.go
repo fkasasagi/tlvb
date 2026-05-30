@@ -34,12 +34,12 @@ func makeCS() tier2.CaseSynthesis {
 				},
 			},
 			{
-				ID:             2,
-				StartTS:        time.Date(2026, 5, 20, 6, 32, 0, 0, time.UTC),
-				EndTS:          time.Date(2026, 5, 20, 6, 33, 0, 0, time.UTC),
-				AttackPhase:    "lateral-movement",
-				Narrative:      "RDP from public IP",
-				FindingRefs:    []tier2.FindingRef{{Source: "hayabusa", RuleID: "rdp", Title: "RDP Logon", Severity: "medium"}},
+				ID:          2,
+				StartTS:     time.Date(2026, 5, 20, 6, 32, 0, 0, time.UTC),
+				EndTS:       time.Date(2026, 5, 20, 6, 33, 0, 0, time.UTC),
+				AttackPhase: "lateral-movement",
+				Narrative:   "RDP from public IP",
+				FindingRefs: []tier2.FindingRef{{Source: "hayabusa", RuleID: "rdp", Title: "RDP Logon", Severity: "medium"}},
 			},
 		},
 		MITREMapping: []tier2.MITREEntry{
@@ -91,7 +91,7 @@ func TestRenderHTML(t *testing.T) {
 		"T1059.001", "T1003.001", "Encoded PS", "Mimikatz Execution",
 		"RDP from public IP",
 		"who is the source IP?",
-		"全体ストーリー",      // JA dict
+		"エグゼクティブサマリ",       // JA dict
 		"MITRE ATT&amp;CK", // template encodes & → &amp;
 	} {
 		if !strings.Contains(s, want) {
@@ -114,10 +114,10 @@ func TestRenderHTMLEnLang(t *testing.T) {
 
 func TestRenderCSV(t *testing.T) {
 	rep, outDir := renderFromSynth(t, makeCS(), []string{"csv"}, "ja")
-	if len(rep.Files) != 3 {
-		t.Fatalf("expected 3 csv files, got %d", len(rep.Files))
+	if len(rep.Files) != 5 {
+		t.Fatalf("expected 5 csv files, got %d", len(rep.Files))
 	}
-	for _, fname := range []string{"findings.csv", "mitre.csv", "clusters.csv"} {
+	for _, fname := range []string{"findings.csv", "mitre.csv", "clusters.csv", "ioc.csv", "timeline.csv"} {
 		body, err := os.ReadFile(filepath.Join(outDir, fname))
 		if err != nil {
 			t.Fatalf("read %s: %v", fname, err)
@@ -153,9 +153,9 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderAllFormatsDefault(t *testing.T) {
 	rep, _ := renderFromSynth(t, makeCS(), nil, "")
-	// nil formats → default html+csv+json = 5 files (1 html + 3 csv + 1 json)
-	if len(rep.Files) != 5 {
-		t.Errorf("expected 5 files for default formats, got %d (%+v)",
+	// nil formats → default html+csv+json = 7 files (1 html + 5 csv + 1 json)
+	if len(rep.Files) != 7 {
+		t.Errorf("expected 7 files for default formats, got %d (%+v)",
 			len(rep.Files), rep.Files)
 	}
 }

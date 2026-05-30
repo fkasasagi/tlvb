@@ -120,6 +120,56 @@ func renderClustersCSV(path string, cs tier2.CaseSynthesis) error {
 	return nil
 }
 
+// renderIOCCSV: one row per indicator of compromise (type, value, artifact, count).
+func renderIOCCSV(path string, en *enrichment) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"type", "value", "artifact", "count"}); err != nil {
+		return err
+	}
+	for _, r := range en.IOCs {
+		if err := w.Write([]string{
+			r.Type, r.Value, r.Artifact, fmt.Sprintf("%d", r.Count),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// renderTimelineCSV: one row per key event (finding), chronologically ordered.
+func renderTimelineCSV(path string, en *enrichment) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"ts_utc", "severity", "artifact", "event_type", "source", "title"}); err != nil {
+		return err
+	}
+	for _, r := range en.Timeline {
+		if err := w.Write([]string{
+			formatTS(r.TS), r.Severity, r.Artifact, r.EventType, r.Source, oneLine(r.Title),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func formatTS(t time.Time) string {
 	if t.IsZero() {
 		return ""
