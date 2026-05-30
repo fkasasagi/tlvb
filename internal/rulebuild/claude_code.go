@@ -39,7 +39,7 @@ func NewClaudeCodeBuilder(model, schemaDoc string) *ClaudeCodeBuilder {
 	return &ClaudeCodeBuilder{
 		Binary:                         "claude",
 		Model:                          model,
-		Timeout:                        180 * time.Second, // some rules require deeper reasoning
+		Timeout:                        300 * time.Second, // some rules trigger long chain-of-thought; 180s was killing antivirus/* etc.
 		SchemaDoc:                      schemaDoc,
 		DisableTools:                   true,
 		NoSessionPersistence:           true,
@@ -93,7 +93,7 @@ func (b *ClaudeCodeBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule
 
 	timeout := b.Timeout
 	if timeout <= 0 {
-		timeout = 180 * time.Second
+		timeout = 300 * time.Second
 	}
 	subCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
