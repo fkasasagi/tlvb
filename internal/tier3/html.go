@@ -16,15 +16,18 @@ import (
 // Sections (forensic-report convention — SANS DFIR / NIST SP 800-86 / ISO
 // 27042):
 //  0. Classification banner + report metadata (examiner / org / generated)
-//  1. Case Information
-//  2. Executive Summary (overall_story, plain language) + Severity Summary
-//  3. Evidence & Chain of Custody (exhibits, SHA-256, parse coverage)
-//  4. Methodology & Limitations (pipeline, reproducibility, AI disclaimer)
-//  5. Event Timeline (key-event chronology)
-//  6. Findings (per attack cluster, with evidence detail + active search)
-//  7. Indicators of Compromise
-//  8. Open Questions (case-wide)
-//     - MITRE ATT&CK Mapping + Appendix: Audit / Provenance
+//  1. Case Information + Executive Summary + Severity Summary
+//  2. Intrusion Path (rule-derived)
+//  3. Affected Scope (rule-derived)
+//  4. Evidence & Chain of Custody (exhibits, SHA-256, parse coverage)
+//  5. Methodology & Limitations (pipeline, reproducibility, AI disclaimer)
+//  6. Event Timeline (key-event chronology)
+//  7. Findings (per attack cluster, with evidence detail + active search)
+//     - MITRE ATT&CK Mapping
+//  8. Indicators of Compromise
+//  9. Recommendations (rule-derived: containment / eradication / recovery)
+//  10. Open Questions (case-wide)
+//     - Appendix: Audit / Provenance
 //
 // All CSS is inline; no JS, no external assets — the file is fully portable.
 func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment) error {
@@ -67,6 +70,11 @@ type reportView struct {
 	Timeline       []timelineRow
 	IOCs           []iocRow
 	Clusters       []clusterView
+
+	// Rule-derived IR narrative (best-effort, not LLM).
+	IntrusionPath string
+	Scope         *scopeView
+	Reco          *recoView
 }
 
 type clusterView struct {
@@ -106,6 +114,9 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) 
 		Severity:       en.SeverityCounts,
 		Timeline:       en.Timeline,
 		IOCs:           en.IOCs,
+		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language),
+		Scope:          deriveAffectedScope(cs, en, cfg.Language),
+		Reco:           deriveRecommendations(cs, cfg.Language),
 	}
 	for _, c := range cs.Clusters {
 		cv := clusterView{
@@ -245,6 +256,18 @@ type labelDict struct {
 	CaseOpenQuestions     string
 	None                  string
 
+	// intrusion path / affected scope / recommendations
+	IntrusionPathSec   string
+	AffectedScopeSec   string
+	ScopeHosts         string
+	ScopeAccounts      string
+	ScopeData          string
+	RecommendationsSec string
+	RecContainment     string
+	RecEradication     string
+	RecRecovery        string
+	DerivedNote        string
+
 	phaseLabel func(string) string
 	sevLabel   func(string) string
 }
@@ -292,7 +315,7 @@ var dictJA = labelDict{
 	Scope:                 "解析スコープ",
 	ScopeBody:             "本レポートは、提供された Windows フォレンジック・アーティファクトに対する自動解析の結果である。対象は下記「証拠インベントリ」に列挙した証拠に限定される。ネットワークログ・メモリダンプ等、収集対象外のデータソースは解析範囲に含まれない。",
 	SeveritySummary:       "重要度サマリ",
-	EvidenceChain:         "2. 証拠インベントリと完全性 (Chain of Custody)",
+	EvidenceChain:         "4. 証拠インベントリと完全性 (Chain of Custody)",
 	EvidenceID:            "証拠 ID",
 	SourcePath:            "取得元",
 	SHA256:                "SHA-256",
@@ -305,17 +328,17 @@ var dictJA = labelDict{
 	ArtifactName:          "アーティファクト",
 	EventCount:            "イベント数",
 	TotalEvents:           "総イベント数",
-	Methodology:           "3. 解析手法と限界",
+	Methodology:           "5. 解析手法と限界",
 	MethodologyBody:       "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。",
 	Limitations:           "限界・前提: (1) タイムスタンプは原則 UTC。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
 	AIDisclaimer:          "AI 利用に関する開示: シナリオ記述・MITRE マッピング・未解決論点は大規模言語モデル (上記「解析モデル」) が生成した。シグネチャ検知部 (Tier 1A) は LLM を実行時に呼び出さず、事前検証済み SQL のみを実行する。最終的な判断は資格を持つ解析担当者によるレビューを前提とする。",
 	FirstSeen:             "初出時刻",
 	Artifacts:             "アーティファクト",
 	EvidenceCountCol:      "証拠数",
-	TimelineSection:       "4. イベントタイムライン (主要事象)",
+	TimelineSection:       "6. イベントタイムライン (主要事象)",
 	TimeCol:               "時刻 (UTC)",
 	EventTypeCol:          "イベント種別",
-	IOCSection:            "6. 侵害指標 (Indicators of Compromise)",
+	IOCSection:            "8. 侵害指標 (Indicators of Compromise)",
 	IOCType:               "種別",
 	IOCValue:              "値",
 	IOCCount:              "出現回数",
@@ -324,8 +347,19 @@ var dictJA = labelDict{
 	Question:              "論点 / 仮説",
 	AnswerCol:             "解釈",
 	HitsCol:               "ヒット数",
-	CaseOpenQuestions:     "7. 未解決の論点 (ケース全体)",
+	CaseOpenQuestions:     "10. 未解決の論点 (ケース全体)",
 	None:                  "該当なし",
+
+	IntrusionPathSec:   "2. 侵入経路 (Intrusion Path)",
+	AffectedScopeSec:   "3. 影響範囲 (Affected Scope)",
+	ScopeHosts:         "影響を受けたホスト",
+	ScopeAccounts:      "影響を受けたアカウント",
+	ScopeData:          "リスクに晒されたデータ",
+	RecommendationsSec: "9. 今後の推奨事項 (Recommendations)",
+	RecContainment:     "封じ込め (Containment)",
+	RecEradication:     "根絶 (Eradication)",
+	RecRecovery:        "復旧 (Recovery)",
+	DerivedNote:        "※ 本セクションは検出された finding・MITRE technique・IOC からルールベースで自動導出した参考情報であり、LLM 生成ではない。確証と優先順位付けには人手レビューを要する。",
 
 	phaseLabel: phaseLabelJA,
 	sevLabel:   sevLabelJA,
@@ -374,7 +408,7 @@ var dictEN = labelDict{
 	Scope:                 "Scope",
 	ScopeBody:             "This report presents the result of automated analysis of the provided Windows forensic artifacts. Its scope is limited to the evidence listed under \"Evidence Inventory\" below. Data sources that were not collected (e.g. network logs, memory dumps) are out of scope.",
 	SeveritySummary:       "Severity Summary",
-	EvidenceChain:         "2. Evidence Inventory & Integrity (Chain of Custody)",
+	EvidenceChain:         "4. Evidence Inventory & Integrity (Chain of Custody)",
 	EvidenceID:            "Evidence ID",
 	SourcePath:            "Source",
 	SHA256:                "SHA-256",
@@ -387,17 +421,17 @@ var dictEN = labelDict{
 	ArtifactName:          "Artifact",
 	EventCount:            "Events",
 	TotalEvents:           "Total events",
-	Methodology:           "3. Methodology & Limitations",
+	Methodology:           "5. Methodology & Limitations",
 	MethodologyBody:       "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp.",
 	Limitations:           "Limitations & assumptions: (1) Timestamps are UTC; artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
 	AIDisclaimer:          "AI disclosure: narratives, MITRE mappings and open questions were generated by a large language model (see \"Analysis model\"). The signature-detection tier (Tier 1A) invokes no LLM at runtime — it executes only pre-validated SQL. Final determinations are expected to be reviewed by a qualified examiner.",
 	FirstSeen:             "First seen",
 	Artifacts:             "Artifacts",
 	EvidenceCountCol:      "Evidence",
-	TimelineSection:       "4. Event Timeline (key events)",
+	TimelineSection:       "6. Event Timeline (key events)",
 	TimeCol:               "Time (UTC)",
 	EventTypeCol:          "Event type",
-	IOCSection:            "6. Indicators of Compromise",
+	IOCSection:            "8. Indicators of Compromise",
 	IOCType:               "Type",
 	IOCValue:              "Value",
 	IOCCount:              "Occurrences",
@@ -406,8 +440,19 @@ var dictEN = labelDict{
 	Question:              "Question / hypothesis",
 	AnswerCol:             "Interpretation",
 	HitsCol:               "Hits",
-	CaseOpenQuestions:     "7. Open Questions (case-wide)",
+	CaseOpenQuestions:     "10. Open Questions (case-wide)",
 	None:                  "None",
+
+	IntrusionPathSec:   "2. Intrusion Path",
+	AffectedScopeSec:   "3. Affected Scope",
+	ScopeHosts:         "Affected hosts",
+	ScopeAccounts:      "Affected accounts",
+	ScopeData:          "Data at risk",
+	RecommendationsSec: "9. Recommendations",
+	RecContainment:     "Containment",
+	RecEradication:     "Eradication",
+	RecRecovery:        "Recovery",
+	DerivedNote:        "Note: this section is auto-derived (rule-based, not LLM) from the detected findings, MITRE techniques and IOCs. It requires human review for confirmation and prioritisation.",
 
 	phaseLabel: phaseLabelEN,
 	sevLabel:   sevLabelEN,
@@ -556,7 +601,10 @@ const htmlTemplate = `<!DOCTYPE html>
   article.cluster header { display: flex; gap: 1rem; flex-wrap: wrap; align-items: baseline;
                             margin-bottom: 0.5rem; color: #57606a; font-size: 0.9rem; }
   .narrative p { margin: 0 0 0.7rem; }
-  ul.open-q li { margin-bottom: 0.3rem; }
+  ul.open-q li, ul.reco li { margin-bottom: 0.3rem; }
+  dl.scope { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0.6rem 0; }
+  dl.scope dt { font-weight: 600; color: #57606a; }
+  dl.scope dd { margin: 0; }
   .note { background: #ddf4ff; border: 1px solid #54aeff; border-radius: 6px;
           padding: 0.6rem 0.9rem; margin: 0.6rem 0; font-size: 0.9rem; }
   .disclaimer { background: #fff8c5; border: 1px solid #d4a72c; border-radius: 6px;
@@ -640,7 +688,32 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 2. Evidence & Chain of Custody -->
+<!-- 2. Intrusion Path -->
+{{if .IntrusionPath}}
+<section>
+  <h2>{{.Dict.IntrusionPathSec}}</h2>
+  <p>{{.IntrusionPath}}</p>
+  <div class="note">{{.Dict.DerivedNote}}</div>
+</section>
+{{end}}
+
+<!-- 3. Affected Scope -->
+{{if .Scope}}
+<section>
+  <h2>{{.Dict.AffectedScopeSec}}</h2>
+  <dl class="scope">
+    <dt>{{.Dict.ScopeHosts}}</dt>
+    <dd>{{if .Scope.Hosts}}{{join .Scope.Hosts}}{{else}}<span class="muted">—</span>{{end}}</dd>
+    <dt>{{.Dict.ScopeAccounts}}</dt>
+    <dd>{{if .Scope.Accounts}}{{join .Scope.Accounts}}{{else}}<span class="muted">—</span>{{end}}</dd>
+    <dt>{{.Dict.ScopeData}}</dt>
+    <dd>{{if .Scope.DataAtRisk}}{{join .Scope.DataAtRisk}}{{else}}<span class="muted">—</span>{{end}}</dd>
+  </dl>
+  <div class="note">{{.Dict.DerivedNote}}</div>
+</section>
+{{end}}
+
+<!-- 4. Evidence & Chain of Custody -->
 {{if .Meta}}
 <section>
   <h2>{{.Dict.EvidenceChain}}</h2>
@@ -680,7 +753,7 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 3. Methodology & Limitations -->
+<!-- 5. Methodology & Limitations -->
 <section>
   <h2>{{.Dict.Methodology}}</h2>
   <p>{{.Dict.MethodologyBody}}</p>
@@ -688,7 +761,7 @@ const htmlTemplate = `<!DOCTYPE html>
   <div class="disclaimer">{{.Dict.AIDisclaimer}}</div>
 </section>
 
-<!-- 4. Event Timeline -->
+<!-- 6. Event Timeline -->
 {{if .Timeline}}
 <section>
   <h2>{{.Dict.TimelineSection}}</h2>
@@ -713,9 +786,9 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 5. Findings by cluster -->
+<!-- 7. Findings by cluster -->
 <section>
-  <h2>5. {{.Dict.Cluster}}</h2>
+  <h2>7. {{.Dict.Cluster}}</h2>
   {{if not .Clusters}}<p class="empty">{{.Dict.None}}</p>{{end}}
   {{range .Clusters}}
   <article class="cluster" id="cluster-{{.ID}}">
@@ -802,7 +875,7 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 6. Indicators of Compromise -->
+<!-- 8. Indicators of Compromise -->
 <section>
   <h2>{{.Dict.IOCSection}}</h2>
   {{if .IOCs}}
@@ -815,8 +888,28 @@ const htmlTemplate = `<!DOCTYPE html>
   {{else}}<p class="empty">{{.Dict.NoIOC}}</p>{{end}}
 </section>
 
+<!-- 9. Recommendations -->
+{{if .Reco}}
+<section>
+  <h2>{{.Dict.RecommendationsSec}}</h2>
+  {{if .Reco.Containment}}
+  <h3>{{.Dict.RecContainment}}</h3>
+  <ul class="reco">{{range .Reco.Containment}}<li>{{.}}</li>{{end}}</ul>
+  {{end}}
+  {{if .Reco.Eradication}}
+  <h3>{{.Dict.RecEradication}}</h3>
+  <ul class="reco">{{range .Reco.Eradication}}<li>{{.}}</li>{{end}}</ul>
+  {{end}}
+  {{if .Reco.Recovery}}
+  <h3>{{.Dict.RecRecovery}}</h3>
+  <ul class="reco">{{range .Reco.Recovery}}<li>{{.}}</li>{{end}}</ul>
+  {{end}}
+  <div class="note">{{.Dict.DerivedNote}}</div>
+</section>
+{{end}}
+
 {{if .Case.OpenQuestions}}
-<!-- 7. Case-wide open questions -->
+<!-- 10. Case-wide open questions -->
 <section>
   <h2>{{.Dict.CaseOpenQuestions}}</h2>
   <ul class="open-q">
