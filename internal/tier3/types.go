@@ -20,20 +20,64 @@ import (
 // Config drives Render.
 type Config struct {
 	CaseID        string
-	SynthesisPath string // outputs/cases/<id>/synthesis.json
-	OutDir        string // outputs/cases/<id>/reports
+	SynthesisPath string   // outputs/cases/<id>/synthesis.json
+	OutDir        string   // outputs/cases/<id>/reports
 	Formats       []string // subset of {"html","csv","json"}; default ["html","csv","json"]
 	Language      string   // "ja" | "en" — UI labels, NOT LLM-narratives
 	OnlyApproved  bool     // (future) filter to Review Gate 1A approved findings
+
+	// FindingsDir is the per-case findings root used to enrich the report with
+	// per-finding evidence, IOCs and a key-event timeline. Defaults to
+	// outputs/cases/<id>/findings. Missing dir → enrichment is simply skipped.
+	FindingsDir string
+
+	// Forensic case metadata (chain of custody / examiner identity). Optional;
+	// the CLI fills CaseMeta from the case DB. nil → the section is omitted.
+	CaseMeta *CaseMeta
+
+	// Report-level identity fields. Sensible placeholders are substituted when
+	// empty so the report still reads as a forensic document.
+	Examiner       string
+	Organization   string
+	Classification string // e.g. "CONFIDENTIAL" / "社外秘"
+	ToolVersion    string // TLVB build identifier
+}
+
+// CaseMeta is the forensic case context the renderer pulls from the case DB.
+type CaseMeta struct {
+	DisplayName    string
+	Status         string
+	CreatedAt      time.Time
+	Notes          string
+	Evidence       []EvidenceItem
+	ArtifactCounts []ArtifactCount
+	TotalEvents    int
+}
+
+// EvidenceItem is one acquired exhibit (chain-of-custody row).
+type EvidenceItem struct {
+	EvidenceID   string
+	SourcePath   string
+	SHA256       string
+	SizeBytes    int64
+	RegisteredAt time.Time
+	SourceHost   string
+	EvidenceType string
+}
+
+// ArtifactCount is per-artifact event volume (Tier 0 parse coverage).
+type ArtifactCount struct {
+	ArtifactID string
+	EventCount int
 }
 
 // Report describes what was rendered.
 type Report struct {
-	CaseID       string
-	OutDir       string
-	GeneratedAt  time.Time
-	Files        []OutputFile
-	Sections     int // for HTML, number of cluster sections
+	CaseID      string
+	OutDir      string
+	GeneratedAt time.Time
+	Files       []OutputFile
+	Sections    int // for HTML, number of cluster sections
 }
 
 // OutputFile is one rendered file.

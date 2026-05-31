@@ -34,12 +34,12 @@ func makeCS() tier2.CaseSynthesis {
 				},
 			},
 			{
-				ID:             2,
-				StartTS:        time.Date(2026, 5, 20, 6, 32, 0, 0, time.UTC),
-				EndTS:          time.Date(2026, 5, 20, 6, 33, 0, 0, time.UTC),
-				AttackPhase:    "lateral-movement",
-				Narrative:      "RDP from public IP",
-				FindingRefs:    []tier2.FindingRef{{Source: "hayabusa", RuleID: "rdp", Title: "RDP Logon", Severity: "medium"}},
+				ID:          2,
+				StartTS:     time.Date(2026, 5, 20, 6, 32, 0, 0, time.UTC),
+				EndTS:       time.Date(2026, 5, 20, 6, 33, 0, 0, time.UTC),
+				AttackPhase: "lateral-movement",
+				Narrative:   "RDP from public IP",
+				FindingRefs: []tier2.FindingRef{{Source: "hayabusa", RuleID: "rdp", Title: "RDP Logon", Severity: "medium"}},
 			},
 		},
 		MITREMapping: []tier2.MITREEntry{
@@ -91,8 +91,10 @@ func TestRenderHTML(t *testing.T) {
 		"T1059.001", "T1003.001", "Encoded PS", "Mimikatz Execution",
 		"RDP from public IP",
 		"who is the source IP?",
-		"全体ストーリー",      // JA dict
-		"MITRE ATT&amp;CK", // template encodes & → &amp;
+		"エグゼクティブサマリ",                   // JA dict
+		"2. 侵入経路 (Intrusion Path)",     // rule-derived; present whenever clusters exist
+		"9. 今後の推奨事項 (Recommendations)", // rule-derived; present from generic items
+		"MITRE ATT&amp;CK",             // template encodes & → &amp;
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("HTML missing %q", want)
@@ -112,12 +114,59 @@ func TestRenderHTMLEnLang(t *testing.T) {
 	}
 }
 
+// deriveIntrusionPath / deriveAffectedScope / deriveRecommendations are
+// rule-based, so test them directly rather than through the full HTML render
+// (the scope section only appears when there is host/account/data to show).
+func TestDeriveIRSections(t *testing.T) {
+	cs := makeCS()
+	cs.MITREMapping = append(cs.MITREMapping,
+		tier2.MITREEntry{Technique: "T1003.001", Tactic: "credential-access", FindingCount: 1, ClusterIDs: []int{1}},
+		tier2.MITREEntry{Technique: "T1078", Tactic: "initial-access", FindingCount: 1, ClusterIDs: []int{2}},
+	)
+	en := &enrichment{IOCs: []iocRow{
+		{Type: "host", Value: "HOST-A"},
+		{Type: "account", Value: "alice"},
+	}}
+
+	if got := deriveIntrusionPath(cs, "ja"); !strings.Contains(got, "T1078") {
+		t.Errorf("intrusion path should cite the initial-access technique, got %q", got)
+	}
+
+	sv := deriveAffectedScope(cs, en, "ja")
+	if sv == nil {
+		t.Fatal("scope should be non-nil when IOCs carry host/account")
+	}
+	if len(sv.Hosts) != 1 || sv.Hosts[0] != "HOST-A" {
+		t.Errorf("scope hosts = %v, want [HOST-A]", sv.Hosts)
+	}
+	if len(sv.Accounts) != 1 || sv.Accounts[0] != "alice" {
+		t.Errorf("scope accounts = %v, want [alice]", sv.Accounts)
+	}
+	if len(sv.DataAtRisk) == 0 {
+		t.Error("credential-access tactic should add a data-at-risk entry")
+	}
+
+	reco := deriveRecommendations(cs, "ja")
+	if reco == nil || len(reco.Containment) == 0 || len(reco.Recovery) == 0 {
+		t.Fatalf("recommendations should be populated, got %+v", reco)
+	}
+}
+
+// When there are no IOCs and no scope-bearing tactics, the scope section is
+// omitted entirely (nil) rather than rendered empty.
+func TestDeriveAffectedScopeEmpty(t *testing.T) {
+	cs := tier2.CaseSynthesis{} // no clusters, no mapping
+	if sv := deriveAffectedScope(cs, &enrichment{}, "ja"); sv != nil {
+		t.Errorf("scope should be nil with no IOCs/tactics, got %+v", sv)
+	}
+}
+
 func TestRenderCSV(t *testing.T) {
 	rep, outDir := renderFromSynth(t, makeCS(), []string{"csv"}, "ja")
-	if len(rep.Files) != 3 {
-		t.Fatalf("expected 3 csv files, got %d", len(rep.Files))
+	if len(rep.Files) != 5 {
+		t.Fatalf("expected 5 csv files, got %d", len(rep.Files))
 	}
-	for _, fname := range []string{"findings.csv", "mitre.csv", "clusters.csv"} {
+	for _, fname := range []string{"findings.csv", "mitre.csv", "clusters.csv", "ioc.csv", "timeline.csv"} {
 		body, err := os.ReadFile(filepath.Join(outDir, fname))
 		if err != nil {
 			t.Fatalf("read %s: %v", fname, err)
@@ -153,9 +202,9 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderAllFormatsDefault(t *testing.T) {
 	rep, _ := renderFromSynth(t, makeCS(), nil, "")
-	// nil formats → default html+csv+json = 5 files (1 html + 3 csv + 1 json)
-	if len(rep.Files) != 5 {
-		t.Errorf("expected 5 files for default formats, got %d (%+v)",
+	// nil formats → default html+csv+json = 7 files (1 html + 5 csv + 1 json)
+	if len(rep.Files) != 7 {
+		t.Errorf("expected 7 files for default formats, got %d (%+v)",
 			len(rep.Files), rep.Files)
 	}
 }

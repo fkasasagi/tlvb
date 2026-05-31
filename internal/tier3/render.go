@@ -28,6 +28,9 @@ func Render(cfg Config) (*Report, error) {
 	if cfg.Language == "" {
 		cfg.Language = "ja"
 	}
+	if cfg.FindingsDir == "" {
+		cfg.FindingsDir = filepath.Join("outputs", "cases", cfg.CaseID, "findings")
+	}
 
 	body, err := os.ReadFile(cfg.SynthesisPath)
 	if err != nil {
@@ -41,6 +44,10 @@ func Render(cfg Config) (*Report, error) {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 
+	// Best-effort enrichment from per-finding evidence files (severity counts,
+	// IOCs, key-event timeline, per-finding evidence detail).
+	en := loadEnrichment(cfg.FindingsDir)
+
 	rep := &Report{
 		CaseID:      cfg.CaseID,
 		OutDir:      cfg.OutDir,
@@ -52,7 +59,7 @@ func Render(cfg Config) (*Report, error) {
 		switch f {
 		case "html":
 			out := filepath.Join(cfg.OutDir, "report.html")
-			if err := renderHTML(out, cs, cfg.Language); err != nil {
+			if err := renderHTML(out, cs, cfg, en); err != nil {
 				return rep, fmt.Errorf("render html: %w", err)
 			}
 			rep.Files = append(rep.Files, fileMeta("html", out))
@@ -60,6 +67,8 @@ func Render(cfg Config) (*Report, error) {
 			fp := filepath.Join(cfg.OutDir, "findings.csv")
 			mp := filepath.Join(cfg.OutDir, "mitre.csv")
 			cp := filepath.Join(cfg.OutDir, "clusters.csv")
+			ip := filepath.Join(cfg.OutDir, "ioc.csv")
+			tp := filepath.Join(cfg.OutDir, "timeline.csv")
 			if err := renderFindingsCSV(fp, cs); err != nil {
 				return rep, fmt.Errorf("render findings csv: %w", err)
 			}
@@ -69,10 +78,18 @@ func Render(cfg Config) (*Report, error) {
 			if err := renderClustersCSV(cp, cs); err != nil {
 				return rep, fmt.Errorf("render clusters csv: %w", err)
 			}
+			if err := renderIOCCSV(ip, en); err != nil {
+				return rep, fmt.Errorf("render ioc csv: %w", err)
+			}
+			if err := renderTimelineCSV(tp, en); err != nil {
+				return rep, fmt.Errorf("render timeline csv: %w", err)
+			}
 			rep.Files = append(rep.Files,
 				fileMeta("csv-findings", fp),
 				fileMeta("csv-mitre", mp),
 				fileMeta("csv-clusters", cp),
+				fileMeta("csv-ioc", ip),
+				fileMeta("csv-timeline", tp),
 			)
 		case "json":
 			out := filepath.Join(cfg.OutDir, "report.json")
