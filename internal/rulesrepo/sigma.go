@@ -54,6 +54,45 @@ type sigmaLogsource struct {
 	Definition string `yaml:"definition"`
 }
 
+// unsupportedCategories lists Sigma logsource.category values that target
+// data sources outside TLVB's Windows host-forensics scope (Web proxies,
+// network firewalls, database audit logs, web-server access logs). These
+// rules can't possibly match anything in unified_events, so we skip them
+// at load time rather than spend LLM cost generating SQL that returns 0
+// rows. Discovered empirically: 24/26 sigma build failures on 2026-05-30
+// were "empty SQL" responses on these categories — the LLM correctly
+// concludes no mapping exists.
+var unsupportedCategories = map[string]bool{
+	"proxy":     true,
+	"firewall":  true,
+	"database":  true,
+	"webserver": true,
+}
+
+// unsupportedProducts skips rules whose product is a web/app server that
+// runs on Windows but whose logs Tier 0 doesn't ingest.
+var unsupportedProducts = map[string]bool{
+	"apache":  true,
+	"nginx":   true,
+	"tomcat":  true,
+	"haproxy": true,
+}
+
+// unsupportedServices catches Sigma rules whose logsource block omits
+// product and category entirely (e.g. web/product/apache/*.yml sets
+// only `service: apache`) — the product/category gates above miss them
+// but they target the same out-of-scope logs.
+var unsupportedServices = map[string]bool{
+	"apache":  true,
+	"nginx":   true,
+	"tomcat":  true,
+	"haproxy": true,
+	"iis":     true, // IIS access log — Tier 0 W3C parser is still skeleton
+	"sshd":    true,
+	"syslog":  true,
+	"auditd":  true,
+}
+
 // sysmonCategories lists Sigma logsource.category values that have NO
 // Windows-builtin equivalent. Rules with these categories require Sysmon
 // to produce data at all, so we skip them when --include-sysmon is off.
@@ -180,11 +219,28 @@ func loadSigmaStyleYAML(path, root, source string, includeSysmon, includeNonWind
 	service := strings.ToLower(strings.TrimSpace(doc.Logsource.Service))
 
 	if product != "" && product != "windows" {
+		if unsupportedProducts[product] {
+			rule.Skip = true
+			rule.SkipReason = "unsupported logsource (product=" + product + " is out of TLVB host-forensics scope)"
+			return rule, true, nil
+		}
 		if !includeNonWindows {
 			rule.Skip = true
 			rule.SkipReason = "non-Windows logsource (product=" + product + ")"
 			return rule, true, nil
 		}
+	}
+
+	if unsupportedCategories[category] {
+		rule.Skip = true
+		rule.SkipReason = "unsupported logsource (category=" + category + " is out of TLVB host-forensics scope)"
+		return rule, true, nil
+	}
+
+	if unsupportedServices[service] {
+		rule.Skip = true
+		rule.SkipReason = "unsupported logsource (service=" + service + " is out of TLVB host-forensics scope)"
+		return rule, true, nil
 	}
 
 	isSysmon := service == "sysmon" || sysmonCategories[category]

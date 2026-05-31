@@ -39,7 +39,7 @@ func NewClaudeCodeBuilder(model, schemaDoc string) *ClaudeCodeBuilder {
 	return &ClaudeCodeBuilder{
 		Binary:                         "claude",
 		Model:                          model,
-		Timeout:                        180 * time.Second, // some rules require deeper reasoning
+		Timeout:                        300 * time.Second, // some rules trigger long chain-of-thought; 180s was killing antivirus/* etc.
 		SchemaDoc:                      schemaDoc,
 		DisableTools:                   true,
 		NoSessionPersistence:           true,
@@ -93,8 +93,37 @@ func (b *ClaudeCodeBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule
 
 	timeout := b.Timeout
 	if timeout <= 0 {
-		timeout = 180 * time.Second
+		timeout = 300 * time.Second
 	}
+
+	// signal:killed has been observed sporadically on the same rule across
+	// runs (no OOM in dmesg, ample free RAM) — likely a transient
+	// claude-CLI / Node hiccup. Retry exactly once on that specific
+	// failure mode; deterministic failures (parse / validation / empty
+	// SQL) are NOT retried.
+	const maxAttempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err := b.runCLIOnce(ctx, timeout, args, userMsg)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !isRetryableCLIKill(err) || attempt == maxAttempts {
+			return nil, err
+		}
+		// Brief pause so any kernel/Node cleanup can settle.
+		time.Sleep(2 * time.Second)
+	}
+	return nil, lastErr
+}
+
+// runCLIOnce performs one full claude-code invocation: spawn the CLI,
+// parse its envelope, parse the inner JSON the system prompt asks for,
+// and validate the SQL. Separated from BuildSQL so the retry loop can
+// reissue cleanly without recomputing args / prompts.
+func (b *ClaudeCodeBuilder) runCLIOnce(ctx context.Context, timeout time.Duration,
+	args []string, userMsg string) (*BuiltSQL, error) {
 	subCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -140,6 +169,19 @@ func (b *ClaudeCodeBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule
 	out.OutputTokens = resp.Usage.OutputTokens
 	out.CacheReadTokens = resp.Usage.CacheReadInputTokens
 	return out, nil
+}
+
+// isRetryableCLIKill returns true when the error looks like an external
+// SIGKILL to the claude CLI subprocess (signal: killed with empty
+// stderr). Excludes errors where stderr has content (real CLI failures)
+// or where the LLM produced a structured response but we couldn't parse.
+func isRetryableCLIKill(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "signal: killed") &&
+		strings.Contains(msg, "claude CLI exec:")
 }
 
 // claudeCLIResponse is a partial mapping of `claude --output-format json`.

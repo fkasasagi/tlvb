@@ -1,4 +1,4 @@
-/* FindEvil — Examiner Portal dark theme.
+/* TLVB — Examiner Portal dark theme.
    Palette is intentionally narrow (5 base colors + 3 confidence accents)
    so the UI reads as forensic, not consumer. Monospace everywhere. */
 
@@ -377,8 +377,31 @@ h3 { font-size: 13px; color: #c0d0e8; }
 .finding .actions {
   margin-top: 10px; display: flex; gap: 8px; align-items: center;
 }
-.finding.approved { background: #16291f; }
-.finding.rejected { background: #2a1517; }
+.finding.approved      { background: #16291f; }
+.finding.auto-approved { background: #16201d; }
+.finding.rejected      { background: #2a1517; }
+
+/* Review Gate 1A — severity / source / state badges */
+.badge.sev-critical { background: #441322; color: #ff5e6c; font-weight: bold; }
+.badge.sev-high     { background: #3a1e1e; color: var(--conf-high); font-weight: bold; }
+.badge.sev-medium   { background: #3d2c14; color: var(--conf-medium); }
+.badge.sev-low      { background: #1e3a1e; color: var(--conf-low); }
+.badge.sev-info     { background: #2a3556; color: #8aa0c8; }
+.badge.source-tier1a { background: #1e2c44; color: #8ec5ff; }
+.badge.source-tier1b { background: #2c1e44; color: #c08eff; }
+.badge.state-badge.auto-approved { background: #1f2c2a; color: #6cd0b8; }
+
+.finding-title {
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+.finding .technique-id {
+  font-weight: bold; color: #fff; padding: 0 4px;
+  text-decoration: none; border-bottom: 1px dotted var(--muted);
+}
+.finding .technique-id:hover { color: var(--accent-hi); }
+.tactic-header .tactic-toggle { color: var(--muted); }
 
 /* ------- timeline ------- */
 .timeline-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -866,6 +889,30 @@ h3 { font-size: 13px; color: #c0d0e8; }
   border-radius: 4px;
 }
 .cross-evidence-panel h3 { margin-top: 0; }
+
+/* ------- Status tab — case snapshot ------- */
+.case-snapshot { margin-bottom: 16px; }
+.snapshot-card .card-header { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.snapshot-body {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px; padding: 12px 14px;
+}
+.snapshot-tile {
+  background: #15192a; border: 1px solid var(--border); border-radius: 4px;
+  padding: 10px 12px;
+}
+.snapshot-tile-title {
+  font-weight: bold; color: var(--accent-hi); font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.snapshot-row {
+  display: flex; gap: 10px; font-size: 12px;
+  padding: 2px 0; align-items: baseline;
+}
+.snapshot-row .k { color: var(--muted); min-width: 110px; }
+.snapshot-row .v { color: var(--text); flex: 1; }
 
 /* ------- Review Gate 2 — Timeline row coloring (Wave 21) ------- */
 .timeline-row.approved td { background: rgba(46, 160, 67, 0.08); }

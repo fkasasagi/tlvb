@@ -1,4 +1,4 @@
-/* FindEvil Examiner Portal — vanilla JS SPA.
+/* TLVB Examiner Portal — vanilla JS SPA.
    Hash-based router: #/ → dashboard; #/cases/<id>[?tab=findings] → detail.
    No frameworks. No external CDN. Talks to /api over fetch. */
 
@@ -101,10 +101,10 @@ const I18N_DICT = {
 };
 
 function currentLocale() {
-  return localStorage.getItem("findevil_locale") || "ja";
+  return localStorage.getItem("tlvb_locale") || "ja";
 }
 function setLocale(lang) {
-  localStorage.setItem("findevil_locale", lang);
+  localStorage.setItem("tlvb_locale", lang);
   location.reload();  // simplest re-render strategy
 }
 function t(key) {
@@ -125,10 +125,28 @@ const h = (tag, attrs = {}, children = []) => {
       el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (v != null) el.setAttribute(k, v);
   }
-  for (const c of [].concat(children || [])) {
-    if (c == null) continue;
-    el.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-  }
+  // Defensive child append: accept Node, string, number, or array (nested
+  // one level). Anything else is logged and skipped — beats throwing
+  // "parameter 1 is not of type 'Node'" half-way through a render.
+  const appendOne = (c) => {
+    if (c == null || c === false) return;
+    if (typeof c === "string" || typeof c === "number" || typeof c === "boolean") {
+      el.appendChild(document.createTextNode(String(c)));
+      return;
+    }
+    if (Array.isArray(c)) {
+      for (const cc of c) appendOne(cc);
+      return;
+    }
+    if (c instanceof Node) {
+      el.appendChild(c);
+      return;
+    }
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("h(): skipping non-Node child", c, "in <" + tag + ">");
+    }
+  };
+  appendOne(children);
   return el;
 };
 const escapeHTML = (s) => String(s ?? "")
@@ -1121,18 +1139,16 @@ async function waitForJob(caseID, kind) {
 }
 
 // ============================================================================
-// Findings tab
+// Review Gate 1A — Findings tab
 // ============================================================================
-// findingsView is the per-tab state shared across actions. Stored on the
-// pane element so navigating away + back rebuilds it cleanly.
+// Renders the unified Tier 1A (by-rule) + Tier 1B (by-skill) finding list.
+// Backend already returns severity-desc + pending-first order; the front-end
+// groups by MITRE tactic and exposes per-row + per-cluster bulk approve.
 //
-// Issues addressed:
-//   #4  filter (all / pending / reviewed) — toggle in toolbar
-//   #5  bulk select + no-scroll-jump — checkboxes + bulk toolbar; surgical
-//       row updates instead of full re-render
-//   #6  default collapsed tactic groups
-//   #7  reset (un-review) action available even after approve/reject
-//   #10 "Approve all visible" button (respects filter)
+// Per-pane state (pane._findings):
+//   filter:        all | pending | reviewed | auto-approved
+//   sourceFilter:  all | tier1a | tier1b
+//   selected:      Set of finding_ids the user has ticked
 async function renderFindings(pane, caseID) {
   pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading findings…</div>`;
   let findings;
@@ -1142,57 +1158,59 @@ async function renderFindings(pane, caseID) {
     pane.innerHTML = `<div class="empty">No findings yet (run Analyze first).</div>`; return;
   }
 
-  // Group by tactic
+  // Group by primary MITRE tactic; "uncategorized" for findings with no tactic.
   const groups = new Map();
   for (const f of findings) {
-    const k = f.tactic;
-    if (!groups.has(k)) groups.set(k, { id: f.tactic_id, name: f.tactic_name, findings: [] });
-    groups.get(k).findings.push(f);
+    const tactic = (f.mitre_tactics && f.mitre_tactics[0]) || "uncategorized";
+    if (!groups.has(tactic)) groups.set(tactic, { tactic, findings: [] });
+    groups.get(tactic).findings.push(f);
   }
 
-  // Per-tab state container — every action mutates this and updates the
-  // affected DOM nodes in place (Issue #5: no full re-render so the
-  // viewport doesn't jump back to the top).
   pane._findings = {
     caseID,
     findingsById: Object.fromEntries(findings.map((f) => [f.finding_id, f])),
-    selected: new Set(),     // finding_ids the user has ticked
-    filter: "all",           // all | pending | reviewed
+    selected: new Set(),
+    filter: "all",         // all | pending | reviewed | auto-approved
+    sourceFilter: "all",   // all | tier1a | tier1b
   };
 
   pane.innerHTML = "";
 
-  // ── Toolbar (filter + bulk actions + summary) ──
   const toolbar = h("div", { class: "findings-toolbar" });
   pane.appendChild(toolbar);
   refreshFindingsToolbar(pane);
 
-  // ── Tactic groups ──
-  for (const [slug, g] of [...groups.entries()].sort((a, b) => a[1].id.localeCompare(b[1].id))) {
-    const list = h("div", { class: "findings hidden" }); // Issue #6: collapsed by default
+  // Tactic groups in the order they first appear (backend sort already
+  // surfaces highest-severity tactic first because findings are sorted
+  // severity-desc before grouping).
+  const groupOrder = [...groups.values()];
+  for (const g of groupOrder) {
+    const list = h("div", { class: "findings hidden" }); // collapsed by default
+    const visibleSubset = g.findings.filter((f) =>
+      findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter));
+    const sevSummary = severitySummary(g.findings);
     const header = h("div", { class: "tactic-header" }, [
       h("span", { class: "tactic-toggle" }, "▸"),
-      h("span", { class: "name" }, g.name || slug),
-      h("span", { class: "muted" }, "(" + g.id + ")"),
+      h("span", { class: "name" }, g.tactic),
       h("span", { class: "spacer" }),
+      ...sevSummary,
       h("span", { class: "count" }, g.findings.length + " findings"),
     ]);
     header.onclick = (ev) => {
-      // ignore clicks on the "select-all" checkbox (added below)
-      if (ev.target.tagName === "INPUT") return;
+      if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
       const collapsed = list.classList.toggle("hidden");
       header.querySelector(".tactic-toggle").textContent = collapsed ? "▸" : "▾";
     };
-    // Per-tactic select-all checkbox (Issue #5)
+
     const groupCheck = h("input", {
       type: "checkbox",
       class: "tactic-select-all",
-      title: "select all in this tactic",
+      title: "select every visible finding in this tactic",
       onclick: (ev) => {
         ev.stopPropagation();
         const checked = ev.target.checked;
         for (const f of g.findings) {
-          if (!findingMatchesFilter(f, pane._findings.filter)) continue;
+          if (!findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter)) continue;
           if (checked) pane._findings.selected.add(f.finding_id);
           else pane._findings.selected.delete(f.finding_id);
           const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(f.finding_id)}"]`);
@@ -1203,6 +1221,23 @@ async function renderFindings(pane, caseID) {
     });
     header.insertBefore(groupCheck, header.firstChild);
 
+    // Per-cluster bulk-approve button (Review Gate 1A — DESIGN §6.5).
+    const bulkApprove = h("button", {
+      class: "ghost",
+      style: "padding: 2px 8px; font-size: 11px; margin-left: 8px;",
+      title: "approve every pending finding in this tactic",
+      onclick: async (ev) => {
+        ev.stopPropagation();
+        const pendingIds = g.findings
+          .filter((f) => !f.approved && !f.rejected)
+          .map((f) => f.finding_id);
+        if (pendingIds.length === 0) return;
+        if (!confirm(`Approve ${pendingIds.length} pending finding(s) in tactic "${g.tactic}"?`)) return;
+        await runBulk(pane, pendingIds, "approve", "");
+      },
+    }, "Approve cluster");
+    header.appendChild(bulkApprove);
+
     g.findings.forEach((f) => list.appendChild(findingRow(caseID, f, pane)));
 
     const group = h("div", { class: "tactic-group" }, [header, list]);
@@ -1210,9 +1245,26 @@ async function renderFindings(pane, caseID) {
   }
 }
 
-function findingMatchesFilter(f, mode) {
-  if (mode === "pending")  return !f.approved && !f.rejected;
-  if (mode === "reviewed") return f.approved || f.rejected;
+// severitySummary renders compact severity-count chips for the tactic header.
+function severitySummary(findings) {
+  const counts = {critical:0, high:0, medium:0, low:0, info:0};
+  for (const f of findings) {
+    if (counts[f.severity] !== undefined) counts[f.severity]++;
+  }
+  const out = [];
+  for (const sev of ["critical","high","medium","low","info"]) {
+    if (counts[sev] === 0) continue;
+    out.push(h("span", { class: "badge sev-" + sev, style: "margin-right: 4px;" },
+      sev + ": " + counts[sev]));
+  }
+  return out;
+}
+
+function findingMatchesFilter(f, mode, sourceMode) {
+  if (sourceMode && sourceMode !== "all" && f.source !== sourceMode) return false;
+  if (mode === "pending")        return !f.approved && !f.rejected;
+  if (mode === "reviewed")       return (f.approved || f.rejected) && !f.auto_approved;
+  if (mode === "auto-approved")  return f.auto_approved;
   return true; // "all"
 }
 
@@ -1220,44 +1272,56 @@ function refreshFindingsToolbar(pane) {
   const state = pane._findings;
   const findings = Object.values(state.findingsById);
   const total = findings.length;
-  const approved = findings.filter((f) => f.approved).length;
+  const approved = findings.filter((f) => f.approved && !f.auto_approved).length;
+  const autoApproved = findings.filter((f) => f.auto_approved).length;
   const rejected = findings.filter((f) => f.rejected).length;
-  const pending = total - approved - rejected;
+  const pending = findings.filter((f) => !f.approved && !f.rejected).length;
   const selectedCount = state.selected.size;
-  const visibleCount = findings.filter((f) => findingMatchesFilter(f, state.filter)).length;
+  const visibleCount = findings.filter((f) =>
+    findingMatchesFilter(f, state.filter, state.sourceFilter)).length;
 
   const toolbar = pane.querySelector(".findings-toolbar");
   toolbar.innerHTML = "";
 
-  // Filter (Issue #4)
+  // Filter row 1: review state.
   const filterRow = h("div", { class: "row", style: "gap: 6px; align-items: center;" }, [
-    h("span", { class: "muted", style: "font-size: 11px;" }, "Filter:"),
-    ...["all","pending","reviewed"].map((mode) => {
-      const btn = h("button", {
+    h("span", { class: "muted", style: "font-size: 11px;" }, "State:"),
+    ...["all","pending","reviewed","auto-approved"].map((mode) => {
+      return h("button", {
         class: state.filter === mode ? "primary" : "ghost",
         style: "padding: 4px 10px; font-size: 11px;",
         onclick: () => {
           state.filter = mode;
-          // Apply CSS class to hide non-matching rows; no DOM rebuild.
-          for (const f of findings) {
-            const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
-            if (!row) continue;
-            row.classList.toggle("filtered-out", !findingMatchesFilter(f, mode));
-          }
+          applyVisibilityFilter(pane);
           refreshFindingsToolbar(pane);
         },
       }, mode);
-      return btn;
     }),
     h("span", { class: "spacer" }),
     h("span", { class: "muted", style: "font-size: 11px;" },
-      `Total ${total} · approved ${approved} · rejected ${rejected} · pending ${pending}` +
-      (state.filter !== "all" ? ` · showing ${visibleCount}` : "")),
+      `Total ${total} · pending ${pending} · reviewed ${approved} · auto ${autoApproved} · rejected ${rejected}` +
+      (state.filter !== "all" || state.sourceFilter !== "all" ? ` · showing ${visibleCount}` : "")),
   ]);
   toolbar.appendChild(filterRow);
 
-  // Bulk action row (Issue #5 + #10) — only shown when ≥1 selected, or
-  // always with the "approve all visible" button.
+  // Filter row 2: source (Tier 1A vs 1B).
+  const sourceRow = h("div", { class: "row", style: "gap: 6px; align-items: center; margin-top: 4px;" }, [
+    h("span", { class: "muted", style: "font-size: 11px;" }, "Source:"),
+    ...[["all","All"],["tier1a","Tier 1A (rules)"],["tier1b","Tier 1B (skills)"]].map(([mode,label]) => {
+      return h("button", {
+        class: state.sourceFilter === mode ? "primary" : "ghost",
+        style: "padding: 4px 10px; font-size: 11px;",
+        onclick: () => {
+          state.sourceFilter = mode;
+          applyVisibilityFilter(pane);
+          refreshFindingsToolbar(pane);
+        },
+      }, label);
+    }),
+  ]);
+  toolbar.appendChild(sourceRow);
+
+  // Bulk action row.
   const bulkRow = h("div", { class: "row", style: "gap: 6px; align-items: center; margin-top: 6px;" }, [
     h("span", { class: "muted", style: "font-size: 11px;" },
       selectedCount > 0 ? `${selectedCount} selected` : "(no rows selected)"),
@@ -1279,22 +1343,33 @@ function refreshFindingsToolbar(pane) {
       onclick: () => bulkAction(pane, "reset"),
     }, "Reset selected"),
     h("span", { class: "spacer" }),
-    // Issue #10: "Approve all visible" — respects current filter
     h("button", {
       class: "primary",
       style: "padding: 4px 10px; font-size: 11px;",
-      title: "Approve every finding currently visible (respects the filter above)",
+      title: "Approve every finding currently visible (respects the filters above)",
       disabled: visibleCount === 0 ? "disabled" : null,
       onclick: async () => {
         if (!confirm(`Approve all ${visibleCount} visible finding(s)?`)) return;
         const ids = findings
-          .filter((f) => findingMatchesFilter(f, state.filter))
+          .filter((f) => findingMatchesFilter(f, state.filter, state.sourceFilter))
           .map((f) => f.finding_id);
         await runBulk(pane, ids, "approve", "");
       },
     }, `Approve all visible (${visibleCount})`),
   ]);
   toolbar.appendChild(bulkRow);
+}
+
+// applyVisibilityFilter toggles per-row visibility based on the current
+// state/source filters without rebuilding the DOM (preserves scroll).
+function applyVisibilityFilter(pane) {
+  const state = pane._findings;
+  for (const f of Object.values(state.findingsById)) {
+    const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
+    if (!row) continue;
+    const visible = findingMatchesFilter(f, state.filter, state.sourceFilter);
+    row.classList.toggle("filtered-out", !visible);
+  }
 }
 
 async function bulkAction(pane, action) {
@@ -1333,19 +1408,25 @@ async function runBulk(pane, ids, action, reason) {
     toast(`${action}: ${res.updated} updated` +
           (res.not_found && res.not_found.length ? `, ${res.not_found.length} not found` : ""),
           "success");
-    // Update local state + DOM rows in place — no scroll jump (Issue #5)
+    // Update local state + DOM rows in place — no scroll jump.
     const now = new Date().toISOString();
     for (const id of ids) {
       const f = state.findingsById[id];
       if (!f) continue;
       if (action === "approve") {
         f.approved = true; f.rejected = false; f.reject_reason = "";
+        f.auto_approved = false; f.approved_by = "examiner-web";
         f.reviewed_at = now; f.reviewed_by = "examiner-web";
       } else if (action === "reject") {
-        f.approved = false; f.rejected = true; f.reject_reason = reason;
+        f.approved = false; f.rejected = true; f.reject_reason = reason || "";
+        f.auto_approved = false; f.approved_by = "";
         f.reviewed_at = now; f.reviewed_by = "examiner-web";
       } else if (action === "reset") {
-        f.approved = false; f.rejected = false; f.reject_reason = "";
+        // Restore severity-based default — mirrors AutoApproveByLevel in Go.
+        const autoOK = ["medium","low","info",""].includes(f.severity || "");
+        f.approved = autoOK; f.rejected = false; f.reject_reason = "";
+        f.auto_approved = autoOK;
+        f.approved_by = autoOK ? "auto:severity-rule" : "";
         f.reviewed_at = ""; f.reviewed_by = "";
       }
       updateFindingRowDOM(pane, f);
@@ -1364,20 +1445,17 @@ async function runBulk(pane, ids, action, reason) {
 
 // updateFindingRowDOM mutates the existing row element to reflect new
 // review state — used after a single or bulk action so the viewport
-// doesn't reset (Issue #5).
+// doesn't reset.
 function updateFindingRowDOM(pane, f) {
   const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
   if (!row) return;
-  row.className = "finding" + (f.approved ? " approved" : f.rejected ? " rejected" : "")
-                + (findingMatchesFilter(f, pane._findings.filter) ? "" : " filtered-out");
-  // Replace the state badge in the header
+  row.className = findingRowClass(f, pane);
   const stateBadge = row.querySelector(".state-badge");
   if (stateBadge) {
-    stateBadge.className = "badge state-badge "
-      + (f.approved ? "approved" : f.rejected ? "rejected" : "pending");
-    stateBadge.textContent = f.approved ? "approved" : f.rejected ? "rejected" : "pending";
+    const s = reviewStateLabel(f);
+    stateBadge.className = "badge state-badge " + s.cls;
+    stateBadge.textContent = s.label;
   }
-  // Replace the actions block
   const actions = row.querySelector(".actions");
   if (actions) {
     actions.innerHTML = "";
@@ -1385,11 +1463,26 @@ function updateFindingRowDOM(pane, f) {
   }
 }
 
+function findingRowClass(f, pane) {
+  let cls = "finding";
+  if (f.approved && f.auto_approved) cls += " auto-approved";
+  else if (f.approved) cls += " approved";
+  else if (f.rejected) cls += " rejected";
+  if (!findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter)) {
+    cls += " filtered-out";
+  }
+  return cls;
+}
+
+function reviewStateLabel(f) {
+  if (f.rejected)             return { cls: "rejected",      label: "rejected" };
+  if (f.approved && f.auto_approved) return { cls: "auto-approved", label: "auto" };
+  if (f.approved)             return { cls: "approved",      label: "approved" };
+  return { cls: "pending", label: "pending" };
+}
+
 function rebuildActionButtons(pane, f, actions) {
-  const caseID = pane._findings.caseID;
   if (!f.approved && !f.rejected) {
-    // Pending — show approve / reject (single-row buttons still work,
-    // but the bulk toolbar is the encouraged path for many at once).
     actions.appendChild(h("button", {
       onclick: () => runBulk(pane, [f.finding_id], "approve", ""),
     }, "Approve"));
@@ -1412,14 +1505,15 @@ function rebuildActionButtons(pane, f, actions) {
       },
     }, "Reject"));
   } else {
-    // Reviewed — show "by X at Y" + reset button (Issue #7)
+    const reviewedBy = f.auto_approved ? (f.approved_by || "auto:severity-rule") : (f.reviewed_by || "?");
+    const when = f.auto_approved ? "(severity default)" : fmtTS(f.reviewed_at);
     actions.appendChild(h("span", { class: "muted" },
-      "Reviewed by " + (f.reviewed_by || "?") + " · " + fmtTS(f.reviewed_at) +
+      "Reviewed by " + reviewedBy + " · " + when +
       (f.reject_reason ? " · reason: " + f.reject_reason : "")));
     actions.appendChild(h("button", {
       class: "ghost",
       style: "margin-left: 8px;",
-      title: "clear approve/reject and return to pending",
+      title: "clear examiner decision and restore severity default",
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
     }, "Reset"));
   }
@@ -1427,12 +1521,15 @@ function rebuildActionButtons(pane, f, actions) {
 
 function findingRow(caseID, f, pane) {
   const row = h("div", {
-    class: "finding" + (f.approved ? " approved" : f.rejected ? " rejected" : ""),
+    class: findingRowClass(f, pane),
     "data-fid": f.finding_id,
   });
-  const conf = (f.confidence || "low").toLowerCase();
+  const sev = f.severity || "info";
+  const sourceLabel = f.source === "tier1b"
+    ? "1B/" + (f.rule_id || "skill")
+    : "1A/" + (f.rule_source || "rule");
+  const stateLbl = reviewStateLabel(f);
 
-  // Header: row checkbox (Issue #5) + confidence badge + technique + state badge
   const headerLine = h("div", { class: "header" }, [
     h("input", {
       type: "checkbox",
@@ -1444,31 +1541,45 @@ function findingRow(caseID, f, pane) {
         refreshFindingsToolbar(pane);
       },
     }),
-    h("span", { class: "badge " + conf }, conf),
-    h("span", { class: "technique-id" }, f.technique_id || "?"),
-    h("span", { class: "technique-name" }, f.technique_name || ""),
+    h("span", { class: "badge sev-" + sev }, sev),
+    h("span", { class: "badge source-" + f.source, title: f.rule_id || "" }, sourceLabel),
+    h("span", { class: "finding-title" }, f.title || f.rule_id || "(untitled)"),
     h("span", { class: "spacer" }),
-    h("span", { class: "muted" }, f.finding_id),
-    h("span", {
-      class: "badge state-badge " + (f.approved ? "approved" : f.rejected ? "rejected" : "pending"),
-    }, f.approved ? "approved" : f.rejected ? "rejected" : "pending"),
+    ...(f.mitre_techniques || []).slice(0, 3).map((t) =>
+      h("a", {
+        class: "technique-id",
+        href: "https://attack.mitre.org/techniques/" + t.replace(/\./g, "/"),
+        target: "_blank",
+        rel: "noopener",
+        onclick: (ev) => ev.stopPropagation(),
+      }, t)
+    ),
+    h("span", { class: "badge state-badge " + stateLbl.cls }, stateLbl.label),
   ]);
   row.appendChild(headerLine);
-  row.appendChild(h("div", { class: "summary" }, f.summary || ""));
-  if (f.reasoning) row.appendChild(h("div", { class: "reasoning" }, f.reasoning));
 
-  // evidence list (collapsed by default). Issue #20: when expanded each row
-  // must show the underlying event's timestamp + full payload (fetched by
-  // audit_id once when the list is first opened — cached afterwards).
+  if (f.description) row.appendChild(h("div", { class: "reasoning" }, f.description));
+
+  // Sub-line: lens (1B) / source path / match_count.
+  const subLine = h("div", { class: "muted", style: "font-size: 11px; margin-top: 4px;" }, [
+    f.lens ? "lens=" + f.lens + " · " : "",
+    "matches=" + (f.match_count || 0) + (f.truncated ? "+" : ""),
+    f.source_path ? " · " + f.source_path : "",
+    "  ·  " + f.finding_id,
+  ].filter(Boolean).join(""));
+  row.appendChild(subLine);
+
+  // Evidence preview — backend returns up to 3 preview rows.
   const evList = h("div", { class: "evidence-list hidden" });
   const evItems = [];
-  (f.evidence || []).forEach((ev) => {
+  (f.evidence_preview || []).forEach((ev) => {
     const item = h("div", { class: "evidence-item" });
     item.appendChild(h("div", { class: "evidence-head" }, [
-      h("span", { class: "source" }, (ev.source_artifact || "?") + " "),
+      h("span", { class: "source" }, (ev.artifact_id || "?") + " "),
       h("span", { class: "audit-id" }, ev.audit_id),
+      ev.event_type ? h("span", { class: "muted", style: "margin-left: 6px;" }, ev.event_type) : "",
+      ev.ts_utc ? h("span", { class: "muted", style: "margin-left: 6px;" }, fmtTS(ev.ts_utc)) : "",
     ]));
-    if (ev.excerpt) item.appendChild(h("div", { class: "excerpt" }, ev.excerpt));
     const meta = h("div", { class: "evidence-meta muted" }, "");
     const payloadBox = h("pre", { class: "payload-pre evidence-payload" }, "");
     item.appendChild(meta);
@@ -1503,18 +1614,21 @@ function findingRow(caseID, f, pane) {
       }
     }));
   }
-  const toggle = h("div", { class: "evidence-toggle" }, `▸ ${(f.evidence || []).length} evidence rows`);
+  const previewCount = (f.evidence_preview || []).length;
+  const matchCount = f.match_count || 0;
+  const toggleLabel = previewCount < matchCount
+    ? `▸ ${previewCount} preview rows (of ${matchCount}${f.truncated ? "+" : ""})`
+    : `▸ ${previewCount} evidence rows`;
+  const toggle = h("div", { class: "evidence-toggle" }, toggleLabel);
   toggle.onclick = () => {
     const willOpen = evList.classList.contains("hidden");
     evList.classList.toggle("hidden");
-    toggle.textContent = (willOpen ? "▾ " : "▸ ") +
-                         (f.evidence || []).length + " evidence rows";
+    toggle.textContent = (willOpen ? "▾ " : "▸ ") + toggleLabel.slice(2);
     if (willOpen) loadEvidencePayloads();
   };
   row.appendChild(toggle);
   row.appendChild(evList);
 
-  // actions
   const actions = h("div", { class: "actions" });
   rebuildActionButtons(pane, f, actions);
   row.appendChild(actions);
@@ -1974,6 +2088,50 @@ function statusPushEvent(caseID, kind, before, now) {
   }
 }
 
+// mergeSummaryIntoPhaseResults promotes idle phases to "succeeded" when
+// their on-disk artefacts indicate the step previously completed (parse
+// rows in cases.duckdb, finding files, synthesis.json, reports/). The
+// message prefix "persisted · " distinguishes restored-from-disk state
+// from a fresh in-memory job finish.
+function mergeSummaryIntoPhaseResults(results, sum) {
+  if (!sum) return;
+  const promote = (kind, message, finishedAt) => {
+    const cur = results[kind];
+    if (!cur) return;
+    if (cur.state !== "idle") return; // active state wins
+    results[kind] = {
+      ...cur,
+      state: "succeeded",
+      message: "persisted · " + message,
+      finished_at: finishedAt || cur.finished_at || "",
+    };
+  };
+
+  if (sum.parse && sum.parse.events_total > 0) {
+    promote("parse",
+      `${sum.parse.events_total.toLocaleString()} events · ${sum.parse.evidence_count} evidence`,
+      sum.parse.last_parsed_at);
+  }
+  const t1a = (sum.tier1a && sum.tier1a.findings_count) || 0;
+  const t1b = (sum.tier1b && sum.tier1b.findings_count) || 0;
+  if (t1a + t1b > 0) {
+    promote("analyze",
+      `${t1a} Tier 1A · ${t1b} Tier 1B findings`,
+      (sum.tier1b && sum.tier1b.last_updated) ||
+      (sum.tier1a && sum.tier1a.last_updated) || "");
+  }
+  if (sum.synthesis && sum.synthesis.present) {
+    promote("synthesize",
+      `${sum.synthesis.clusters_count || 0} clusters · ${sum.synthesis.techniques_count || 0} techniques`,
+      sum.synthesis.generated_at);
+  }
+  if (sum.report && (sum.report.formats || []).length > 0) {
+    promote("report",
+      `formats: ${(sum.report.formats || []).join(", ")}`,
+      sum.report.generated_at);
+  }
+}
+
 function statusPhaseBadgeClass(state) {
   if (state === "running")   return "badge warn";
   if (state === "succeeded") return "badge ok";
@@ -2004,6 +2162,12 @@ async function renderStatus(pane, caseID) {
   }
 
   pane.innerHTML = "";
+
+  // Case-state snapshot — fetched once on tab open; refreshed alongside
+  // pipeline polling so newly-finished jobs surface within ~2 s.
+  const snapshotHost = h("div", { class: "case-snapshot", id: "case_snapshot" });
+  pane.appendChild(snapshotHost);
+  await paintCaseSnapshot(snapshotHost, caseID);
 
   // Pipeline overview row — one card per phase.
   const overview = h("div", { class: "status-overview", id: "status_overview" });
@@ -2044,6 +2208,13 @@ async function renderStatus(pane, caseID) {
         results[phase.kind] = { state: "idle" };
       }
     }
+    // JobStatus is in-memory and resets on server restart, so an "idle" phase
+    // may actually have finished work persisted to disk. Fall back to the
+    // case summary to surface that on-disk state.
+    try {
+      const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
+      mergeSummaryIntoPhaseResults(results, sum);
+    } catch (_) { /* summary optional */ }
     paintOverview(overview, results);
     paintDetails(detailWrap, caseID, results);
     paintEventLog($("#status_event_log", pane));
@@ -2052,7 +2223,146 @@ async function renderStatus(pane, caseID) {
 
   await tick();
   // Poll every 2 s. Same cadence as pipelinePolls so the two views agree.
-  statusTabPollID = setInterval(tick, 2000);
+  statusTabPollID = setInterval(async () => {
+    const anyRun = await tick();
+    // Refresh case snapshot when a job just transitioned to a terminal state,
+    // so the summary picks up new findings / synthesis / reports.
+    if (!anyRun) await paintCaseSnapshot(snapshotHost, caseID);
+  }, 2000);
+}
+
+async function paintCaseSnapshot(host, caseID) {
+  let sum;
+  try {
+    sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
+  } catch (e) {
+    host.innerHTML = `<div class="empty">summary unavailable: ${e.message}</div>`;
+    return;
+  }
+  host.innerHTML = "";
+
+  const card = h("div", { class: "card snapshot-card" });
+  card.appendChild(h("div", { class: "card-header" }, [
+    h("strong", {}, "Case snapshot"),
+    h("span", { class: "muted", style: "margin-left: 8px; font-size: 12px;" },
+      "(current artifact state, not job state)"),
+  ]));
+
+  const body = h("div", { class: "snapshot-body" });
+
+  // Tier 0 — parse
+  if (sum.parse) {
+    const p = sum.parse;
+    const artifacts = (p.artifacts || []).slice(0, 6)
+      .map((a) => `${a.artifact_id}=${a.event_count.toLocaleString()}`)
+      .join(" · ");
+    const more = (p.artifacts || []).length > 6
+      ? ` · +${p.artifacts.length - 6} more` : "";
+    body.appendChild(snapshotTile("Tier 0 · Parse",
+      [
+        kv("Evidence", p.evidence_count),
+        kv("Events", p.events_total.toLocaleString()),
+        kv("Last", fmtTS(p.last_parsed_at) || "—"),
+      ],
+      artifacts ? "Artifacts: " + artifacts + more : null
+    ));
+  } else {
+    body.appendChild(snapshotTile("Tier 0 · Parse",
+      [h("span", { class: "muted" }, "no parsed events yet")], null));
+  }
+
+  // Tier 1A
+  body.appendChild(findingsTile("Tier 1A · Signature rules", sum.tier1a));
+  // Tier 1B
+  body.appendChild(findingsTile("Tier 1B · Skill anomalies", sum.tier1b));
+
+  // Tier 2 synthesis
+  if (sum.synthesis && sum.synthesis.present) {
+    const s = sum.synthesis;
+    const rows = [
+      kv("Clusters", s.clusters_count || 0),
+      kv("MITRE techniques", s.techniques_count || 0),
+      kv("Open questions", s.open_questions_count || 0),
+      kv("LLM calls", s.llm_calls_total || 0),
+      kv("Generated", fmtTS(s.generated_at) || "—"),
+    ];
+    if (s.active_search_enabled) {
+      rows.push(kv("Active SQL",
+        `${s.active_sql_succeeded || 0}/${s.active_sql_attempted || 0} ok`));
+    }
+    body.appendChild(snapshotTile("Tier 2 · Synthesis", rows,
+      s.model_id ? "model: " + s.model_id : null));
+  } else {
+    body.appendChild(snapshotTile("Tier 2 · Synthesis",
+      [h("span", { class: "muted" }, "no synthesis.json yet")], null));
+  }
+
+  // Tier 3 report
+  if (sum.report) {
+    body.appendChild(snapshotTile("Tier 3 · Report",
+      [
+        kv("Formats", (sum.report.formats || []).join(", ")),
+        kv("Generated", fmtTS(sum.report.generated_at) || "—"),
+      ], null));
+  } else {
+    body.appendChild(snapshotTile("Tier 3 · Report",
+      [h("span", { class: "muted" }, "no reports generated yet")], null));
+  }
+
+  card.appendChild(body);
+  host.appendChild(card);
+}
+
+function snapshotTile(title, rows, footer) {
+  const tile = h("div", { class: "snapshot-tile" }, [
+    h("div", { class: "snapshot-tile-title" }, title),
+    ...rows,
+  ]);
+  if (footer) {
+    tile.appendChild(h("div", { class: "muted", style: "font-size: 11px; margin-top: 6px;" }, footer));
+  }
+  return tile;
+}
+
+function findingsTile(title, fs) {
+  if (!fs) {
+    return snapshotTile(title,
+      [h("span", { class: "muted" }, "no findings yet")], null);
+  }
+  const sevChips = ["critical","high","medium","low","info"]
+    .filter((s) => (fs.by_severity || {})[s])
+    .map((s) => h("span", { class: "badge sev-" + s, style: "margin-right: 4px;" },
+      `${s}:${fs.by_severity[s]}`));
+  const sources = Object.entries(fs.by_source || {})
+    .map(([k,v]) => `${k}=${v}`).join(" · ");
+  const tile = h("div", { class: "snapshot-tile" }, [
+    h("div", { class: "snapshot-tile-title" }, title),
+    h("div", { class: "snapshot-row" }, [
+      h("span", { class: "k" }, "Total"),
+      h("span", { class: "v" }, String(fs.findings_count)),
+    ]),
+    h("div", { class: "snapshot-row" }, [
+      h("span", { class: "k" }, "Severity"),
+      h("span", { class: "v" }, sevChips.length ? sevChips : "—"),
+    ]),
+    h("div", { class: "snapshot-row" }, [
+      h("span", { class: "k" }, "Review"),
+      h("span", { class: "v" },
+        `pending:${fs.pending_count} · approved:${fs.approved_count} · auto:${fs.auto_approved_count} · rejected:${fs.rejected_count}`),
+    ]),
+  ]);
+  if (sources) {
+    tile.appendChild(h("div", { class: "muted", style: "font-size: 11px; margin-top: 6px;" },
+      "Sources: " + sources));
+  }
+  return tile;
+}
+
+function kv(k, v) {
+  return h("div", { class: "snapshot-row" }, [
+    h("span", { class: "k" }, k),
+    h("span", { class: "v" }, String(v)),
+  ]);
 }
 
 function paintOverview(host, results) {
@@ -2631,12 +2941,12 @@ function showPayloadModal(ev) {
 //
 // Privacy: the user's first send each session triggers a one-shot warning
 // that case data will be transmitted. Stored in localStorage as a flag.
-// History is browser-local only (key: findevil:chat:<caseID|global>).
+// History is browser-local only (key: tlvb:chat:<caseID|global>).
 // ============================================================================
 
-const CHAT_STORAGE_PREFIX = "findevil:chat:";
-const CHAT_PRIVACY_ACK    = "findevil:chat:privacy-ack";
-const CHAT_PREFS          = "findevil:chat:prefs";
+const CHAT_STORAGE_PREFIX = "tlvb:chat:";
+const CHAT_PRIVACY_ACK    = "tlvb:chat:privacy-ack";
+const CHAT_PREFS          = "tlvb:chat:prefs";
 
 function currentChatScope() {
   // hash like #/cases/INC-2026-0003?tab=findings → caseID = INC-2026-0003
@@ -2681,7 +2991,7 @@ let chatState = {
 
 function mountChat() {
   // FAB
-  const fab = h("button", { class: "chat-fab", id: "chat-fab", title: "FindEvil Assistant" }, "💬");
+  const fab = h("button", { class: "chat-fab", id: "chat-fab", title: "TLVB Assistant" }, "💬");
   fab.onclick = () => toggleChatDrawer();
   document.body.appendChild(fab);
 
@@ -2724,12 +3034,12 @@ function renderChatDrawer(drawer) {
   const model  = prefs.model || "";
   const scope = chatState.scope;
   const ctxLabel = scope === "global"
-    ? "context: FindEvil documentation"
+    ? "context: TLVB documentation"
     : `context: case ${scope}`;
 
   drawer.innerHTML = "";
   drawer.appendChild(h("div", { class: "chat-header" }, [
-    h("span", { class: "title" }, "FindEvil Assistant"),
+    h("span", { class: "title" }, "TLVB Assistant"),
     h("span", { class: "ctx" }, ctxLabel),
     h("span", { class: "spacer" }),
     h("button", { class: "close-btn", title: "Close (Esc)", onclick: () => toggleChatDrawer() }, "×"),
@@ -2759,7 +3069,7 @@ function renderChatDrawer(drawer) {
   drawer.appendChild(h("div", { class: "chat-input-row" }, [
     h("textarea", {
       id: "chat-input",
-      placeholder: "Ask about FindEvil, or about this case's findings...  (Enter to send, Shift+Enter newline)",
+      placeholder: "Ask about TLVB, or about this case's findings...  (Enter to send, Shift+Enter newline)",
       onkeydown: (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {
           ev.preventDefault(); sendChat();
@@ -2777,7 +3087,7 @@ function redrawChatMessages() {
 
   if (chatState.msgs.length === 0) {
     const tip = chatState.scope === "global"
-      ? "Try: 「FindEvil の使い方を教えて」/ 「Persistence Tactic Agent は何を見ている？」"
+      ? "Try: 「TLVB の使い方を教えて」/ 「Tier 1A signature SQL Agent は何をしている？」"
       : "Try: 「このケースの最も重要な findings は？」/ 「Kill Chain を解説して」";
     msgArea.appendChild(h("div", { class: "chat-empty" }, tip));
   }
@@ -2819,7 +3129,7 @@ async function sendChat() {
   // First-send privacy ack — show one warning per browser, persist via localStorage.
   if (!localStorage.getItem(CHAT_PRIVACY_ACK)) {
     const ok = confirm(
-      "FindEvil Assistant について:\n\n" +
+      "TLVB Assistant について:\n\n" +
       "あなたのメッセージと現在のケースのサマリ (synthesis 結果) が、選択したエンジン" +
       " (claude-code / Anthropic API) に送信されます。\n\n" +
       "法的に機密性の高いケースで使用する場合は、データ転送の許諾を得てから続行してください。\n\n" +

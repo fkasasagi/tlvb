@@ -35,11 +35,11 @@ func TestComputeTimeout_DefaultsMatchSpec(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset env so test default applies.
-			t.Setenv("FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC", "")
-			t.Setenv("FINDEVIL_LLM_TIMEOUT_BUFFER_SEC", "")
-			t.Setenv("FINDEVIL_LLM_TIMEOUT_FLOOR_SEC", "")
-			t.Setenv("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", "")
-			t.Setenv("FINDEVIL_LLM_TIMEOUT_ANOMALY_MULT", "")
+			t.Setenv("TLVB_LLM_TIMEOUT_PER_EVENT_SEC", "")
+			t.Setenv("TLVB_LLM_TIMEOUT_BUFFER_SEC", "")
+			t.Setenv("TLVB_LLM_TIMEOUT_FLOOR_SEC", "")
+			t.Setenv("TLVB_LLM_TIMEOUT_CEILING_SEC", "")
+			t.Setenv("TLVB_LLM_TIMEOUT_ANOMALY_MULT", "")
 			got := ComputeTimeout(tc.tactic, tc.events)
 			want := time.Duration(tc.wantSec) * time.Second
 			if got != want {
@@ -52,8 +52,8 @@ func TestComputeTimeout_DefaultsMatchSpec(t *testing.T) {
 
 func TestComputeTimeout_EnvOverrideExtendsBudget(t *testing.T) {
 	// Operator on a slow model raises per-event cost; verify it scales.
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC", "10")  // 2x default
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", "7200")  // 2h cap
+	t.Setenv("TLVB_LLM_TIMEOUT_PER_EVENT_SEC", "10")  // 2x default
+	t.Setenv("TLVB_LLM_TIMEOUT_CEILING_SEC", "7200")  // 2h cap
 
 	got := ComputeTimeout("persistence", 200)
 	want := time.Duration(200*10+300) * time.Second // 2300s = ~38 min
@@ -64,8 +64,8 @@ func TestComputeTimeout_EnvOverrideExtendsBudget(t *testing.T) {
 
 func TestComputeTimeout_EnvOverrideAnomalyMult(t *testing.T) {
 	// Operator believes anomaly_hunter needs 2× (not 1.5×).
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_ANOMALY_MULT", "2.0")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", "7200")
+	t.Setenv("TLVB_LLM_TIMEOUT_ANOMALY_MULT", "2.0")
+	t.Setenv("TLVB_LLM_TIMEOUT_CEILING_SEC", "7200")
 
 	got := ComputeTimeout("anomaly_hunter", 100)
 	// 100*5+300 = 800, *2.0 = 1600
@@ -77,9 +77,9 @@ func TestComputeTimeout_EnvOverrideAnomalyMult(t *testing.T) {
 
 func TestComputeTimeout_BadEnvFallsBackToDefault(t *testing.T) {
 	// Fat-fingered env vars must not produce zero/negative budgets.
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC", "nope")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_FLOOR_SEC", "-5")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_PER_EVENT_SEC", "nope")
+	t.Setenv("TLVB_LLM_TIMEOUT_FLOOR_SEC", "-5")
+	t.Setenv("TLVB_LLM_TIMEOUT_CEILING_SEC", "")
 
 	got := ComputeTimeout("persistence", 100)
 	// Defaults stick: per_event=5, buffer=300, floor=600
@@ -91,11 +91,11 @@ func TestComputeTimeout_BadEnvFallsBackToDefault(t *testing.T) {
 }
 
 func TestComputeTimeout_NegativeEventsTreatedAsZero(t *testing.T) {
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC", "")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_BUFFER_SEC", "")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_FLOOR_SEC", "")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_CEILING_SEC", "")
-	t.Setenv("FINDEVIL_LLM_TIMEOUT_ANOMALY_MULT", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_PER_EVENT_SEC", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_BUFFER_SEC", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_FLOOR_SEC", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_CEILING_SEC", "")
+	t.Setenv("TLVB_LLM_TIMEOUT_ANOMALY_MULT", "")
 	got := ComputeTimeout("persistence", -100)
 	// events clamped to 0 → 0*5+300=300 < floor 600 → 600
 	if got != 600*time.Second {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/marcboeker/go-duckdb"
+	"github.com/tlvb/tlvb/internal/tier1a"
 )
 
 // llmContext is the JSON shape passed to the LLM as the user message.
@@ -153,6 +154,12 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			findings[i].FindingID = uuid.NewString()
 		}
 		findings[i].GeneratedAt = time.Now().UTC()
+		// Severity-based auto-approve, mirroring Tier 1A: critical/high
+		// require examiner review; medium/low/info are auto-approved.
+		if approved, by := tier1a.AutoApproveByLevel(findings[i].Severity); approved {
+			findings[i].Approved = true
+			findings[i].ApprovedBy = by
+		}
 	}
 
 	outPath := filepath.Join(cfg.FindingsBaseDir, "by-skill", skillName+".json")

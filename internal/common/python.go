@@ -9,7 +9,7 @@ import (
 // orchestrator should be invoked with.
 //
 // Resolution order:
-//  1. $FINDEVIL_PYTHON (explicit override — useful for nix / conda setups)
+//  1. $TLVB_PYTHON (explicit override — useful for nix / conda setups)
 //  2. <cwd>/.venv/bin/python3 (project-local venv created by scripts/setup.sh
 //     on PEP 668 distros — Ubuntu 24.04+, Debian 12+, etc.)
 //  3. "python3" (PATH lookup; system Python if no venv)
@@ -22,7 +22,7 @@ import (
 // so parsers can `import duckdb` without the user having to manually
 // activate the venv.
 func ResolvePython() string {
-	if p := os.Getenv("FINDEVIL_PYTHON"); p != "" {
+	if p := os.Getenv("TLVB_PYTHON"); p != "" {
 		return p
 	}
 	cwd, err := os.Getwd()

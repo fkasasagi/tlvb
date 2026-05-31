@@ -65,6 +65,10 @@ type FindingSummary struct {
 
 // AnomalyFinding is the LLM-emitted shape for one anomaly. The skill
 // prompt instructs Claude to produce JSON conforming to this.
+//
+// The Review Gate 1A state (Approved/Rejected/…) is filled in by the
+// runner using tier1a.AutoApproveByLevel(severity) so Tier 1B findings
+// flow through the same review pipeline as cached-SQL findings.
 type AnomalyFinding struct {
 	FindingID   string    `json:"finding_id"`            // server-assigned UUID
 	Lens        string    `json:"lens"`                  // "A1"|"A2"|"A4"|"A5"|"A6"|"A7"
@@ -75,6 +79,14 @@ type AnomalyFinding struct {
 	TechniqueID string    `json:"technique_id,omitempty"`// optional MITRE T-number
 	Tactic      string    `json:"tactic,omitempty"`      // optional kill-chain phase
 	GeneratedAt time.Time `json:"generated_at"`
+
+	// Review Gate 1A state (mirror of tier1a.Finding).
+	Approved     bool      `json:"approved"`
+	Rejected     bool      `json:"rejected,omitempty"`
+	ApprovedBy   string    `json:"approved_by,omitempty"`
+	RejectReason string    `json:"reject_reason,omitempty"`
+	ReviewedAt   time.Time `json:"reviewed_at,omitempty"`
+	ReviewedBy   string    `json:"reviewed_by,omitempty"`
 }
 
 // AnomalyReport is the wrapper written to disk

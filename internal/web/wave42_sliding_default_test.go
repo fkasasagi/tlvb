@@ -30,9 +30,9 @@ func TestSlidingWindowDefault(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("FINDEVIL_SLIDING_WINDOW", c.env)
+			t.Setenv("TLVB_SLIDING_WINDOW", c.env)
 			if got := slidingWindowDefault(); got != c.want {
-				t.Errorf("FINDEVIL_SLIDING_WINDOW=%q: got %v, want %v",
+				t.Errorf("TLVB_SLIDING_WINDOW=%q: got %v, want %v",
 					c.env, got, c.want)
 			}
 		})

@@ -135,7 +135,7 @@ Usage:
   tlvb synthesize CASE_ID [--correct] [--findings-dir DIR] [--out PATH]
   tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
-  tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy findevil pipeline
+  tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy tactic-based pipeline
   tlvb run CASE_ID --tier all --evidence PATH [--active-search]              # TLVB v0.1 one-shot pipeline
        [--skip-parse|--skip-1a|--skip-1b|--skip-2|--skip-report]
        [--format html,csv,json] [--language ja|en]
@@ -357,7 +357,7 @@ func runParse(args []string) error {
 	only := fs.String("only", "",
 		"comma-separated artifact_ids to restrict (e.g. evtx,registry)")
 	pythonBin := fs.String("python", "",
-		"python interpreter (default: $FINDEVIL_PYTHON, then ./.venv/bin/python3, then python3)")
+		"python interpreter (default: $TLVB_PYTHON, then ./.venv/bin/python3, then python3)")
 	// Issue #23: optional input-shape flags (match the Web Parse modal).
 	inputMode := fs.String("input-mode", "auto",
 		"auto|image|cdir|washizukami — input shape hint (Issue #23)")
@@ -696,12 +696,12 @@ func runAnalyze(args []string) error {
 	//   - timeout-seconds default 0 → auto-compute via
 	//     agents.ComputeTimeout(tactic, max_events). Operator can still
 	//     pass a positive value to force a fixed budget. Env-var overrides
-	//     (FINDEVIL_LLM_TIMEOUT_*) apply when --timeout-seconds=0.
+	//     (TLVB_LLM_TIMEOUT_*) apply when --timeout-seconds=0.
 	maxEvents := fs.Int("max-events", 400, "cap on events shown to the LLM")
 	maxIters := fs.Int("max-iters", 3, "JSON-validation retry budget")
 	timeoutSec := fs.Int("timeout-seconds", 0,
 		"wall-clock cap in seconds; 0 → auto-compute from --max-events + tactic via "+
-			"agents.ComputeTimeout (overridable with FINDEVIL_LLM_TIMEOUT_* env vars)")
+			"agents.ComputeTimeout (overridable with TLVB_LLM_TIMEOUT_* env vars)")
 	outDir := fs.String("out-dir", "",
 		"directory for findings JSON (default: outputs/cases/<case-id>/findings)")
 	dryRun := fs.Bool("dry-run", false,
@@ -2153,7 +2153,7 @@ func runCalibrate(args []string) error {
 	fmt.Println()
 	fmt.Println("Interpretation:")
 	fmt.Println("  per_event_sec is the slope of DurationSec ~ InputEvents (seconds per event).")
-	fmt.Println("  Compare to Wave 20a default = 5.0 s/event. Set FINDEVIL_LLM_TIMEOUT_PER_EVENT_SEC")
+	fmt.Println("  Compare to Wave 20a default = 5.0 s/event. Set TLVB_LLM_TIMEOUT_PER_EVENT_SEC")
 	fmt.Println("  to a calibrated value (e.g. max(slope) × 1.2 safety margin) to right-size timeouts.")
 	fmt.Println("  Low R² (<0.5) means events count alone is a poor predictor — also inspect")
 	fmt.Println("  PromptSizeChars + CacheHitTok before adopting the slope.")
