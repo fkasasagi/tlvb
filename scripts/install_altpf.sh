@@ -3,7 +3,7 @@
 #
 # altpf is the Prefetch parser primary engine (Wave 12 / Issue #27). It is
 # a pure-Go Linux-native parser with PECmd-compatible CSV output (LastRun +
-# PreviousRun0..6). FindEvil will fall back to Plaso `psteal.py --parsers
+# PreviousRun0..6). TLVB will fall back to Plaso `psteal.py --parsers
 # prefetch` automatically when altpf is absent, so this installer is
 # **optional** — but recommended for full PreviousRunN visibility and ~1000x
 # faster parsing than Plaso.
@@ -176,4 +176,4 @@ else
 fi
 
 echo
-green "Done. FindEvil prefetch_parser will pick this up automatically on next parse."
+green "Done. TLVB prefetch_parser will pick this up automatically on next parse."

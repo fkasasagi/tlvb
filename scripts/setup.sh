@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FindEvil setup — verify prerequisites and build the binary.
+# TLVB setup — verify prerequisites and build the binary.
 #
 # Tested on SANS SIFT Workstation (Ubuntu 22.04+). Runs idempotent: re-run
 # anytime to refresh the build. By default does NOT install missing system
@@ -41,7 +41,7 @@ yellow() { printf '\033[0;33m%s\033[0m\n' "$*"; }
 blue()   { printf '\033[0;34m%s\033[0m\n' "$*"; }
 bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 
-bold "FindEvil setup — $(pwd)"
+bold "TLVB setup — $(pwd)"
 echo
 
 # ---- core toolchain --------------------------------------------------------
@@ -131,7 +131,7 @@ check_dll "win10timeline"  "$EZT/WxTCmd.dll"               "P1"
 # install it by default so `./scripts/setup.sh` is the only command users
 # need to run; this is safe because the installer is sudo-free for /opt
 # (chowned on first run), idempotent, and SHA-256-verified. If install fails
-# (no network, no gh+curl, etc.) we fall through to a warning — FindEvil
+# (no network, no gh+curl, etc.) we fall through to a warning — TLVB
 # continues to work via the Plaso `psteal.py --parsers prefetch` fallback
 # (LastRun only).
 if [[ -x /opt/altpf/altpf ]]; then

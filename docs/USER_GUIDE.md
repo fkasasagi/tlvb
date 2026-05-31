@@ -1,6 +1,6 @@
-# FindEvil ユーザーガイド (はじめての方向け)
+# TLVB ユーザーガイド (はじめての方向け)
 
-このドキュメントは、セキュリティの専門知識がない方でも FindEvil を
+このドキュメントは、セキュリティの専門知識がない方でも TLVB を
 使えるようにするための手引きです。
 
 専門用語は本文中ではできるだけ避け、必要に応じて補足を入れています。
@@ -11,7 +11,7 @@
 
 ## 目次
 
-- [1. FindEvil って何？](#1-tlvb-って何)
+- [1. TLVB って何？](#1-tlvb-って何)
 - [2. 何ができるの？](#2-何ができるの)
 - [3. 5分でさわってみる](#3-5分でさわってみる)
 - [4. Web UI 完全ガイド](#4-web-ui-完全ガイド)
@@ -32,7 +32,7 @@
 
 ---
 
-## 1. FindEvil って何？
+## 1. TLVB って何？
 
 「**サイバー攻撃にあったかもしれないパソコンの中身**を、自動で調べてくれる
 道具」です。
@@ -44,11 +44,11 @@
 これは時間がかかる作業で、ベテランでも 1 件あたり 数日 〜 数週間 かかる
 ことが普通です。
 
-FindEvil は、その**最初の絞り込み**を **AIエージェント** に任せて
+TLVB は、その**最初の絞り込み**を **AIエージェント** に任せて
 自動化し、人間は「重要そうな発見」だけを確認すればよくする道具です。
 
 ```
-[攻撃された疑いのあるPCのデータ] → [FindEvil] → [疑わしい点の一覧]
+[攻撃された疑いのあるPCのデータ] → [TLVB] → [疑わしい点の一覧]
                                        ↓
                                   人間が確認 (承認/却下)
                                        ↓
@@ -56,7 +56,7 @@ FindEvil は、その**最初の絞り込み**を **AIエージェント** に�
 ```
 
 > **重要な原則**:
-> FindEvil は元の証拠データを **絶対に書き換えません**。
+> TLVB は元の証拠データを **絶対に書き換えません**。
 > すべての出力は別の場所(`outputs/cases/<ケースID>/`)に書き出されます。
 > これは法的な場面で証拠として使える状態を保つためです。
 
@@ -249,7 +249,7 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 
 | フィールド | 例 |
 |---|---|
-| Evidence path | `/cases/evtx-samples` (証拠データのフォルダかZIP) |
+| Evidence path | `./evtx-samples` (証拠データのフォルダかZIP) |
 | Evidence ID | `EV-001` (省略時は自動採番) |
 
 処理時間: 証拠データの量によりますが、通常 5〜30 分。
@@ -306,7 +306,7 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 
 ### 4.5 Findings タブ — 何が起きたかの一覧
 
-このタブで「FindEvil が見つけた疑わしい点」を一つずつ確認します。
+このタブで「TLVB が見つけた疑わしい点」を一つずつ確認します。
 これが **Examiner (調査者) の主な作業画面** です。
 
 #### 表示
@@ -491,7 +491,7 @@ TA0003 (Persistence)       │ [T1543.003 (Service)] [T1547.001 (Run Key)] ...
 
 ### 4.10 Audit タブ — 操作履歴
 
-FindEvil が実行したすべての処理(パース・解析など)が時系列で残ります。
+TLVB が実行したすべての処理(パース・解析など)が時系列で残ります。
 
 | 列 | 内容 |
 |---|---|
@@ -519,7 +519,7 @@ Web UI はバックエンドの REST API のラッパーです。コマンドラ
 tlvb case init --case-id INC-2026-0042 --name "test case" --examiner tanaka
 
 # Step 1: パース
-tlvb parse --case-id INC-2026-0042 --evidence-id EV-001 --input /cases/evtx-samples
+tlvb parse --case-id INC-2026-0042 --evidence-id EV-001 --input ./evtx-samples
 
 # Step 2: 解析 (1戦術ずつ)
 tlvb analyze INC-2026-0042 --tactic persistence
@@ -531,7 +531,7 @@ tlvb synthesize INC-2026-0042
 tlvb report INC-2026-0042 --format html,csv,json --language ja
 
 # 全ステップを一括で
-tlvb run INC-2026-0042 --evidence /cases/evtx-samples --name "auto" 
+tlvb run INC-2026-0042 --evidence ./evtx-samples --name "auto" 
 
 # 対話的に Approve/Reject を行う
 tlvb review INC-2026-0042 --gate 1 --examiner tanaka
@@ -609,19 +609,19 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 
 | 用語 | 説明 |
 |---|---|
-| **インシデント** | サイバー攻撃が疑われる出来事の単位。FindEvil の「ケース」1つ = 1インシデント |
+| **インシデント** | サイバー攻撃が疑われる出来事の単位。TLVB の「ケース」1つ = 1インシデント |
 | **インシデントレスポンス (IR)** | インシデントが起きたときの対応活動全般。「事故対応」 |
 | **フォレンジック (Digital Forensics, DFIR)** | コンピューター上に残った証拠を法的に通用する形で収集・分析する技術。直訳すると「デジタル鑑識」 |
 | **証拠 (Evidence)** | 攻撃の有無を判断する材料となるデータ。ハードディスクのコピー、ログファイル、メモリダンプなど |
 | **チェーン・オブ・カストディ (Chain of Custody)** | 「証拠が誰の手に渡り、誰がいつ何をしたか」の記録。法廷で証拠が認められるために必須 |
-| **読み取り専用 (Read-Only)** | 元の証拠ファイルを **絶対に書き換えない** という運用原則。FindEvil もこれを守ります |
+| **読み取り専用 (Read-Only)** | 元の証拠ファイルを **絶対に書き換えない** という運用原則。TLVB もこれを守ります |
 
 ### 攻撃のしくみと対策
 
 | 用語 | 説明 |
 |---|---|
 | **MITRE ATT&CK** | 米国 MITRE 社が公開している、攻撃者の手口のカタログ。業界標準の分類体系 |
-| **Tactic (戦術)** | ATT&CK の最上位カテゴリ。「攻撃者の目的」(例: 侵入する、居座る、情報を盗む)。FindEvil では 10 種類を扱う |
+| **Tactic (戦術)** | ATT&CK の最上位カテゴリ。「攻撃者の目的」(例: 侵入する、居座る、情報を盗む)。TLVB では 10 種類を扱う |
 | **Technique (テクニック)** | Tactic を達成する具体的な手段。例: T1543.003 は「Windows サービスを作って居座る」テクニック |
 | **Initial Access** | 最初にシステムに侵入する手口(フィッシングメール、脆弱性悪用など) |
 | **Execution** | 侵入後に悪意あるプログラムを実行すること |
@@ -671,13 +671,13 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 | **SOC (Security Operations Center)** | セキュリティ監視を行うチーム/部門 |
 | **検知ルール** | 「この条件に当てはまるログが出たらアラートを出す」というルール |
 | **誤検知 (False Positive, FP)** | 攻撃ではないのに攻撃と判定してしまうこと |
-| **見逃し (False Negative, FN)** | 攻撃なのに見逃してしまうこと。FindEvil は AI + Review Gate でこれを減らすのが狙い |
+| **見逃し (False Negative, FN)** | 攻撃なのに見逃してしまうこと。TLVB は AI + Review Gate でこれを減らすのが狙い |
 
-### FindEvil 特有の用語
+### TLVB 特有の用語
 
 | 用語 | 説明 |
 |---|---|
-| **Tactic Agent** | 1つの戦術を担当する AI エージェント。FindEvil は10種類を並列実行 |
+| **Tactic Agent** | 1つの戦術を担当する AI エージェント。TLVB は10種類を並列実行 |
 | **Anomaly Hunter** | 既存の戦術カテゴリに当てはまらない「何かおかしい」挙動を探す追加エージェント |
 | **TacticReport** | 1つの Tactic Agent が出力するJSON。発見事項のリスト+判断根拠+実行統計 |
 | **Synthesizer** | 10個の TacticReport を統合する処理。重複整理、整合性チェック、タイムライン構築、Kill Chain 推定を行う |
@@ -685,7 +685,7 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 | **Reporter** | 統合結果を HTML/CSV/JSON に整形する処理 |
 | **Review Gate** | 各処理の合間に人間がレビュー・承認/却下できるチェックポイント。Gate 0/1/2 がある |
 | **Examiner** | 調査者(ユーザー自身)。承認/却下の操作はExaminer名で記録される |
-| **Tier 0/1/2/3** | FindEvil 内部の処理層。Tier 0=パース, Tier 1=解析, Tier 2=統合, Tier 3=レポート |
+| **Tier 0/1/2/3** | TLVB 内部の処理層。Tier 0=パース, Tier 1=解析, Tier 2=統合, Tier 3=レポート |
 | **finding_id** | 個々の発見事項のID。形式: `F-<戦術>-<連番>` (例: `F-persistence-001`) |
 | **audit_id** | 個々のログイベントのID(ハッシュ値)。発見事項が「どのログを根拠にしているか」を一意に指せる |
 
@@ -693,10 +693,10 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 
 | 用語 | 説明 |
 |---|---|
-| **MCP (Model Context Protocol)** | AI エージェントが外部ツールを呼び出すための標準プロトコル。FindEvil 内部で使用 |
+| **MCP (Model Context Protocol)** | AI エージェントが外部ツールを呼び出すための標準プロトコル。TLVB 内部で使用 |
 | **EZ Tools** | フォレンジック界で広く使われている Eric Zimmerman 氏の解析ツール群。EvtxECmd, AmcacheParser, RECmd など |
-| **SIFT Workstation** | SANS Institute が提供しているフォレンジック専用 Linux 環境(Ubuntu ベース)。FindEvil の動作前提環境 |
-| **DuckDB** | FindEvil がイベントデータの保管に使う組み込みデータベース(SQLite に似て、分析向け) |
+| **SIFT Workstation** | SANS Institute が提供しているフォレンジック専用 Linux 環境(Ubuntu ベース)。TLVB の動作前提環境 |
+| **DuckDB** | TLVB がイベントデータの保管に使う組み込みデータベース(SQLite に似て、分析向け) |
 
 ---
 

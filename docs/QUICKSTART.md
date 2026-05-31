@@ -1,6 +1,6 @@
-# FindEvil Quickstart — 自分で試してみる
+# TLVB Quickstart — 自分で試してみる
 
-このドキュメントは「FindEvil を実際に動かしてみたい」人向けの手順書です。
+このドキュメントは「TLVB を実際に動かしてみたい」人向けの手順書です。
 SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI が
 入っていればどこでも動きます。
 
@@ -91,7 +91,7 @@ altpf が無くてもパース自体は走ります (Plaso fallback / LastRun �
 
 ```bash
 # 任意の場所に clone(SIFT 慣習なら /cases/、$HOME 配下でも OK)
-EVTX_DIR=/cases/evtx-samples       # ← お好きなパスで
+EVTX_DIR=./evtx-samples       # ← お好きなパスで
 sudo mkdir -p "$(dirname $EVTX_DIR)" && sudo chown $USER "$(dirname $EVTX_DIR)" 2>/dev/null
 git clone https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES.git "$EVTX_DIR"
 
@@ -108,7 +108,7 @@ ls "$EVTX_DIR/Persistence/" | head -3
 
 ## 1. MCP サーバ経由でケースを覗く (LLM 呼び出しなし)
 
-FindEvil の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
+TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 クライアントから繋げて、ケースの中身を read-only で問い合わせるのに
 使えます。
 
@@ -219,7 +219,7 @@ EVTX サンプル `Other` (~8 ファイル / 750 events) で Persistence Agent
 
 ```bash
 # 0b で設定した EVTX_DIR を引き継ぎ
-EVTX_DIR=${EVTX_DIR:-/cases/evtx-samples}
+EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
 # 3-1: ケース登録
 ./bin/tlvb case init \
@@ -258,7 +258,7 @@ API key 無しで動かすコツは `--engine claude-code` の指定です。
 ## 4. 全パイプラインを試す (LLM 呼び出し 11 回 / 約 35 分)
 
 ```bash
-EVTX_DIR=${EVTX_DIR:-/cases/evtx-samples}
+EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
 ./bin/tlvb run MY-FULL-001 \
     --evidence "$EVTX_DIR/Other" \
@@ -413,7 +413,7 @@ WebUI 側では:
   4 ボタンで一直線(各ボタンの右に進捗バー + ETA)
 - Findings タブで Approve / Reject(= Review Gate 1)
 - Events タブで Review Gate 0(parse 結果の承認)
-- 浮動 💬 ボタンで FindEvil Assistant チャット
+- 浮動 💬 ボタンで TLVB Assistant チャット
 
 詳細は `docs/USER_GUIDE.md` 参照。
 
