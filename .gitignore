@@ -57,3 +57,9 @@ venv/
 *.plaso
 libSQLite.Interop.so
 /tlvb
+
+# Claude Code session artefacts. scheduled_tasks.lock is a runtime
+# cron lock; worktrees/ contains sibling-session embedded git repos.
+# Neither belongs in this tree.
+.claude/scheduled_tasks.lock
+.claude/worktrees/
