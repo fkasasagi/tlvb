@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FindEvil environment verification.
+# TLVB environment verification.
 #
 # Runs deeper checks than scripts/setup.sh:
 #   - All registered parsers can import (Python)

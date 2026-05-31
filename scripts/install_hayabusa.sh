@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install_hayabusa.sh — Download and install Hayabusa (EVTX Sigma matcher).
 #
-# Hayabusa is the optional EVTX threat-hunting engine FindEvil's Tier 0
+# Hayabusa is the optional EVTX threat-hunting engine TLVB's Tier 0
 # `hayabusa_parser` calls when present. Absent → orchestrator silently
 # skips the artefact (graceful degradation). This installer mirrors the
 # altpf one: SHA-256 verified, idempotent, no sudo (with a writable
@@ -146,4 +146,4 @@ else
 fi
 
 echo
-green "Done. FindEvil hayabusa_parser will pick this up on next parse."
+green "Done. TLVB hayabusa_parser will pick this up on next parse."

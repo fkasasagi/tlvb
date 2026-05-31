@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze token usage across a findevil case pipeline.
+"""Analyze token usage across a tlvb case pipeline.
 
 Reads TacticReport / synthesis / report JSON files from outputs/cases/<id>/
 and produces a breakdown by tier, tactic, and model.
