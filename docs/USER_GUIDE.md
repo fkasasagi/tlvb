@@ -11,7 +11,7 @@
 
 ## 目次
 
-- [1. FindEvil って何？](#1-findevil-って何)
+- [1. FindEvil って何？](#1-tlvb-って何)
 - [2. 何ができるの？](#2-何ができるの)
 - [3. 5分でさわってみる](#3-5分でさわってみる)
 - [4. Web UI 完全ガイド](#4-web-ui-完全ガイド)
@@ -111,9 +111,9 @@ FindEvil は、その**最初の絞り込み**を **AIエージェント** に�
 ### ステップ 1 — Web サーバを起動
 
 ```bash
-cd /projects/findevil
-go build -o /tmp/findevil ./cmd/findevil
-/tmp/findevil serve --port 8080
+cd tlvb            # git clone したリポジトリのルート
+go build -o /tmp/tlvb ./cmd/tlvb
+/tmp/tlvb serve --port 8080
 ```
 
 > 起動したターミナルはそのまま開いたままにしておきます。
@@ -159,7 +159,7 @@ hostname -I
 ### 4.1 起動とアクセス
 
 ```bash
-/tmp/findevil serve --port 8080 [--db PATH] [--outputs DIR]
+/tmp/tlvb serve --port 8080 [--db PATH] [--outputs DIR]
 ```
 
 | オプション | デフォルト | 説明 |
@@ -516,28 +516,28 @@ Web UI はバックエンドの REST API のラッパーです。コマンドラ
 
 ```bash
 # ケース作成
-findevil case init --case-id INC-2026-0042 --name "test case" --examiner tanaka
+tlvb case init --case-id INC-2026-0042 --name "test case" --examiner tanaka
 
 # Step 1: パース
-findevil parse --case-id INC-2026-0042 --evidence-id EV-001 --input /cases/evtx-samples
+tlvb parse --case-id INC-2026-0042 --evidence-id EV-001 --input /cases/evtx-samples
 
 # Step 2: 解析 (1戦術ずつ)
-findevil analyze INC-2026-0042 --tactic persistence
+tlvb analyze INC-2026-0042 --tactic persistence
 
 # Step 3: 統合
-findevil synthesize INC-2026-0042
+tlvb synthesize INC-2026-0042
 
 # Step 4: レポート
-findevil report INC-2026-0042 --format html,csv,json --language ja
+tlvb report INC-2026-0042 --format html,csv,json --language ja
 
 # 全ステップを一括で
-findevil run INC-2026-0042 --evidence /cases/evtx-samples --name "auto" 
+tlvb run INC-2026-0042 --evidence /cases/evtx-samples --name "auto" 
 
 # 対話的に Approve/Reject を行う
-findevil review INC-2026-0042 --gate 1 --examiner tanaka
+tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 ```
 
-ヘルプ: `findevil --help`
+ヘルプ: `tlvb --help`
 
 ---
 
@@ -595,7 +595,7 @@ findevil review INC-2026-0042 --gate 1 --examiner tanaka
 
 ### Q. 毎回 `export ANTHROPIC_API_KEY=...` が面倒
 
-- リポジトリのルートに `.env.local` ファイルを作って `ANTHROPIC_API_KEY=sk-ant-...` と書けば、`findevil serve` 起動時に自動読み込みされます(2026-05 追加)
+- リポジトリのルートに `.env.local` ファイルを作って `ANTHROPIC_API_KEY=sk-ant-...` と書けば、`tlvb serve` 起動時に自動読み込みされます(2026-05 追加)
 - シェルで明示的に `export` した値が優先されるので、一時的な上書きも可能
 
 ---
@@ -714,7 +714,7 @@ findevil review INC-2026-0042 --gate 1 --examiner tanaka
                             │
                             ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  findevil serve  (Go バイナリ — UI も埋め込み済み)                    │
+│  tlvb serve  (Go バイナリ — UI も埋め込み済み)                    │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
 │  │ REST API     │  │ JobsManager  │  │ Embedded UI (HTML/CSS/JS)│  │
 │  │ /api/cases   │  │ (goroutine)  │  │ /static/app.js etc.      │  │

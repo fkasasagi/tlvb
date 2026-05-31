@@ -152,11 +152,11 @@ fi
 # the altpf installer pattern: idempotent, SHA-256 verified, sudo-free for
 # a writable /opt/hayabusa. Absent → orchestrator silently skips the
 # artefact (graceful degradation, see parsers/orchestrator.py::_hayabusa_present),
-# so install failure is a warning, not an error. Set FINDEVIL_SKIP_HAYABUSA=1
+# so install failure is a warning, not an error. Set TLVB_SKIP_HAYABUSA=1
 # in the environment to opt out — useful for air-gapped setups where the
 # 30 MB GitHub download isn't reachable.
-if [[ "${FINDEVIL_SKIP_HAYABUSA:-0}" == "1" ]]; then
-  yellow "  ! hayabusa install skipped (FINDEVIL_SKIP_HAYABUSA=1)"
+if [[ "${TLVB_SKIP_HAYABUSA:-0}" == "1" ]]; then
+  yellow "  ! hayabusa install skipped (TLVB_SKIP_HAYABUSA=1)"
 elif [[ -x /opt/hayabusa/hayabusa ]]; then
   haya_sha=$(sha256sum /opt/hayabusa/hayabusa 2>/dev/null | awk '{print substr($1,1,12)}')
   green "  ✓ P1 hayabusa (/opt/hayabusa/hayabusa, sha256:${haya_sha}...)"
@@ -167,7 +167,7 @@ else
   else
     yellow "    ! hayabusa install failed — evtx Sigma hunting will be skipped"
     echo  "      retry manually with: ./scripts/install_hayabusa.sh"
-    echo  "      or pass FINDEVIL_SKIP_HAYABUSA=1 to silence this in air-gapped setups"
+    echo  "      or pass TLVB_SKIP_HAYABUSA=1 to silence this in air-gapped setups"
     warnings=$((warnings + 1))
   fi
 fi
@@ -189,11 +189,11 @@ VENV=./.venv
 PY_VER=$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
-  if python3 -m venv "$VENV" 2>/tmp/findevil-venv.err; then
+  if python3 -m venv "$VENV" 2>/tmp/tlvb-venv.err; then
     green "  ✓ created $VENV"
   else
     red   "  ✗ python3 -m venv failed:"
-    cat /tmp/findevil-venv.err | sed 's/^/      /'
+    cat /tmp/tlvb-venv.err | sed 's/^/      /'
     if [[ $AUTO_INSTALL -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
       # Build the apt package list, version-specific first.
       apt_pkgs=()
@@ -214,11 +214,11 @@ if [[ ! -x "$VENV/bin/python3" ]]; then
           install_ok=1
         fi
       fi
-      if [[ $install_ok -eq 1 ]] && python3 -m venv "$VENV" 2>/tmp/findevil-venv.err; then
+      if [[ $install_ok -eq 1 ]] && python3 -m venv "$VENV" 2>/tmp/tlvb-venv.err; then
         green "  ✓ created $VENV (after auto-install)"
       else
         red "  ✗ venv still failing after apt install:"
-        cat /tmp/findevil-venv.err | sed 's/^/      /'
+        cat /tmp/tlvb-venv.err | sed 's/^/      /'
         errors=$((errors + 1))
       fi
     else
@@ -247,11 +247,11 @@ if [[ -x "$VENV/bin/python3" ]]; then
   else
     yellow "  ! installing into $VENV: ${missing_pkgs[*]}"
     if "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 \
-       && "$VENV/bin/pip" install --quiet "${missing_pkgs[@]}" 2>/tmp/findevil-pip.err; then
+       && "$VENV/bin/pip" install --quiet "${missing_pkgs[@]}" 2>/tmp/tlvb-pip.err; then
       green "    installed: ${missing_pkgs[*]}"
     else
       red   "    pip install FAILED:"
-      tail -10 /tmp/findevil-pip.err 2>/dev/null | sed 's/^/      /'
+      tail -10 /tmp/tlvb-pip.err 2>/dev/null | sed 's/^/      /'
       errors=$((errors + 1))
     fi
   fi
@@ -259,10 +259,10 @@ fi
 
 # ---- Go build --------------------------------------------------------------
 echo
-bold "Building bin/findevil ..."
+bold "Building bin/tlvb ..."
 mkdir -p bin
-if go build -o bin/findevil ./cmd/findevil; then
-  green "  ✓ built $(pwd)/bin/findevil ($(du -h bin/findevil | awk '{print $1}'))"
+if go build -o bin/tlvb ./cmd/tlvb; then
+  green "  ✓ built $(pwd)/bin/tlvb ($(du -h bin/tlvb | awk '{print $1}'))"
 else
   red "  ✗ go build failed"
   errors=$((errors + 1))
@@ -280,7 +280,7 @@ if [[ $errors -eq 0 ]]; then
   echo
   blue "Next:"
   echo "  ./scripts/verify.sh           # detailed environment check"
-  echo "  ./bin/findevil serve --port 8080"
+  echo "  ./bin/tlvb serve --port 8080"
   echo "  open http://localhost:8080/   # or http://<VM-IP>:8080/"
   exit 0
 else
