@@ -107,7 +107,7 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string) {
 		for _, e := range evs {
 			meta.Evidence = append(meta.Evidence, tier3.EvidenceItem{
 				EvidenceID:   e.EvidenceID,
-				SourcePath:   e.Path,
+				SourcePath:   filepath.Base(e.Path),
 				SHA256:       e.SHA256,
 				SizeBytes:    e.SizeBytes,
 				RegisteredAt: e.RegisteredAt,

@@ -716,6 +716,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <!-- 5. Findings by cluster -->
 <section>
   <h2>5. {{.Dict.Cluster}}</h2>
+  {{if not .Clusters}}<p class="empty">{{.Dict.None}}</p>{{end}}
   {{range .Clusters}}
   <article class="cluster" id="cluster-{{.ID}}">
     <h3>#{{.ID}} — {{phaseLabel .AttackPhase}}</h3>
