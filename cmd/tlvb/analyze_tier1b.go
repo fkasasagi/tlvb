@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/tier1b"
 )
 
@@ -25,12 +26,21 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 		"model id (empty = let claude CLI default)")
 	timeoutMin := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
 	dryRun := fs.Bool("dry-run", false, "build prompt and stats, skip the LLM call")
+	rulesDB := fs.String("rules-db", "outputs/rules.duckdb",
+		"rules DuckDB path (skill_sql_cache for Tier 1B v0.2 learned lenses)")
+	noSkillCache := fs.Bool("no-skill-cache", false,
+		"disable the skill SQL cache (v0.1 heuristic-only behaviour)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	if *outDir == "" {
 		*outDir = filepath.Join("outputs", "cases", caseID, "findings")
+	}
+
+	modelID := *model
+	if modelID == "" {
+		modelID = "claude-code-default"
 	}
 
 	cfg := tier1b.Config{
@@ -43,6 +53,10 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 		Timeout:         time.Duration(*timeoutMin) * time.Minute,
 		DryRun:          *dryRun,
 		ProgressFn:      tier1bProgress(),
+		RulesDBPath:     *rulesDB,
+		NoSkillCache:    *noSkillCache,
+		SchemaVersion:   casedb.SchemaVersion(),
+		ModelID:         modelID,
 	}
 	fmt.Fprintf(os.Stderr, "tier 1B (Skills-driven Anomaly) — case=%s findings_base=%s\n",
 		caseID, *outDir)
@@ -66,9 +80,17 @@ func printTier1BReport(rep *tier1b.Report, dryRun bool) {
 	fmt.Printf("  events scanned:           %d\n", rep.EventsScanned)
 	fmt.Printf("  candidates (in window):   %d  (truncated=%v)\n",
 		rep.EventsInWindow, rep.Truncated)
+	if rep.CacheEnabled {
+		fmt.Printf("  skill cache:              %d available / %d executed / %d hits\n",
+			rep.SkillSQLAvailable, rep.SkillSQLExecuted, rep.SkillSQLHits)
+	}
 	if dryRun {
 		fmt.Printf("\n  (dry-run: LLM call skipped)\n")
 		return
+	}
+	if rep.CacheEnabled {
+		fmt.Printf("  cache growth:             %d proposed / %d appended / %d promoted\n",
+			rep.CandidatesProposed, rep.CandidatesAppended, rep.Promoted)
 	}
 	fmt.Printf("  LLM call duration:        %.1fs\n", rep.LLMCallDurationS)
 	fmt.Printf("  new findings:             %d\n", len(rep.NewFindings))

@@ -7,22 +7,38 @@
 // straightforward.
 //
 // Schema:
-//   rule_sql_cache (rule_id, rule_source, rule_sha256, schema_version,
-//                   model_id, sql, state, generated_at, prefilter_artifacts,
-//                   rule_meta)
-//     PRIMARY KEY (rule_id, rule_source)
-//     state: 'pending' | 'built' | 'failed'
+//
+//	rule_sql_cache (rule_id, rule_source, rule_sha256, schema_version,
+//	                model_id, sql, state, generated_at, prefilter_artifacts,
+//	                rule_meta)
+//	  PRIMARY KEY (rule_id, rule_source)
+//	  state: 'pending' | 'built' | 'failed'
+//
+//	skill_sql_cache (skill, sql_sha256, sql, intent, state, origin_case,
+//	                 generated_at, hit_count, last_used_case,
+//	                 schema_version, model_id)               -- Tier 1B v0.2
+//	  PRIMARY KEY (skill, sql_sha256)
+//	  state: 'candidate' (LLM-proposed, unproven)
+//	       | 'canonical'  (produced a real finding in >=1 case)
+//	The two tables share the DB but NOT lifecycle/PK — see the Tier 1B
+//	hybrid-cache design memo. rule_sql_cache is build-time prebake; skill
+//	queries grow at runtime as the anomaly agent learns reusable lenses.
 //
 // Cache invalidation:
-//   The combination (rule_sha256, schema_version, model_id) is the validity
-//   signature. If any of the three drift from the values stored on a row,
-//   the row is considered stale and the build pipeline will reset it to
-//   'pending' before re-generating.
+//
+//	The combination (rule_sha256, schema_version, model_id) is the validity
+//	signature. If any of the three drift from the values stored on a row,
+//	the row is considered stale and the build pipeline will reset it to
+//	'pending' before re-generating. For skill_sql_cache the signature is
+//	(schema_version, model_id): rows are loaded only when both match the
+//	current runtime values, so stale learned SQL is silently ignored.
 package rulesdb
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -119,6 +135,20 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 		// indexed columns, and we update `state` via the UPSERT. At a few
 		// thousand rows the full scan is sub-millisecond, so we don't need
 		// the index for query speed either.
+		`CREATE TABLE IF NOT EXISTS skill_sql_cache (
+			skill           VARCHAR NOT NULL,
+			sql_sha256      VARCHAR NOT NULL,
+			sql             VARCHAR NOT NULL,
+			intent          VARCHAR,
+			state           VARCHAR NOT NULL DEFAULT 'candidate',
+			origin_case     VARCHAR,
+			generated_at    TIMESTAMP,
+			hit_count       INTEGER NOT NULL DEFAULT 0,
+			last_used_case  VARCHAR,
+			schema_version  VARCHAR NOT NULL,
+			model_id        VARCHAR NOT NULL,
+			PRIMARY KEY (skill, sql_sha256)
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := m.db.ExecContext(ctx, s); err != nil {
@@ -139,17 +169,17 @@ const (
 
 // CacheRow is the in-memory shape of a rule_sql_cache row.
 type CacheRow struct {
-	RuleID              string
-	RuleSource          string
-	RuleSHA256          string
-	SchemaVersion       string
-	ModelID             string
-	SQL                 string
-	State               CacheState
-	GeneratedAt         *time.Time
-	PrefilterArtifacts  string // comma-separated, may be empty
-	RuleMeta            string // JSON-encoded
-	ErrorMessage        string
+	RuleID             string
+	RuleSource         string
+	RuleSHA256         string
+	SchemaVersion      string
+	ModelID            string
+	SQL                string
+	State              CacheState
+	GeneratedAt        *time.Time
+	PrefilterArtifacts string // comma-separated, may be empty
+	RuleMeta           string // JSON-encoded
+	ErrorMessage       string
 }
 
 // UpsertPending inserts or updates a row to 'pending' state, used by the
@@ -338,6 +368,166 @@ func scanCacheRows(rows *sql.Rows) ([]CacheRow, error) {
 			return nil, err
 		}
 		r.State = CacheState(state)
+		if gen.Valid {
+			t := gen.Time
+			r.GeneratedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ----------------------------------------------------------------------------
+// skill_sql_cache — Tier 1B v0.2 learned-lens storage
+// ----------------------------------------------------------------------------
+
+// SkillState is the proof status of a learned skill query.
+type SkillState string
+
+const (
+	// SkillCandidate is an LLM-proposed query that has not yet produced a
+	// finding. It is executed on a trial basis but may be pruned by a
+	// signature change.
+	SkillCandidate SkillState = "candidate"
+	// SkillCanonical is a query that produced a real finding in at least
+	// one case. It runs unconditionally with zero LLM cost thereafter.
+	SkillCanonical SkillState = "canonical"
+)
+
+// SkillSQLRow is the in-memory shape of a skill_sql_cache row.
+type SkillSQLRow struct {
+	Skill         string
+	SQLSHA256     string // hash of the normalized SQL; auto-filled on upsert if empty
+	SQL           string
+	Intent        string
+	State         SkillState
+	OriginCase    string
+	GeneratedAt   *time.Time
+	HitCount      int
+	LastUsedCase  string
+	SchemaVersion string
+	ModelID       string
+}
+
+// NormalizeSkillSQL canonicalises SQL for dedup hashing: lowercase, collapse
+// whitespace runs to a single space, trim, and drop a trailing ';'. Two
+// queries that differ only in formatting or literal whitespace hash equal.
+func NormalizeSkillSQL(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSuffix(strings.TrimSpace(s), ";")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// SkillSQLHash returns the sha256 hex of the normalized SQL — the dedup key.
+func SkillSQLHash(s string) string {
+	h := sha256.Sum256([]byte(NormalizeSkillSQL(s)))
+	return hex.EncodeToString(h[:])
+}
+
+// UpsertSkillCandidate stores a newly LLM-proposed query as a 'candidate'.
+// Returns inserted=true only when (skill, sql_sha256) was new. Existing rows
+// (candidate or canonical) are left untouched so we never demote a proven
+// query or reset its hit_count — dedup by normalized-SQL hash absorbs
+// literal-only variation across runs.
+func (m *Manager) UpsertSkillCandidate(ctx context.Context, r SkillSQLRow) (bool, error) {
+	if m.mode == ReadOnly {
+		return false, errors.New("rulesdb opened read-only")
+	}
+	if r.SQLSHA256 == "" {
+		r.SQLSHA256 = SkillSQLHash(r.SQL)
+	}
+	var one int
+	err := m.db.QueryRowContext(ctx,
+		`SELECT 1 FROM skill_sql_cache WHERE skill = ? AND sql_sha256 = ?`,
+		r.Skill, r.SQLSHA256).Scan(&one)
+	if err == nil {
+		return false, nil // already present
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+	_, err = m.db.ExecContext(ctx, `
+		INSERT INTO skill_sql_cache
+		    (skill, sql_sha256, sql, intent, state, origin_case, generated_at,
+		     hit_count, last_used_case, schema_version, model_id)
+		VALUES (?, ?, ?, ?, 'candidate', ?, ?, 0, NULL, ?, ?)`,
+		r.Skill, r.SQLSHA256, r.SQL, r.Intent, r.OriginCase,
+		time.Now().UTC(), r.SchemaVersion, r.ModelID)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PromoteSkillSQL marks a query as proven: state -> 'canonical', hit_count++,
+// last_used_case set. It is safe to call on an already-canonical row (just
+// bumps the counter), so the runner can call it for every cited query
+// regardless of current state.
+func (m *Manager) PromoteSkillSQL(ctx context.Context, skill, sqlSHA256, usedCase string) error {
+	if m.mode == ReadOnly {
+		return errors.New("rulesdb opened read-only")
+	}
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE skill_sql_cache
+		   SET state = 'canonical', hit_count = hit_count + 1, last_used_case = ?
+		 WHERE skill = ? AND sql_sha256 = ?`,
+		usedCase, skill, sqlSHA256)
+	return err
+}
+
+// ListSkillSQL returns the queries for a skill whose validity signature
+// (schema_version, model_id) matches the current runtime values. Stale rows
+// (built under a different schema/model) are silently excluded — that is the
+// invalidation mechanism. Ordered canonical-first, then by hit_count desc.
+func (m *Manager) ListSkillSQL(ctx context.Context, skill, schemaVersion, modelID string) ([]SkillSQLRow, error) {
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT skill, sql_sha256, sql, COALESCE(intent, ''), state,
+		       COALESCE(origin_case, ''), generated_at, hit_count,
+		       COALESCE(last_used_case, ''), schema_version, model_id
+		  FROM skill_sql_cache
+		 WHERE skill = ? AND schema_version = ? AND model_id = ?
+		 ORDER BY CASE state WHEN 'canonical' THEN 0 ELSE 1 END,
+		          hit_count DESC, sql_sha256`,
+		skill, schemaVersion, modelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkillRows(rows)
+}
+
+// CountSkillByState returns counts grouped by state across all skills.
+func (m *Manager) CountSkillByState(ctx context.Context) (map[SkillState]int, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT state, COUNT(*) FROM skill_sql_cache GROUP BY state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[SkillState]int{}
+	for rows.Next() {
+		var s string
+		var c int
+		if err := rows.Scan(&s, &c); err != nil {
+			return nil, err
+		}
+		out[SkillState(s)] = c
+	}
+	return out, rows.Err()
+}
+
+func scanSkillRows(rows *sql.Rows) ([]SkillSQLRow, error) {
+	var out []SkillSQLRow
+	for rows.Next() {
+		var r SkillSQLRow
+		var gen sql.NullTime
+		var state string
+		if err := rows.Scan(&r.Skill, &r.SQLSHA256, &r.SQL, &r.Intent, &state,
+			&r.OriginCase, &gen, &r.HitCount, &r.LastUsedCase,
+			&r.SchemaVersion, &r.ModelID); err != nil {
+			return nil, err
+		}
+		r.State = SkillState(state)
 		if gen.Valid {
 			t := gen.Time
 			r.GeneratedAt = &t

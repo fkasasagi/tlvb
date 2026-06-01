@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/marcboeker/go-duckdb"
+	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/tier1a"
 )
 
@@ -32,6 +33,7 @@ type llmContext struct {
 	Truncated             bool           `json:"truncated"`
 	WindowMin             string         `json:"window_min,omitempty"`
 	WindowMax             string         `json:"window_max,omitempty"`
+	ExistingIntents       []intentInfo   `json:"existing_skill_intents,omitempty"`
 	Events                []eventForLLM  `json:"events"`
 }
 
@@ -70,6 +72,16 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Minute
+	}
+	if cfg.SchemaVersion == "" {
+		cfg.SchemaVersion = "unknown"
+	}
+	if cfg.ModelID == "" {
+		if cfg.Model != "" {
+			cfg.ModelID = cfg.Model
+		} else {
+			cfg.ModelID = "claude-code-default"
+		}
 	}
 
 	rep := &Report{CaseID: cfg.CaseID}
@@ -116,8 +128,76 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		Message: fmt.Sprintf("scanned=%d, candidates=%d (truncated=%v)",
 			totalScanned, bundle.Total, rep.Truncated)})
 
-	hctx := buildLLMContext(cfg.CaseID, prior, bundle)
-	userMsg, err := buildUserMessage(hctx)
+	// --- Tier 1B v0.2: skill SQL cache (canonical + candidate execution) ---
+	// Learned queries augment the heuristic prefilter: canonical SQL runs
+	// with zero LLM cost, candidate SQL runs on a trial basis. Hits are
+	// merged into the candidate bundle so the LLM interprets them alongside
+	// heuristic candidates; auditToSQL lets us promote a query when the LLM
+	// cites one of its rows in a finding. Fully optional — any failure here
+	// degrades gracefully to the v0.1 heuristic-only path.
+	var (
+		cacheMgr        *rulesdb.Manager
+		auditToSQL      = map[string][]string{}
+		existingIntents []intentInfo
+	)
+	cacheEnabled := !cfg.NoSkillCache && cfg.RulesDBPath != ""
+	if cacheEnabled && cfg.DryRun {
+		if _, statErr := os.Stat(cfg.RulesDBPath); statErr != nil {
+			cacheEnabled = false // don't create rules.duckdb just to dry-run
+		}
+	}
+	if cacheEnabled {
+		m, openErr := rulesdb.Open(cfg.RulesDBPath, rulesdb.ReadWrite)
+		if openErr != nil {
+			emit(cfg, Event{Phase: "cache",
+				Message: "skill cache disabled (open failed): " + openErr.Error()})
+			cacheEnabled = false
+		} else {
+			cacheMgr = m
+			defer cacheMgr.Close()
+		}
+	}
+	if cacheEnabled {
+		rep.CacheEnabled = true
+		cacheRows, listErr := cacheMgr.ListSkillSQL(ctx, skillName, cfg.SchemaVersion, cfg.ModelID)
+		if listErr != nil {
+			emit(cfg, Event{Phase: "cache", Message: "list skill SQL failed: " + listErr.Error()})
+		} else {
+			rep.SkillSQLAvailable = len(cacheRows)
+			entries := make([]skillCacheEntry, 0, len(cacheRows))
+			var allAudits []string
+			for _, r := range cacheRows {
+				entries = append(entries, skillCacheEntry{
+					SQLSHA256: r.SQLSHA256, SQL: r.SQL, Intent: r.Intent,
+					State: string(r.State), HitCount: r.HitCount,
+				})
+				if err := validateSkillSQL(r.SQL); err != nil {
+					continue // stored row no longer passes the guard — skip
+				}
+				audits, n, execErr := execSkillSQLAudits(ctx, db, cfg.CaseID, r.SQL, cfg.MaxEvents)
+				if execErr != nil {
+					continue // graceful: one bad query doesn't abort the run
+				}
+				rep.SkillSQLExecuted++
+				rep.SkillSQLHits += n
+				for _, a := range audits {
+					auditToSQL[a] = append(auditToSQL[a], r.SQLSHA256)
+					allAudits = append(allAudits, a)
+				}
+			}
+			existingIntents = distinctIntents(entries)
+			if cacheCands, hErr := hydrateCandidates(ctx, db, cfg.CaseID,
+				dedupStrings(allAudits, cfg.MaxEvents)); hErr == nil && len(cacheCands) > 0 {
+				bundle.Events = mergeCacheCandidates(bundle.Events, cacheCands, cfg.MaxEvents)
+			}
+			emit(cfg, Event{Phase: "cache",
+				Message: fmt.Sprintf("cache queries=%d executed=%d hits=%d merged_candidates=%d",
+					rep.SkillSQLAvailable, rep.SkillSQLExecuted, rep.SkillSQLHits, len(bundle.Events))})
+		}
+	}
+
+	hctx := buildLLMContext(cfg.CaseID, prior, bundle, existingIntents)
+	userMsg, err := buildUserMessage(hctx, cacheEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +225,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	_ = os.MkdirAll(filepath.Dir(rawDebugPath), 0o755)
 	_ = os.WriteFile(rawDebugPath, []byte(resp.Result), 0o644)
 
-	findings, err := parseAnomalyFindings(resp.Result, prior.UniqueAudits)
+	findings, plans, err := parseAnomalyOutput(resp.Result)
 	if err != nil {
 		return rep, fmt.Errorf("parse LLM output: %w (raw saved to %s)", err, rawDebugPath)
 	}
@@ -185,6 +265,37 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	rep.OutputPath = outPath
 
+	// --- Tier 1B v0.2: grow the skill SQL cache ---
+	// Newly-proposed queries become 'candidate' rows (trialed next run); any
+	// cached query whose rows the LLM cited in a finding is promoted to
+	// 'canonical' (zero-LLM from now on). This is the cross-case learning
+	// loop — cost decreases as proven lenses accumulate.
+	if cacheEnabled && cacheMgr != nil {
+		rep.CandidatesProposed = len(plans)
+		for _, p := range plans {
+			if validateSkillSQL(p.SQL) != nil {
+				continue // never store a query that fails the safety guard
+			}
+			inserted, upErr := cacheMgr.UpsertSkillCandidate(ctx, rulesdb.SkillSQLRow{
+				Skill: skillName, SQL: p.SQL, Intent: p.Intent,
+				OriginCase: cfg.CaseID, SchemaVersion: cfg.SchemaVersion, ModelID: cfg.ModelID,
+			})
+			if upErr == nil && inserted {
+				rep.CandidatesAppended++
+			}
+		}
+		for _, sha := range promotableHashes(findings, auditToSQL) {
+			if cacheMgr.PromoteSkillSQL(ctx, skillName, sha, cfg.CaseID) == nil {
+				rep.Promoted++
+			}
+		}
+		if rep.CandidatesProposed > 0 || rep.Promoted > 0 {
+			emit(cfg, Event{Phase: "cache",
+				Message: fmt.Sprintf("proposed=%d appended=%d promoted=%d",
+					rep.CandidatesProposed, rep.CandidatesAppended, rep.Promoted)})
+		}
+	}
+
 	for _, f := range findings {
 		rep.NewFindings = append(rep.NewFindings, FindingSummary{
 			Lens:       f.Lens,
@@ -200,8 +311,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 }
 
 // buildLLMContext converts our internal state into the wire format the
-// skill prompt expects.
-func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle) llmContext {
+// skill prompt expects. existingIntents lists the skill SQL cache's current
+// coverage so the LLM can self-judge what new queries (if any) to propose.
+func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle, existingIntents []intentInfo) llmContext {
 	tacticSummary := map[string]int{}
 	for _, s := range prior.Summary {
 		k := s.Source
@@ -243,6 +355,7 @@ func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle
 		EventsTotalScanned:    0, // filled at call-site (totalScanned passed separately)
 		EventsInWindow:        bundle.Total,
 		Truncated:             bundle.Total > len(events),
+		ExistingIntents:       existingIntents,
 		Events:                events,
 	}
 	if !bundle.MinTS.IsZero() {
@@ -262,13 +375,8 @@ func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle
 	return out
 }
 
-func buildUserMessage(hctx llmContext) (string, error) {
-	prelude := `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
-Apply the lenses defined in your system prompt. Return ONLY a JSON array of
-finding objects with this shape:
-
-  [
-    {
+// findingShapeDoc is the shared description of one finding object.
+const findingShapeDoc = `    {
       "lens": "A1|A2|A4|A5|A6|A7",
       "summary": "1-line title (≤120 chars)",
       "description": "free-text rationale (≤500 chars)",
@@ -276,7 +384,17 @@ finding objects with this shape:
       "audit_ids": ["<audit_id from events>", ...],
       "technique_id": "T1059.001",   // optional MITRE T-number
       "tactic": "execution"           // optional kill-chain phase
-    },
+    }`
+
+func buildUserMessage(hctx llmContext, cacheEnabled bool) (string, error) {
+	var prelude string
+	if !cacheEnabled {
+		prelude = `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
+Apply the lenses defined in your system prompt. Return ONLY a JSON array of
+finding objects with this shape:
+
+  [
+` + findingShapeDoc + `,
     ...
   ]
 
@@ -290,6 +408,46 @@ Constraints:
 
 AnomalyContext:
 `
+	} else {
+		prelude = `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
+Apply the lenses defined in your system prompt. Return ONLY a JSON OBJECT
+with two keys, no markdown fences, no prose outside the object:
+
+  {
+    "findings": [
+` + findingShapeDoc + `,
+      ...
+    ],
+    "proposed_queries": [
+      {
+        "intent": "<short reusable-lens label, e.g. 'rare service install off-hours'>",
+        "rationale": "<1-line why this generalises beyond this case>",
+        "sql": "<a single DuckDB SELECT against unified_events>"
+      },
+      ...
+    ]
+  }
+
+findings rules:
+- Every audit_id MUST exist in the events array below. Do NOT invent ids.
+- Do NOT duplicate findings already covered by existing_audit_ids.
+- Use [] if no genuine anomalies stand out — false positives are worse
+  than gaps at this layer.
+
+proposed_queries rules (OPTIONAL — use [] if nothing generalises):
+- existing_skill_intents lists lenses the cache ALREADY runs every case
+  (their hits appear in events tagged lens "S0"). Do NOT re-propose those.
+- Only propose a query for a RECURRING anomaly perspective worth running on
+  FUTURE cases automatically (zero-LLM). Propose at most 3.
+- Each sql MUST: start with SELECT or WITH; contain NO INSERT/UPDATE/DELETE/
+  DROP/CREATE/ALTER/ATTACH/PRAGMA; have its first WHERE predicate be exactly
+  "case_id = ?"; contain exactly one ? placeholder; lead its output columns
+  with audit_id, ts_utc, artifact_id; end with LIMIT N (N≤500); no trailing
+  semicolon. Use json_extract_string(payload_json, '$.Key') for fields.
+
+AnomalyContext:
+`
+	}
 	body, err := json.MarshalIndent(hctx, "", "  ")
 	if err != nil {
 		return "", err
