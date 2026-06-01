@@ -6,7 +6,7 @@
 利用者向けの使い方は `docs/USER_GUIDE.md` / `docs/QUICKSTART.md` を参照してください。
 
 凡例:
-- **[GO]** Go 側実装 (`cmd/findevil`, `internal/...`)
+- **[GO]** Go 側実装 (`cmd/tlvb`, `internal/...`)
 - **[PY]** Python 側実装 (`parsers/...`)
 - **[LLM]** Claude が実際に推論する箇所
 - **[Gate]** Human-in-the-loop の Review Gate
@@ -73,7 +73,7 @@
                                      timeline.csv, iocs.csv, report.html}
 ```
 
-CLI と Web UI は同じ内部関数を呼びます (`cmd/findevil/main.go` の `runParse` /
+CLI と Web UI は同じ内部関数を呼びます (`cmd/tlvb/main.go` の `runParse` /
 `runAnalyze` / `runSynthesize` / `runReport` ↔ `internal/web/handlers.go` の
 `POST /api/cases/:id/parse` ほか)。違いはトリガと進捗の出し方だけです。
 
@@ -81,7 +81,7 @@ CLI と Web UI は同じ内部関数を呼びます (`cmd/findevil/main.go` の 
 
 ## Tier 0 — Parse (証拠を構造化する)
 
-CLI: `findevil parse --case <id> --evidence <id> --input <path>`
+CLI: `tlvb parse --case <id> --evidence <id> --input <path>`
 Web UI: ケース画面の `+ Add evidence` → Parse modal
 
 ### Stage 0-A. ケース/Evidence 登録 [GO]
@@ -245,7 +245,7 @@ Web UI `Events タブ → Parse Results 表`。
 
 ## Tier 1 — Analyze (Tactic Agent × 10 並列)
 
-CLI: `findevil analyze --case <id> [--tactic <slug>] [--evidence-id <id>]`
+CLI: `tlvb analyze --case <id> [--tactic <slug>] [--evidence-id <id>]`
 Web UI: ケース画面の "Analyze All" / Events タブの artifact 行 "Analyze" ボタン
 
 ### Stage 1-A. Tactic 単位の SQL Prefilter [GO][DB]
@@ -312,7 +312,7 @@ Below is the EventWindow JSON: ...
 
 wall-clock budget は Wave 20a 以降 `ComputeTimeout(tactic, maxEvents)` で
 `(events × per_event_sec) + buffer`、clamp `[floor, ceiling]`、
-anomaly_hunter は 1.5×。環境変数 `FINDEVIL_LLM_TIMEOUT_*` で上書き可能。
+anomaly_hunter は 1.5×。環境変数 `TLVB_LLM_TIMEOUT_*` で上書き可能。
 
 ### Stage 1-E. findings JSON 検証 + 永続化 [GO]
 
@@ -333,7 +333,7 @@ unified_events と照合し、幻覚 ID は drop (Audit に
 `internal/agents/anomaly_hunter.go::AnomalyHunter`
 
 - 10 Tactic Agent 完了後 (Web UI なら自動連鎖、CLI なら
-  `findevil analyze --tactic anomaly_hunter`) に起動
+  `tlvb analyze --tactic anomaly_hunter`) に起動
 - 既存 findings 全件を summary 化 + 6 レンズ (`buildAnomalyCandidates`):
   unusual_path / unusual_time / unusual_user / unusual_image_amcache /
   unusual_amcache_link_paths / unusual_image_evtx
@@ -354,7 +354,7 @@ Web UI `Findings タブ`。各 finding 行に Approve / Reject / Note 入力。
 
 ## Tier 2 — Synthesize (集約・整合性・タイムライン・自己修正)
 
-CLI: `findevil synthesize --case <id>`
+CLI: `tlvb synthesize --case <id>`
 Web UI: "Synthesize" ボタン
 
 `internal/synthesizer/synthesizer.go::Synthesize(ctx, cfg)` が以下 8 ステップ
@@ -453,7 +453,7 @@ Web UI Timeline タブ。設計のみで未実装 (STATUS.md 参照)。
 
 ## Tier 3 — Report
 
-CLI: `findevil report --case <id> --format html --language ja`
+CLI: `tlvb report --case <id> --format html --language ja`
 Web UI: "Generate Report" ボタン → 完了後ダウンロードリンク
 
 `internal/reporter/renderer.go::Render(cfg)` が以下を実行。
@@ -514,13 +514,13 @@ Web UI からのトリガは `JobStatus(kind, subkind)` で管理:
 
 ### ケース可搬性 (`.fcz` tarball)
 
-`findevil case export --case <id> --out <case>.fcz`:
+`tlvb case export --case <id> --out <case>.fcz`:
 1. `parse_results` / `unified_events` を `case_id` でフィルタして JSONL dump
 2. `findings/` / `reports/` / `workspace/` を tar に追加
 3. 全ファイル SHA-256 を計算 → `manifest.json` に格納
 4. tar.gz として固める
 
-`findevil case import --in <case>.fcz` は逆操作。SHA-256 一致しない場合は
+`tlvb case import --in <case>.fcz` は逆操作。SHA-256 一致しない場合は
 abort (`--force` で続行可)。
 
 ### MCP (Tier 0 公開関数)

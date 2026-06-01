@@ -1,6 +1,6 @@
-# FindEvil Quickstart — 自分で試してみる
+# TLVB Quickstart — 自分で試してみる
 
-このドキュメントは「FindEvil を実際に動かしてみたい」人向けの手順書です。
+このドキュメントは「TLVB を実際に動かしてみたい」人向けの手順書です。
 SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI が
 入っていればどこでも動きます。
 
@@ -41,8 +41,8 @@ ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # 必須パーサ(SIFT 標準パ�
 ```bash
 # リポジトリのクローン直後、ルートに居る前提
 ./scripts/setup.sh           # 依存検証 + .venv 作成 + go build
-./bin/findevil version
-# → findevil 0.1.0-dev
+./bin/tlvb version
+# → tlvb 0.1.0-dev
 ```
 
 > Ubuntu 24.04 等で `python3-venv` 未導入のため `.venv` 作成に失敗する場合は
@@ -50,7 +50,7 @@ ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # 必須パーサ(SIFT 標準パ�
 > (それ以外のフラグなしの場合は手動導入を促すメッセージのみ)。
 
 > `--engine anthropic-api` を常用する場合は、リポジトリルートに `.env.local`
-> を置いて `ANTHROPIC_API_KEY=...` を書き、`findevil serve --env-file .env.local`
+> を置いて `ANTHROPIC_API_KEY=...` を書き、`tlvb serve --env-file .env.local`
 > で起動するとブラウザ UI からも自動的に API 経由で動きます。
 
 ### 0a-bis. altpf (Prefetch primary engine) について
@@ -72,15 +72,15 @@ altpf が無くてもパース自体は走ります (Plaso fallback / LastRun �
 ヘルプ:
 
 ```bash
-./bin/findevil help
+./bin/tlvb help
 ```
 
 サブコマンド一覧が出ます。各サブコマンドは `-h` で詳細フラグが出ます:
 
 ```bash
-./bin/findevil analyze -h
-./bin/findevil synthesize -h
-./bin/findevil run -h
+./bin/tlvb analyze -h
+./bin/tlvb synthesize -h
+./bin/tlvb run -h
 ```
 
 ## 0b. サンプル EVTX データを取得
@@ -91,7 +91,7 @@ altpf が無くてもパース自体は走ります (Plaso fallback / LastRun �
 
 ```bash
 # 任意の場所に clone(SIFT 慣習なら /cases/、$HOME 配下でも OK)
-EVTX_DIR=/cases/evtx-samples       # ← お好きなパスで
+EVTX_DIR=./evtx-samples       # ← お好きなパスで
 sudo mkdir -p "$(dirname $EVTX_DIR)" && sudo chown $USER "$(dirname $EVTX_DIR)" 2>/dev/null
 git clone https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES.git "$EVTX_DIR"
 
@@ -108,13 +108,13 @@ ls "$EVTX_DIR/Persistence/" | head -3
 
 ## 1. MCP サーバ経由でケースを覗く (LLM 呼び出しなし)
 
-FindEvil の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
+TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 クライアントから繋げて、ケースの中身を read-only で問い合わせるのに
 使えます。
 
 ```bash
 # 起動 (stdio モード — クライアントから接続して使う)
-./bin/findevil mcp-serve --log-level info
+./bin/tlvb mcp-serve --log-level info
 ```
 
 サーバ単体で「JSON-RPC を 1 ターン送る」スモークテストを以下のように
@@ -127,7 +127,7 @@ FindEvil の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
   printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
   printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_cases","arguments":{}}}'
   sleep 0.3
-} | ./bin/findevil mcp-serve --log-level error 2>/dev/null | python3 -m json.tool
+} | ./bin/tlvb mcp-serve --log-level error 2>/dev/null | python3 -m json.tool
 ```
 
 公開ツール (10):
@@ -160,12 +160,12 @@ FindEvil の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 CASE=MY-TEST-001    # Step 3 / 4 で作ったケース ID に置き換える
 
 # 一部の findings ファイルだけコピーしてレビュー操作の対象にする
-TEST=/tmp/findevil-review-test
+TEST=/tmp/tlvb-review-test
 mkdir -p $TEST/findings
 cp outputs/cases/$CASE/findings/persistence.json $TEST/findings/
 
 # レビューセッション開始 (10 finding ほど出てくる)
-./bin/findevil review $CASE \
+./bin/tlvb review $CASE \
     --findings-dir $TEST/findings \
     --examiner "$USER"
 ```
@@ -197,10 +197,10 @@ for f in r['findings']:
 承認済みのみで HTML を再生成 (`--only-approved`):
 
 ```bash
-./bin/findevil synthesize $CASE \
+./bin/tlvb synthesize $CASE \
     --findings-dir $TEST/findings \
     --out $TEST/synthesis.json
-./bin/findevil report $CASE \
+./bin/tlvb report $CASE \
     --synthesis $TEST/synthesis.json \
     --out-dir $TEST/reports \
     --only-approved \
@@ -219,29 +219,29 @@ EVTX サンプル `Other` (~8 ファイル / 750 events) で Persistence Agent
 
 ```bash
 # 0b で設定した EVTX_DIR を引き継ぎ
-EVTX_DIR=${EVTX_DIR:-/cases/evtx-samples}
+EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
 # 3-1: ケース登録
-./bin/findevil case init \
+./bin/tlvb case init \
     --case-id MY-TEST-001 \
     --name "first-test" \
     --examiner "$USER"
 
 # 3-2: Tier 0 — 8 EVTX をパースして DB に投入 (~3 秒)
-./bin/findevil parse \
+./bin/tlvb parse \
     --case-id MY-TEST-001 \
     --evidence-id EV-OTHER-001 \
     --input "$EVTX_DIR/Other" \
     --only evtx
 
 # 3-2-bis: 複数 Evidence を一発で登録したい場合は --inputs(★v0.3 #1)
-# ./bin/findevil parse \
+# ./bin/tlvb parse \
 #     --case-id MY-TEST-001 \
 #     --inputs "$EVTX_DIR/Other,$EVTX_DIR/Persistence" \
 #     --only evtx
 
 # 3-3: Tier 1 — Persistence Agent だけ走らせる (~2-4 分)
-./bin/findevil analyze MY-TEST-001 \
+./bin/tlvb analyze MY-TEST-001 \
     --tactic persistence \
     --engine claude-code
 
@@ -258,9 +258,9 @@ API key 無しで動かすコツは `--engine claude-code` の指定です。
 ## 4. 全パイプラインを試す (LLM 呼び出し 11 回 / 約 35 分)
 
 ```bash
-EVTX_DIR=${EVTX_DIR:-/cases/evtx-samples}
+EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
-./bin/findevil run MY-FULL-001 \
+./bin/tlvb run MY-FULL-001 \
     --evidence "$EVTX_DIR/Other" \
     --name "first-full-run" \
     --examiner "$USER" \
@@ -296,13 +296,13 @@ EVTX_DIR=${EVTX_DIR:-/cases/evtx-samples}
 
 ```bash
 # Tier 0 (parse) はもう済んでる、analyze からやり直し
-./bin/findevil run MY-FULL-001 --skip-parse
+./bin/tlvb run MY-FULL-001 --skip-parse
 
 # Tier 1 までは終わった、Anomaly Hunter から
-./bin/findevil run MY-FULL-001 --skip-parse --skip-analyze
+./bin/tlvb run MY-FULL-001 --skip-parse --skip-analyze
 
 # Corrector を飛ばす (時間節約)
-./bin/findevil run MY-FULL-001 --skip-correct
+./bin/tlvb run MY-FULL-001 --skip-correct
 ```
 
 完了後:
@@ -337,7 +337,7 @@ auxiliary ファイルがあれば自動で拾います)。
 
 ```bash
 # (例) 隔離済みのインシデント zip
-./bin/findevil run INC-2026-9001 \
+./bin/tlvb run INC-2026-9001 \
     --evidence /path/to/triage_collector.zip \
     --evidence-id EV-COLL-001 \
     --name "ACME-Corp-IR-Sep" \
@@ -377,23 +377,23 @@ LLM が改善された / 新しいスキルファイルが追加された / Anom
 CASE=MY-FULL-001    # 自分のケース ID
 
 # 既存ケースに対して Anomaly Hunter だけ追加で走らせる
-./bin/findevil analyze $CASE \
+./bin/tlvb analyze $CASE \
     --tactic anomaly_hunter \
     --engine claude-code
 
 # Synthesize し直し (Corrector も含む)
-./bin/findevil synthesize $CASE --correct
+./bin/tlvb synthesize $CASE --correct
 
 # レポート再生成
-./bin/findevil report $CASE --format html,csv,json
+./bin/tlvb report $CASE --format html,csv,json
 ```
 
 特定 tactic だけ再走:
 
 ```bash
-./bin/findevil analyze $CASE --tactic credential_access
-./bin/findevil synthesize $CASE
-./bin/findevil report $CASE --format html
+./bin/tlvb analyze $CASE --tactic credential_access
+./bin/tlvb synthesize $CASE
+./bin/tlvb report $CASE --format html
 ```
 
 ---
@@ -403,7 +403,7 @@ CASE=MY-FULL-001    # 自分のケース ID
 CLI ではなく WebUI を使う場合:
 
 ```bash
-./bin/findevil serve --port 8080
+./bin/tlvb serve --port 8080
 # → ブラウザで http://localhost:8080/
 # → リモート(VM 外)からアクセスする場合は http://<VM-IP>:8080/
 ```
@@ -413,7 +413,7 @@ WebUI 側では:
   4 ボタンで一直線(各ボタンの右に進捗バー + ETA)
 - Findings タブで Approve / Reject(= Review Gate 1)
 - Events タブで Review Gate 0(parse 結果の承認)
-- 浮動 💬 ボタンで FindEvil Assistant チャット
+- 浮動 💬 ボタンで TLVB Assistant チャット
 
 詳細は `docs/USER_GUIDE.md` 参照。
 
@@ -450,7 +450,7 @@ Ubuntu 24.04+ で system pip が拒否される。`scripts/setup.sh` が
 `sudo apt install python3-venv python3-full` を先に。
 
 ### `case has no registered evidence`
-`findevil parse` を先に走らせる(または WebUI から Parse ボタン)。
+`tlvb parse` を先に走らせる(または WebUI から Parse ボタン)。
 
 ### Tactic Agent が `status=partial` で終わる
 LLM が evidence 不足を保守的にマークした正常動作。`partial` 自体は
@@ -461,7 +461,7 @@ LLM が一貫した所見を持っているということ — 健全。整合�
 Examiner の手調査が必要なケースとして残ります。
 
 ### DuckDB lock エラー
-複数の `findevil` プロセスが書き込みで開いている。`pkill findevil`
+複数の `tlvb` プロセスが書き込みで開いている。`pkill tlvb`
 してから再実行。MCP サーバ + parse の同時実行で出ます。
 
 ### Web UI Analyze All が 409 で弾かれる
@@ -494,7 +494,7 @@ altpf 配置後に再 parse すると Audit タブの command 列が `/opt/altpf
 
 ```
 ./
-├── bin/findevil                       # ビルドした CLI
+├── bin/tlvb                       # ビルドした CLI
 ├── outputs/
 │   ├── cases.duckdb                   # 全ケース横断 DB (read-only mostly)
 │   └── cases/<case_id>/
@@ -531,7 +531,7 @@ evidence(`$EVTX_DIR` や自分の調査対象 zip)は **read-only**。書き込�
 
 ## 10. 次のステップ
 
-- 自分の調査ケースで `findevil run` を 1 度通す
+- 自分の調査ケースで `tlvb run` を 1 度通す
 - HTML レポートをチームに配布(zip + SHA-256 確認 — `HANDOFF.md` 参照)
 - `skills/<tactic>.md` を自社の TTPs に合わせてカスタマイズ
   (technique 表の列とアンチパターンを足す)

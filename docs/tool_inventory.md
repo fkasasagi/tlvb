@@ -1,4 +1,4 @@
-# Tool Inventory — SIFT Workstation (FindEvil)
+# Tool Inventory — SIFT Workstation (TLVB)
 
 **確認日 (UTC)**: 2026-05-02
 **ホスト**: SANS SIFT Workstation (Ubuntu, x86-64)
@@ -83,7 +83,7 @@ dotnet /opt/zimmermantools/PECmd.dll --version
 
 | ツール | パス | バージョン | 状態 | 用途 |
 |---|---|---|---|---|
-| **psteal.py** | system PATH | **20260119** | ✅ | **推奨**: 1 ステップで `--source → -o → -w`。FindEvil の Prefetch fallback で使用 (Wave 12) |
+| **psteal.py** | system PATH | **20260119** | ✅ | **推奨**: 1 ステップで `--source → -o → -w`。TLVB の Prefetch fallback で使用 (Wave 12) |
 | log2timeline.py | system PATH | **20260119** | ✅ | (低レベル、Storage file を別途作る場合) |
 | psort.py | system PATH | **20260119** | ✅ | (低レベル、既存 Storage file をフォーマットする場合) |
 | pinfo.py | system PATH | (同) | ✅ | Storage file のメタデータ確認 |
