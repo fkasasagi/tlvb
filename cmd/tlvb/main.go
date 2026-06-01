@@ -153,6 +153,7 @@ func runMCPServe(args []string) error {
 	fs := flag.NewFlagSet("mcp-serve", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/artifacts.yaml", "artifact catalog YAML")
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
+	rulesDB := fs.String("rules-db", "outputs/rules.duckdb", "rule SQL cache DB (for list_cache_status)")
 	outputs := fs.String("outputs", filepath.Join("outputs", "cases"),
 		"case workspaces root (used for findings/*.json read by list_findings/get_finding)")
 	logLevel := fs.String("log-level", "info", "debug|info|warn|error")
@@ -177,6 +178,7 @@ func runMCPServe(args []string) error {
 		ArtifactsYAML: *cfgPath,
 		CaseDBPath:    *dbPath,
 		OutputsRoot:   *outputs,
+		RulesDBPath:   *rulesDB,
 	}, logger)
 	if err != nil {
 		return err
