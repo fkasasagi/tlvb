@@ -34,17 +34,19 @@ var uiFS = tlvb.UI
 type Config struct {
 	Addr        string // ":8080"
 	DBPath      string // outputs/cases.duckdb
+	RulesDBPath string // outputs/rules.duckdb (rule + skill SQL cache; Rule Library view)
 	OutputsRoot string // outputs/cases
 	Logger      *slog.Logger
 }
 
 // Server is the long-lived HTTP server.
 type Server struct {
-	cfg    Config
-	mux    *http.ServeMux
-	jobs   *JobsManager
-	dbMu   sync.Mutex // serialises every casedb.Open call to avoid file-lock fights with async jobs
-	logger *slog.Logger
+	cfg     Config
+	mux     *http.ServeMux
+	jobs    *JobsManager
+	dbMu    sync.Mutex // serialises every casedb.Open call to avoid file-lock fights with async jobs
+	rulesMu sync.Mutex // serialises rules.duckdb opens (separate file from cases.duckdb)
+	logger  *slog.Logger
 }
 
 // New constructs a Server. Caller must call Start to bind the listener.
@@ -54,6 +56,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.OutputsRoot == "" {
 		cfg.OutputsRoot = filepath.Join("outputs", "cases")
+	}
+	if cfg.RulesDBPath == "" {
+		cfg.RulesDBPath = filepath.Join("outputs", "rules.duckdb")
 	}
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
@@ -143,6 +148,12 @@ func (s *Server) routes() {
 	// Case-state snapshot (Status tab — parse / findings / synthesis / report).
 	s.mux.HandleFunc("GET /api/cases/{id}/summary", s.handleGetCaseSummary)
 
+	// Rule Library — global (not case-scoped) view of rules.duckdb: rule_sql_cache
+	// build coverage + skill_sql_cache (Tier 1B v0.2 learned lenses). rule_library.go.
+	s.mux.HandleFunc("GET /api/rules/summary", s.handleGetRulesSummary)
+	s.mux.HandleFunc("GET /api/rules/skills", s.handleListSkillSQL)
+	s.mux.HandleFunc("GET /api/rules", s.handleListRules)
+
 	// Review Gate 1A — unified Tier 1A by-rule + Tier 1B by-skill findings.
 	// Implementation lives in review_gate_1a.go.
 	s.mux.HandleFunc("GET /api/cases/{id}/findings", s.handleListReviewFindings)
@@ -168,10 +179,10 @@ func (s *Server) routes() {
 	// Job cancellation (Issue #8). One endpoint per JobKind so the
 	// URL is self-documenting in the WebUI's network tab. The same
 	// JobsManager.Cancel is called for all of them.
-	s.mux.HandleFunc("POST /api/cases/{id}/parse/cancel",      s.handleCancelJob(JobParse))
-	s.mux.HandleFunc("POST /api/cases/{id}/analyze/cancel",    s.handleCancelJob(JobAnalyze))
+	s.mux.HandleFunc("POST /api/cases/{id}/parse/cancel", s.handleCancelJob(JobParse))
+	s.mux.HandleFunc("POST /api/cases/{id}/analyze/cancel", s.handleCancelJob(JobAnalyze))
 	s.mux.HandleFunc("POST /api/cases/{id}/synthesize/cancel", s.handleCancelJob(JobSynthesize))
-	s.mux.HandleFunc("POST /api/cases/{id}/report/cancel",     s.handleCancelJob(JobReport))
+	s.mux.HandleFunc("POST /api/cases/{id}/report/cancel", s.handleCancelJob(JobReport))
 
 	// Review Gate 0 — per-artifact parse-result approval (★v0.3 #2).
 	s.mux.HandleFunc("GET /api/cases/{id}/parse-review", s.handleGetParseReview)

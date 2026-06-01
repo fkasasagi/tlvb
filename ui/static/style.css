@@ -930,3 +930,37 @@ h3 { font-size: 13px; color: #c0d0e8; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .hidden { display: none !important; }
+
+/* ------- Rule Library (global rules.duckdb view) ------- */
+.rules-table { border-collapse: collapse; margin-top: 10px; width: auto; }
+.rules-table th, .rules-table td {
+  border: 1px solid var(--border); padding: 4px 12px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rules-table th { color: var(--muted); font-weight: normal; background: #0e1530; }
+.rules-table td:first-child, .rules-table th:first-child { text-align: left; }
+.rules-table .cell-warn { color: var(--conf-high); font-weight: bold; }
+
+.rule-item {
+  border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 6px; background: #0e1530;
+}
+.rule-summary {
+  cursor: pointer; padding: 8px 12px; display: flex; gap: 8px;
+  align-items: center; flex-wrap: wrap; list-style: none;
+}
+.rule-summary::-webkit-details-marker { display: none; }
+.rule-summary::before { content: "▸"; color: var(--muted); margin-right: 2px; }
+details[open] > .rule-summary::before { content: "▾"; }
+.rule-title { color: var(--text); flex: 1; min-width: 160px; }
+.rule-detail { padding: 4px 12px 12px 12px; border-top: 1px solid var(--border); }
+.rule-sql {
+  background: #0a0f24; border: 1px solid var(--border); border-radius: 3px;
+  padding: 10px; overflow-x: auto; white-space: pre; font-size: 12px;
+  color: #b8c8e0; margin: 0;
+}
+.rule-sql.err { color: var(--conf-high); }
+.badge.state-rule-built   { background: #1e3a3a; color: var(--approved); }
+.badge.state-rule-pending { background: #2a3556; color: var(--pending); }
+.badge.state-rule-failed  { background: #3a1e1e; color: var(--conf-high); }
+.badge.source-rule { background: #1e2c44; color: #8ec5ff; }

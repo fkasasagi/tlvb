@@ -286,6 +286,12 @@ route(/^\/$/, async () => {
   const app = $("#app");
   app.innerHTML = "";
 
+  // Global tools row — links to non-case-scoped views (Rule Library).
+  app.appendChild(h("div", { class: "row", style: "justify-content: flex-end; margin-bottom: 8px;" }, [
+    h("a", { class: "ghost", href: "#/rules", style: "padding: 6px 12px; border-radius: 3px;" },
+      "📚 Rule Library"),
+  ]));
+
   // New-case form. Issue #19/#25: Timezone is a pulldown of IANA TZDB
   // values (defaults to the browser-detected zone), Language is a
   // pulldown of supported report languages (ja/en).
@@ -376,6 +382,195 @@ function formRow(name, label, placeholder) {
     h("label", {}, label),
     h("input", { id: "f_" + name, placeholder, value: "" }),
   ]);
+}
+
+// ============================================================================
+// Rule Library (global, not case-scoped) — rules.duckdb inspection.
+// Build coverage snapshot + filterable rule_sql_cache list + Tier 1B
+// skill_sql_cache (learned lenses). Filter state lives in the URL query
+// (source / state / q / offset) so navigation re-renders consistently.
+// ============================================================================
+route(/^\/rules$/, async ({ params }) => {
+  setCrumbs([{ label: "Dashboard", href: "/" }, { label: "Rule Library" }]);
+  setMeta("");
+  const app = $("#app");
+  app.innerHTML = "";
+
+  const source = params.source || "";
+  const state = params.state || "";
+  const q = params.q || "";
+  const limit = 100;
+  const offset = Math.max(0, parseInt(params.offset || "0", 10) || 0);
+
+  // Merge current filters with overrides and navigate (offset resets to 0
+  // unless explicitly overridden).
+  const goRules = (ov) => {
+    const cur = { source, state, q, offset: 0, ...ov };
+    const qs = new URLSearchParams();
+    if (cur.source) qs.set("source", cur.source);
+    if (cur.state) qs.set("state", cur.state);
+    if (cur.q) qs.set("q", cur.q);
+    if (cur.offset) qs.set("offset", String(cur.offset));
+    navigate("/rules" + (qs.toString() ? "?" + qs.toString() : ""));
+  };
+
+  // ---- build-coverage summary ----
+  const sumCard = h("div", { class: "card" }, [h("h2", {}, "ビルドカバレッジ")]);
+  app.appendChild(sumCard);
+  let summary = { available: false, rules: { by_state: {}, by_source: [] }, skills: {} };
+  try { summary = await api("GET", "/api/rules/summary"); } catch (e) { /* shown below */ }
+
+  if (!summary.available) {
+    sumCard.appendChild(h("div", { class: "empty" },
+      "rules.duckdb が見つかりません。`tlvb rules build` でルール SQL キャッシュを生成してください。"));
+  } else {
+    const r = summary.rules || { by_state: {}, by_source: [] };
+    const bs = r.by_state || {};
+    sumCard.appendChild(h("div", { class: "badges" }, [
+      h("span", { class: "badge ok" }, `built ${bs.built || 0}`),
+      h("span", { class: "badge pending" }, `pending ${bs.pending || 0}`),
+      h("span", { class: "badge err" }, `failed ${bs.failed || 0}`),
+      h("span", { class: "badge tactic" }, `total ${r.total || 0}`),
+    ]));
+    const tbl = h("table", { class: "rules-table" }, [
+      h("tr", {}, ["source", "built", "pending", "failed", "total"].map((x) => h("th", {}, x))),
+      ...(r.by_source || []).map((sc) => h("tr", {}, [
+        h("td", {}, sc.source),
+        h("td", {}, String(sc.built)),
+        h("td", {}, String(sc.pending)),
+        h("td", { class: sc.failed > 0 ? "cell-warn" : "" }, String(sc.failed)),
+        h("td", {}, String(sc.total)),
+      ])),
+    ]);
+    sumCard.appendChild(tbl);
+    const sk = summary.skills || {};
+    sumCard.appendChild(h("div", { class: "muted", style: "margin-top: 10px;" },
+      `Tier 1B skill cache: canonical ${sk.canonical || 0} / candidate ${sk.candidate || 0} (total ${sk.total || 0})`));
+  }
+
+  if (!summary.available) return;
+
+  // ---- filter controls ----
+  const sources = ["", ...((summary.rules && summary.rules.by_source) || []).map((s) => s.source)];
+  const states = ["", "built", "pending", "failed"];
+  const sourceSel = selectEl(sources, source, (v) => goRules({ source: v }), (x) => x || "(all sources)");
+  const stateSel = selectEl(states, state, (v) => goRules({ state: v }), (x) => x || "(all states)");
+  const searchInput = h("input", {
+    placeholder: "search id / title / SQL / technique", value: q,
+    style: "flex: 1; min-width: 200px;",
+    onkeydown: (e) => { if (e.key === "Enter") goRules({ q: e.target.value.trim() }); },
+  });
+  const filterCard = h("div", { class: "card" }, [
+    h("div", { class: "row", style: "gap: 8px; align-items: center; flex-wrap: wrap;" }, [
+      h("label", { class: "muted" }, "source"), sourceSel,
+      h("label", { class: "muted" }, "state"), stateSel,
+      searchInput,
+      h("button", { onclick: () => goRules({ q: searchInput.value.trim() }) }, "検索"),
+      (source || state || q)
+        ? h("button", { class: "ghost", onclick: () => navigate("/rules") }, "クリア")
+        : null,
+    ]),
+  ]);
+  app.appendChild(filterCard);
+
+  // ---- rule list ----
+  const listCard = h("div", { class: "card" }, [h("h2", {}, "ルール一覧")]);
+  app.appendChild(listCard);
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (source) qs.set("source", source);
+  if (state) qs.set("state", state);
+  if (q) qs.set("q", q);
+  const resp = await api("GET", "/api/rules?" + qs.toString());
+  const rows = resp.rows || [];
+  const total = resp.total || 0;
+  const shownFrom = total === 0 ? 0 : offset + 1;
+  const shownTo = offset + rows.length;
+
+  listCard.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
+    `${shownFrom}–${shownTo} / ${total}`));
+
+  if (rows.length === 0) {
+    listCard.appendChild(h("div", { class: "empty" }, "該当ルールなし"));
+  } else {
+    rows.forEach((rr) => listCard.appendChild(ruleDetailsEl(rr)));
+    // pagination
+    const pager = h("div", { class: "row", style: "gap: 8px; margin-top: 10px;" }, [
+      offset > 0
+        ? h("button", { class: "ghost", onclick: () => goRules({ offset: Math.max(0, offset - limit) }) }, "← 前")
+        : null,
+      shownTo < total
+        ? h("button", { class: "ghost", onclick: () => goRules({ offset: offset + limit }) }, "次 →")
+        : null,
+    ]);
+    listCard.appendChild(pager);
+  }
+
+  // ---- Tier 1B skill cache (learned lenses) ----
+  const skillCard = h("div", { class: "card" }, [h("h2", {}, "Tier 1B 学習済みクエリ (skill cache)")]);
+  app.appendChild(skillCard);
+  let skillResp = { rows: [] };
+  try { skillResp = await api("GET", "/api/rules/skills"); } catch (e) { /* ignore */ }
+  const skillRows = skillResp.rows || [];
+  if (skillRows.length === 0) {
+    skillCard.appendChild(h("div", { class: "empty" },
+      "学習済みクエリはまだありません (analyze --tier 1b を実 LLM で実行すると蓄積されます)。"));
+  } else {
+    skillRows.forEach((sr) => skillCard.appendChild(skillDetailsEl(sr)));
+  }
+});
+
+// selectEl builds a <select> that calls onChange(value) on change.
+function selectEl(options, current, onChange, labelFn) {
+  const sel = h("select", { onchange: (e) => onChange(e.target.value) });
+  options.forEach((opt) => {
+    const o = h("option", { value: opt }, labelFn ? labelFn(opt) : opt);
+    if (opt === current) o.selected = true;
+    sel.appendChild(o);
+  });
+  return sel;
+}
+
+// ruleDetailsEl renders one rule_sql_cache row as a collapsible <details>.
+function ruleDetailsEl(rr) {
+  const lvl = (rr.level || "").toLowerCase();
+  const sev = lvl === "informational" ? "info" : (lvl || "info");
+  const head = h("summary", { class: "rule-summary" }, [
+    h("span", { class: "badge state-rule-" + rr.state }, rr.state),
+    h("span", { class: "badge source-rule" }, rr.rule_source),
+    rr.level ? h("span", { class: "badge sev-" + sev }, rr.level) : null,
+    h("span", { class: "rule-title" }, rr.title || rr.rule_id),
+  ]);
+  const metaBits = [];
+  if (rr.mitre_techniques && rr.mitre_techniques.length)
+    metaBits.push("technique: " + rr.mitre_techniques.join(", "));
+  if (rr.prefilter_artifacts) metaBits.push("prefilter: " + rr.prefilter_artifacts);
+  if (rr.generated_at) metaBits.push("built: " + rr.generated_at);
+  metaBits.push("id: " + rr.rule_id);
+  const detail = h("div", { class: "rule-detail" }, [
+    h("div", { class: "muted", style: "margin-bottom: 6px; font-size: 12px;" }, metaBits.join("  ·  ")),
+    rr.sql ? h("pre", { class: "rule-sql" }, rr.sql) : h("div", { class: "muted" }, "(no SQL — not built)"),
+    rr.error_message ? h("pre", { class: "rule-sql err" }, rr.error_message) : null,
+  ]);
+  return h("details", { class: "rule-item" }, [head, detail]);
+}
+
+// skillDetailsEl renders one skill_sql_cache row.
+function skillDetailsEl(sr) {
+  const head = h("summary", { class: "rule-summary" }, [
+    h("span", { class: "badge " + (sr.state === "canonical" ? "approved" : "pending") }, sr.state),
+    h("span", { class: "badge tactic" }, "hits " + (sr.hit_count || 0)),
+    h("span", { class: "rule-title" }, sr.intent || sr.skill),
+  ]);
+  const metaBits = [];
+  if (sr.skill) metaBits.push("skill: " + sr.skill);
+  if (sr.origin_case) metaBits.push("origin: " + sr.origin_case);
+  if (sr.last_used_case) metaBits.push("last used: " + sr.last_used_case);
+  if (sr.generated_at) metaBits.push("added: " + sr.generated_at);
+  const detail = h("div", { class: "rule-detail" }, [
+    h("div", { class: "muted", style: "margin-bottom: 6px; font-size: 12px;" }, metaBits.join("  ·  ")),
+    sr.sql ? h("pre", { class: "rule-sql" }, sr.sql) : null,
+  ]);
+  return h("details", { class: "rule-item" }, [head, detail]);
 }
 
 // IANA TZDB pulldown (Issue #19, #25). Uses Intl.supportedValuesOf when

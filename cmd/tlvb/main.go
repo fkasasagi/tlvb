@@ -1739,6 +1739,7 @@ func runServe(args []string) error {
 	port := fs.Int("port", 8080, "HTTP listen port")
 	addr := fs.String("addr", "", "explicit listen addr (overrides --port; e.g. 127.0.0.1:8080)")
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
+	rulesDB := fs.String("rules-db", "outputs/rules.duckdb", "rules DuckDB path (Rule Library view)")
 	outputs := fs.String("outputs", filepath.Join("outputs", "cases"), "case workspaces root")
 	logLevel := fs.String("log-level", "info", "debug|info|warn|error")
 	envFile := fs.String("env-file", ".env.local",
@@ -1778,6 +1779,7 @@ func runServe(args []string) error {
 	srv, err := web.New(web.Config{
 		Addr:        listenAddr,
 		DBPath:      *dbPath,
+		RulesDBPath: *rulesDB,
 		OutputsRoot: *outputs,
 		Logger:      logger,
 	})
