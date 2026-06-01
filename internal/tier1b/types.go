@@ -10,27 +10,42 @@
 //   - LLM call via claude CLI (or anthropic API — interface ready)
 //   - Output: outputs/cases/<id>/findings/by-skill/<skill>.json
 //
-// Out of scope for MVP (deferred to v0.2):
-//   - Skill-specific build-time canonical SQL cache
-//   - Runtime LLM-driven new SQL generation + cache growth
-//   - Multi-skill orchestration
+// v0.2 (Hybrid Cache — implemented, see skillcache.go):
+//   - skill_sql_cache (rules.duckdb): canonical SQL runs zero-LLM and
+//     augments the heuristic prefilter; candidate SQL runs on a trial basis
+//   - The LLM self-judges coverage against existing_skill_intents and may
+//     propose new reusable queries (stored as candidates)
+//   - A cached query whose rows the LLM cites in a finding is promoted to
+//     canonical → cost decreases as proven lenses accumulate across cases
+//
+// Still out of scope (deferred):
+//   - Multi-skill orchestration (only anomaly_hunter is wired)
 package tier1b
 
 import "time"
 
 // Config drives Run().
 type Config struct {
-	CaseID            string
-	SkillsDir         string // default "skills"
-	FindingsBaseDir   string // outputs/cases/<id>/findings
-	DBPath            string // outputs/cases.duckdb (read-only opened by Run)
-	ClaudeBinary      string // default "claude"
-	Model             string // empty = let Claude Code default
-	MaxEvents         int    // default 200
-	Timeout           time.Duration
-	IncludeInfoLevel  bool   // include info/low-level Hayabusa findings in prior context
-	DryRun            bool   // build prompt + sizes, skip LLM call
-	ProgressFn        func(Event)
+	CaseID           string
+	SkillsDir        string // default "skills"
+	FindingsBaseDir  string // outputs/cases/<id>/findings
+	DBPath           string // outputs/cases.duckdb (read-only opened by Run)
+	ClaudeBinary     string // default "claude"
+	Model            string // empty = let Claude Code default
+	MaxEvents        int    // default 200
+	Timeout          time.Duration
+	IncludeInfoLevel bool // include info/low-level Hayabusa findings in prior context
+	DryRun           bool // build prompt + sizes, skip LLM call
+	ProgressFn       func(Event)
+
+	// --- Tier 1B v0.2 skill SQL cache (Hybrid Cache) ---
+	// RulesDBPath points at outputs/rules.duckdb; canonical/candidate skill
+	// queries live there in skill_sql_cache (separate from rule_sql_cache).
+	// Empty path or NoSkillCache disables the cache entirely → v0.1 behaviour.
+	RulesDBPath   string
+	NoSkillCache  bool
+	SchemaVersion string // cache validity signature; defaults to "unknown" if empty
+	ModelID       string // cache validity signature; defaults to Model or "claude-code-default"
 }
 
 // Event is the progress hook callback.
@@ -43,7 +58,7 @@ type Event struct {
 // Report is returned by Run().
 type Report struct {
 	CaseID           string
-	PriorFindings    int     // count of Tier 1A findings consumed as context
+	PriorFindings    int // count of Tier 1A findings consumed as context
 	EventsScanned    int
 	EventsInWindow   int
 	Truncated        bool
@@ -51,6 +66,15 @@ type Report struct {
 	NewFindings      []FindingSummary
 	OutputPath       string // findings/by-skill/anomaly_hunter.json
 	SkillSHA256      string // for cache invalidation tracking
+
+	// --- Tier 1B v0.2 skill SQL cache accounting ---
+	CacheEnabled       bool // skill_sql_cache was consulted this run
+	SkillSQLAvailable  int  // cached queries matching the current signature
+	SkillSQLExecuted   int  // queries that ran without error
+	SkillSQLHits       int  // total rows returned by cached queries
+	CandidatesProposed int  // new queries the LLM proposed this run
+	CandidatesAppended int  // newly stored (deduped) candidates
+	Promoted           int  // candidate→canonical promotions + canonical re-hits
 }
 
 // FindingSummary mirrors tier1a.FindingSummary so the CLI report printer
@@ -70,14 +94,14 @@ type FindingSummary struct {
 // runner using tier1a.AutoApproveByLevel(severity) so Tier 1B findings
 // flow through the same review pipeline as cached-SQL findings.
 type AnomalyFinding struct {
-	FindingID   string    `json:"finding_id"`            // server-assigned UUID
-	Lens        string    `json:"lens"`                  // "A1"|"A2"|"A4"|"A5"|"A6"|"A7"
-	Summary     string    `json:"summary"`               // 1-line title
-	Description string    `json:"description"`           // free-text rationale
-	Severity    string    `json:"severity"`              // info|low|medium|high|critical
-	AuditIDs    []string  `json:"audit_ids"`             // evidence references
-	TechniqueID string    `json:"technique_id,omitempty"`// optional MITRE T-number
-	Tactic      string    `json:"tactic,omitempty"`      // optional kill-chain phase
+	FindingID   string    `json:"finding_id"`             // server-assigned UUID
+	Lens        string    `json:"lens"`                   // "A1"|"A2"|"A4"|"A5"|"A6"|"A7"
+	Summary     string    `json:"summary"`                // 1-line title
+	Description string    `json:"description"`            // free-text rationale
+	Severity    string    `json:"severity"`               // info|low|medium|high|critical
+	AuditIDs    []string  `json:"audit_ids"`              // evidence references
+	TechniqueID string    `json:"technique_id,omitempty"` // optional MITRE T-number
+	Tactic      string    `json:"tactic,omitempty"`       // optional kill-chain phase
 	GeneratedAt time.Time `json:"generated_at"`
 
 	// Review Gate 1A state (mirror of tier1a.Finding).

@@ -100,3 +100,88 @@ func TestRulesDBLifecycle(t *testing.T) {
 		t.Fatalf("source filter for hayabusa should be empty, got %d", len(pending))
 	}
 }
+
+func TestSkillSQLCacheLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(filepath.Join(dir, "rules.duckdb"), ReadWrite)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+
+	const skill = "anomaly_hunter"
+	sig := func(r SkillSQLRow) SkillSQLRow {
+		r.Skill = skill
+		r.SchemaVersion = "uev-aaaa"
+		r.ModelID = "claude-opus-4-8"
+		return r
+	}
+
+	// 1. First candidate insert reports inserted=true.
+	q1 := "SELECT audit_id, ts_utc, artifact_id FROM unified_events WHERE case_id = ? AND artifact_id = 'lnk' LIMIT 100"
+	ins, err := m.UpsertSkillCandidate(ctx, sig(SkillSQLRow{
+		SQL: q1, Intent: "lnk targets in temp", OriginCase: "CASE-1",
+	}))
+	if err != nil || !ins {
+		t.Fatalf("first insert: ins=%v err=%v", ins, err)
+	}
+
+	// 2. Re-inserting the same SQL with only whitespace/case differences is
+	//    deduped by the normalized hash → inserted=false.
+	q1variant := "select  audit_id, ts_utc, artifact_id  FROM unified_events WHERE case_id = ?   AND artifact_id = 'lnk' LIMIT 100 ;"
+	ins, err = m.UpsertSkillCandidate(ctx, sig(SkillSQLRow{SQL: q1variant, Intent: "dup"}))
+	if err != nil {
+		t.Fatalf("dup insert err: %v", err)
+	}
+	if ins {
+		t.Fatal("whitespace/case-variant SQL should dedup to the existing row")
+	}
+
+	// 3. A genuinely different query inserts as a second candidate.
+	q2 := "SELECT audit_id, ts_utc, artifact_id FROM unified_events WHERE case_id = ? AND artifact_id = 'registry' LIMIT 50"
+	if ins, _ := m.UpsertSkillCandidate(ctx, sig(SkillSQLRow{SQL: q2, Intent: "run keys"})); !ins {
+		t.Fatal("distinct SQL should insert")
+	}
+
+	counts, _ := m.CountSkillByState(ctx)
+	if counts[SkillCandidate] != 2 {
+		t.Fatalf("expected 2 candidates, got %v", counts)
+	}
+
+	// 4. ListSkillSQL returns both for the matching signature.
+	rows, err := m.ListSkillSQL(ctx, skill, "uev-aaaa", "claude-opus-4-8")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// 5. Promotion flips state to canonical, bumps hit_count, sets last_used.
+	h1 := SkillSQLHash(q1)
+	if err := m.PromoteSkillSQL(ctx, skill, h1, "CASE-2"); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	counts, _ = m.CountSkillByState(ctx)
+	if counts[SkillCanonical] != 1 || counts[SkillCandidate] != 1 {
+		t.Fatalf("after promote expected 1/1, got %v", counts)
+	}
+	// Promoting again (canonical re-hit) bumps hit_count without demoting.
+	if err := m.PromoteSkillSQL(ctx, skill, h1, "CASE-3"); err != nil {
+		t.Fatalf("re-promote: %v", err)
+	}
+	rows, _ = m.ListSkillSQL(ctx, skill, "uev-aaaa", "claude-opus-4-8")
+	if rows[0].State != SkillCanonical { // canonical ordered first
+		t.Fatalf("expected canonical first, got %q", rows[0].State)
+	}
+	if rows[0].HitCount != 2 || rows[0].LastUsedCase != "CASE-3" {
+		t.Fatalf("hit_count/last_used not updated: %+v", rows[0])
+	}
+
+	// 6. Signature drift (different model_id) hides the rows → invalidation.
+	stale, _ := m.ListSkillSQL(ctx, skill, "uev-aaaa", "claude-sonnet-4-6")
+	if len(stale) != 0 {
+		t.Fatalf("rows under a different model signature must be excluded, got %d", len(stale))
+	}
+}
