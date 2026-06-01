@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FindEvil environment verification.
+# TLVB environment verification.
 #
 # Runs deeper checks than scripts/setup.sh:
 #   - All registered parsers can import (Python)
@@ -23,15 +23,15 @@ bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 errors=0
 
 bold "[1/8] Go binary"
-if [[ ! -x bin/findevil ]]; then
-  yellow "  ! bin/findevil not built — running go build"
-  go build -o bin/findevil ./cmd/findevil
+if [[ ! -x bin/tlvb ]]; then
+  yellow "  ! bin/tlvb not built — running go build"
+  go build -o bin/tlvb ./cmd/tlvb
 fi
-ver=$(./bin/findevil version 2>&1 | head -1 || true)
+ver=$(./bin/tlvb version 2>&1 | head -1 || true)
 if [[ -n "$ver" ]]; then
   green "  ✓ $ver"
 else
-  red "  ✗ bin/findevil version failed"
+  red "  ✗ bin/tlvb version failed"
   errors=$((errors + 1))
 fi
 
@@ -109,11 +109,11 @@ fi
 
 bold "[4/8] DuckDB Go driver"
 # mktemp -u gives a path *without* creating the file — DuckDB rejects
-# empty-byte files. Letting findevil create it fresh is the realistic test.
-test_db=$(mktemp -u -t findevil-verify-XXXXXX.duckdb)
-test_outputs=$(mktemp -d -t findevil-verify-out-XXXXXX)
+# empty-byte files. Letting tlvb create it fresh is the realistic test.
+test_db=$(mktemp -u -t tlvb-verify-XXXXXX.duckdb)
+test_outputs=$(mktemp -d -t tlvb-verify-out-XXXXXX)
 trap 'rm -rf "$fixture" "$test_db" "$test_outputs"' EXIT
-if ./bin/findevil case init --case-id VERIFY-001 --name "verify" --examiner verify --db "$test_db" 2>&1 | head -1 | grep -q registered; then
+if ./bin/tlvb case init --case-id VERIFY-001 --name "verify" --examiner verify --db "$test_db" 2>&1 | head -1 | grep -q registered; then
   green "  ✓ DuckDB write + casedb roundtrip"
 else
   red "  ✗ casedb roundtrip failed"
@@ -122,7 +122,7 @@ fi
 
 bold "[5/8] Web server boot"
 PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
-./bin/findevil serve --port "$PORT" --db "$test_db" --outputs "$test_outputs" >/tmp/findevil-verify-srv.log 2>&1 &
+./bin/tlvb serve --port "$PORT" --db "$test_db" --outputs "$test_outputs" >/tmp/tlvb-verify-srv.log 2>&1 &
 PID=$!
 sleep 1
 if kill -0 "$PID" 2>/dev/null; then
@@ -133,13 +133,13 @@ print('  ✓ /api/cases returned %d (%d bytes)' % (r.status, len(r.read())))
 " 2>&1; then
     :
   else
-    red "  ✗ /api/cases probe failed (server log: /tmp/findevil-verify-srv.log)"
+    red "  ✗ /api/cases probe failed (server log: /tmp/tlvb-verify-srv.log)"
     errors=$((errors + 1))
   fi
   kill "$PID" 2>/dev/null || true
   wait "$PID" 2>/dev/null || true
 else
-  red "  ✗ server failed to start (log: /tmp/findevil-verify-srv.log)"
+  red "  ✗ server failed to start (log: /tmp/tlvb-verify-srv.log)"
   errors=$((errors + 1))
 fi
 
