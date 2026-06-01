@@ -24,11 +24,15 @@ const (
 // The system prompt is sent with cache_control: ephemeral so subsequent calls
 // in the same build run only pay 10% on the cached portion.
 type AnthropicBuilder struct {
-	APIKey    string
-	Model     string
-	MaxTokens int
-	Timeout   time.Duration
-	SchemaDoc string // injected into the system prompt
+	APIKey string
+	Model  string
+	// SignatureModel overrides the cache-signature model id (ModelID),
+	// decoupling it from the execution Model — see ClaudeCodeBuilder.
+	// Empty = use Model.
+	SignatureModel string
+	MaxTokens      int
+	Timeout        time.Duration
+	SchemaDoc      string // injected into the system prompt
 
 	httpClient *http.Client
 }
@@ -47,7 +51,12 @@ func NewAnthropicBuilder(apiKey, model, schemaDoc string) *AnthropicBuilder {
 	}
 }
 
-func (b *AnthropicBuilder) ModelID() string { return b.Model }
+func (b *AnthropicBuilder) ModelID() string {
+	if b.SignatureModel != "" {
+		return b.SignatureModel
+	}
+	return b.Model
+}
 
 func (b *AnthropicBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule, schemaDoc string) (*BuiltSQL, error) {
 	if b.APIKey == "" {

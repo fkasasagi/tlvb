@@ -54,6 +54,10 @@ func runRulesBuild(args []string) error {
 			"Other rules are filtered out entirely.")
 	model := fs.String("model", "claude-sonnet-4-6",
 		"model id used for SQL generation (engine-specific)")
+	cacheModelID := fs.String("cache-model-id", "",
+		"override the model id recorded in the cache signature (default: --model). "+
+			"Set to the existing rows' model to fill gaps with a different --model "+
+			"without invalidating them (e.g. --model claude-opus-4-8 --cache-model-id claude-sonnet-4-6)")
 	engine := fs.String("engine", "claude-code",
 		"build engine: claude-code (uses local `claude` CLI, no API key needed) | anthropic-api")
 	rateIn := fs.Float64("rate-yen-per-m-input", 450.0,
@@ -87,14 +91,18 @@ func runRulesBuild(args []string) error {
 		if !*dryRun && apiKey == "" {
 			return fmt.Errorf("--engine anthropic-api requires ANTHROPIC_API_KEY (use --dry-run to plan, or --engine claude-code)")
 		}
-		builder = rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
+		b := rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
+		b.SignatureModel = *cacheModelID
+		builder = b
 	case "claude-code":
 		if !*dryRun {
 			if _, err := exec.LookPath("claude"); err != nil {
 				return fmt.Errorf("--engine claude-code requires the `claude` binary on PATH (install Claude Code CLI, or use --engine anthropic-api)")
 			}
 		}
-		builder = rulebuild.NewClaudeCodeBuilder(*model, casedb.SchemaDoc())
+		b := rulebuild.NewClaudeCodeBuilder(*model, casedb.SchemaDoc())
+		b.SignatureModel = *cacheModelID
+		builder = b
 	default:
 		return fmt.Errorf("unknown --engine %q (want claude-code | anthropic-api)", *engine)
 	}
@@ -109,11 +117,11 @@ func runRulesBuild(args []string) error {
 			YenPerMOutputTokens:    *rateOut,
 			YenPerMCacheReadTokens: *rateCache,
 		},
-		MaxRules:     *maxRules,
-		BudgetYen:    *budgetYen,
-		SourceFilter: *source,
-		Force:        *force,
-		Progress:     progressPrinter(),
+		MaxRules:      *maxRules,
+		BudgetYen:     *budgetYen,
+		SourceFilter:  *source,
+		Force:         *force,
+		Progress:      progressPrinter(),
 		RuleIDsFilter: splitCSV(*ruleIDsCSV),
 	}
 
