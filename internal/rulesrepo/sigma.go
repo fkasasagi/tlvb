@@ -55,18 +55,27 @@ type sigmaLogsource struct {
 }
 
 // unsupportedCategories lists Sigma logsource.category values that target
-// data sources outside TLVB's Windows host-forensics scope (Web proxies,
-// network firewalls, database audit logs, web-server access logs). These
-// rules can't possibly match anything in unified_events, so we skip them
-// at load time rather than spend LLM cost generating SQL that returns 0
-// rows. Discovered empirically: 24/26 sigma build failures on 2026-05-30
-// were "empty SQL" responses on these categories — the LLM correctly
+// data sources Tier 0 does not ingest, so a rule in these categories can
+// never match anything in unified_events. We skip them at load time rather
+// than spend LLM cost generating SQL that returns 0 rows. Discovered
+// empirically: 24/26 sigma build failures on 2026-05-30 were "empty SQL"
+// responses on the proxy/firewall/database/webserver categories, and
+// file_access surfaced the same way on 2026-06-01 — the LLM correctly
 // concludes no mapping exists.
+//
+// Two sub-groups:
+//   - proxy/firewall/database/webserver: network/appliance logs, entirely
+//     outside the Windows host-forensics scope.
+//   - file_access: a Windows category, but it requires the
+//     Microsoft-Windows-Kernel-File ETW provider (not Sysmon, not the
+//     default Security/Operational channels), which Tier 0 doesn't collect.
+//     Move it out of this set if a Kernel-File parser is ever added.
 var unsupportedCategories = map[string]bool{
-	"proxy":     true,
-	"firewall":  true,
-	"database":  true,
-	"webserver": true,
+	"proxy":       true,
+	"firewall":    true,
+	"database":    true,
+	"webserver":   true,
+	"file_access": true,
 }
 
 // unsupportedProducts skips rules whose product is a web/app server that
