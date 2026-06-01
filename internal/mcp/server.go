@@ -27,11 +27,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/tlvb/tlvb/internal/agents"
 	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/common"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // SafetyTier mirrors Valhuntir's classification (forensic-mcp). Every tool we
@@ -52,16 +52,18 @@ type Server struct {
 	catalog     *common.ArtifactCatalog // loaded from config/artifacts.yaml
 	cases       *casedb.Manager         // DuckDB-backed read access
 	outputsRoot string                  // outputs/cases — for findings/synthesis fetch
+	rulesDBPath string                  // outputs/rules.duckdb — for list_cache_status
 	logger      common.Logger
 }
 
 // Config is the server bootstrap config.
 type Config struct {
-	Name             string
-	Version          string
-	ArtifactsYAML    string // path to config/artifacts.yaml
-	CaseDBPath       string // path to outputs/cases.duckdb
-	OutputsRoot      string // path to outputs/cases (for findings/*.json read)
+	Name          string
+	Version       string
+	ArtifactsYAML string // path to config/artifacts.yaml
+	CaseDBPath    string // path to outputs/cases.duckdb
+	OutputsRoot   string // path to outputs/cases (for findings/*.json read)
+	RulesDBPath   string // path to outputs/rules.duckdb (for list_cache_status)
 }
 
 // New builds a server with read-only tools registered. Call Serve to run it.
@@ -91,11 +93,16 @@ func New(cfg Config, logger common.Logger) (*Server, error) {
 		// Lets existing callers that don't yet pass OutputsRoot still work.
 		outRoot = filepath.Join(filepath.Dir(cfg.CaseDBPath), "cases")
 	}
+	rulesDB := cfg.RulesDBPath
+	if rulesDB == "" {
+		rulesDB = filepath.Join(filepath.Dir(cfg.CaseDBPath), "rules.duckdb")
+	}
 	s := &Server{
 		mcp:         mcpSrv,
 		catalog:     catalog,
 		cases:       cases,
 		outputsRoot: outRoot,
+		rulesDBPath: rulesDB,
 		logger:      logger,
 	}
 	s.registerTools()
@@ -324,6 +331,56 @@ func (s *Server) registerTools() {
 		),
 		s.handleCorrelationCrossEvidence,
 	)
+
+	// TLVB-native findings / synthesis / rule-cache access (findings_tier.go).
+	// The legacy list_findings/get_finding above target the findevil
+	// TacticReport schema; these target findings/by-rule + by-skill +
+	// synthesis.json + rules.duckdb that the TLVB pipeline actually produces.
+	s.mcp.AddTool(
+		mcp.NewTool("list_findings_by_rule",
+			mcp.WithDescription(
+				"List TLVB Tier 1A (signature, by-rule) + Tier 1B (anomaly, by-skill) "+
+					"findings for a case. Optional filters: source (tier1a|tier1b), "+
+					"rule_source (sigma|hayabusa|stix|custom), severity, review_state "+
+					"(approved|auto_approved|rejected|pending). SAFE (read-only)."),
+			mcp.WithString("case_id", mcp.Required()),
+			mcp.WithString("source", mcp.Description("tier1a | tier1b")),
+			mcp.WithString("rule_source", mcp.Description("sigma | hayabusa | stix | custom")),
+			mcp.WithString("severity", mcp.Description("critical | high | medium | low | info")),
+			mcp.WithString("review_state", mcp.Description("approved | auto_approved | rejected | pending")),
+		),
+		s.handleListFindingsByRule,
+	)
+	s.mcp.AddTool(
+		mcp.NewTool("search_findings",
+			mcp.WithDescription(
+				"Substring search across TLVB findings (title / rule_id / MITRE "+
+					"technique / skill / lens), case-insensitive. SAFE (read-only)."),
+			mcp.WithString("case_id", mcp.Required()),
+			mcp.WithString("query", mcp.Required(),
+				mcp.Description("e.g. 'lsass', 'T1003', 'mimikatz', 'A5'")),
+		),
+		s.handleSearchFindings,
+	)
+	s.mcp.AddTool(
+		mcp.NewTool("get_synthesis",
+			mcp.WithDescription(
+				"Fetch the Tier 2 synthesis.json (attack-chain narrative, clusters, "+
+					"mitre_mapping, open_questions) for a case. SAFE (read-only)."),
+			mcp.WithString("case_id", mcp.Required()),
+		),
+		s.handleGetSynthesis,
+	)
+	s.mcp.AddTool(
+		mcp.NewTool("list_cache_status",
+			mcp.WithDescription(
+				"Rule SQL cache status from rules.duckdb: rule_sql_cache build "+
+					"coverage (built/pending/failed per source) + skill_sql_cache "+
+					"(Tier 1B learned lenses, candidate/canonical). Global, not "+
+					"case-scoped. SAFE (read-only)."),
+		),
+		s.handleListCacheStatus,
+	)
 }
 
 // ----------------------------------------------------------------------------
@@ -479,14 +536,27 @@ func (s *Server) handleGetFinding(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	// Legacy TacticReport findings (findevil schema) first.
 	all, err := s.collectFindings(caseID, "")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get finding: %v", err)), nil
-	}
-	for _, f := range all {
-		if f.FindingID == findingID {
-			return jsonResult(f)
+	if err == nil {
+		for _, f := range all {
+			if f.FindingID == findingID {
+				return jsonResult(f)
+			}
 		}
+	}
+	// Fall back to the TLVB-native by-rule / by-skill tree — this is what the
+	// current pipeline produces, so it is the common case.
+	tier, terr := s.collectTierFindings(caseID)
+	if terr == nil {
+		for _, f := range tier {
+			if f.FindingID == findingID {
+				return jsonResult(f)
+			}
+		}
+	}
+	if err != nil && terr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get finding: %v", err)), nil
 	}
 	return mcp.NewToolResultError(
 		fmt.Sprintf("finding %q not found in case %q", findingID, caseID)), nil
@@ -565,26 +635,26 @@ func (s *Server) handleGetTimelineReview(ctx context.Context, req mcp.CallToolRe
 // small curated table rather than a full ATT&CK download; agents can read
 // the skill files directly if they need exhaustive coverage.
 var mitreRequiredArtifacts = map[string][]string{
-	"T1078":     {"evtx", "registry"},                                // Valid Accounts
-	"T1547.001": {"registry", "lnk"},                                  // Run keys / Startup
-	"T1547.004": {"registry"},                                         // Winlogon helper DLL
-	"T1546.008": {"registry"},                                         // Accessibility features IFEO
-	"T1546.012": {"registry"},                                         // IFEO Debugger
-	"T1543.003": {"registry", "evtx"},                                 // Windows Service
-	"T1053.005": {"scheduled_tasks", "evtx"},                          // Scheduled Task
-	"T1059.001": {"evtx", "prefetch"},                                 // PowerShell
-	"T1059.003": {"evtx", "prefetch"},                                 // CMD
-	"T1110":     {"evtx"},                                             // Brute Force
-	"T1003":     {"evtx", "prefetch", "amcache"},                      // OS credential dump
-	"T1021":     {"evtx"},                                             // Remote Services
-	"T1021.001": {"evtx"},                                             // RDP
-	"T1021.002": {"evtx"},                                             // SMB/Admin Shares
-	"T1070.001": {"evtx"},                                             // Indicator Removal (logs)
-	"T1070.004": {"usn_journal", "mft"},                               // File Deletion
-	"T1112":     {"registry"},                                         // Modify Registry
-	"T1083":     {"prefetch", "shellbags", "jumplists"},               // File and Directory Discovery
-	"T1105":     {"browser_history", "evtx", "mft"},                   // Ingress Tool Transfer
-	"T1486":     {"mft", "usn_journal", "evtx"},                       // Data Encrypted for Impact
+	"T1078":     {"evtx", "registry"},                   // Valid Accounts
+	"T1547.001": {"registry", "lnk"},                    // Run keys / Startup
+	"T1547.004": {"registry"},                           // Winlogon helper DLL
+	"T1546.008": {"registry"},                           // Accessibility features IFEO
+	"T1546.012": {"registry"},                           // IFEO Debugger
+	"T1543.003": {"registry", "evtx"},                   // Windows Service
+	"T1053.005": {"scheduled_tasks", "evtx"},            // Scheduled Task
+	"T1059.001": {"evtx", "prefetch"},                   // PowerShell
+	"T1059.003": {"evtx", "prefetch"},                   // CMD
+	"T1110":     {"evtx"},                               // Brute Force
+	"T1003":     {"evtx", "prefetch", "amcache"},        // OS credential dump
+	"T1021":     {"evtx"},                               // Remote Services
+	"T1021.001": {"evtx"},                               // RDP
+	"T1021.002": {"evtx"},                               // SMB/Admin Shares
+	"T1070.001": {"evtx"},                               // Indicator Removal (logs)
+	"T1070.004": {"usn_journal", "mft"},                 // File Deletion
+	"T1112":     {"registry"},                           // Modify Registry
+	"T1083":     {"prefetch", "shellbags", "jumplists"}, // File and Directory Discovery
+	"T1105":     {"browser_history", "evtx", "mft"},     // Ingress Tool Transfer
+	"T1486":     {"mft", "usn_journal", "evtx"},         // Data Encrypted for Impact
 }
 
 func (s *Server) handleEventsByTTP(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -645,10 +715,10 @@ func (s *Server) handleMitreRequiredArtifacts(ctx context.Context, req mcp.CallT
 	}
 	arts := mitreRequiredArtifacts[tid]
 	return jsonResult(map[string]any{
-		"technique_id":  tid,
-		"artifact_ids":  arts,
-		"covered":       len(arts) > 0,
-		"note":          "static mapping from DESIGN.md §4.3; not exhaustive",
+		"technique_id": tid,
+		"artifact_ids": arts,
+		"covered":      len(arts) > 0,
+		"note":         "static mapping from DESIGN.md §4.3; not exhaustive",
 	})
 }
 
