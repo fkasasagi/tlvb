@@ -496,6 +496,56 @@ func (m *Manager) ListSkillSQL(ctx context.Context, skill, schemaVersion, modelI
 	return scanSkillRows(rows)
 }
 
+// SourceStateCount is one (rule_source, state) bucket count, used by the
+// Web UI Rule Library to render the build-coverage matrix.
+type SourceStateCount struct {
+	Source string
+	State  CacheState
+	Count  int
+}
+
+// CountRulesBySourceState aggregates rule_sql_cache into (source, state)
+// buckets without loading SQL text — cheap enough to call per page view.
+func (m *Manager) CountRulesBySourceState(ctx context.Context) ([]SourceStateCount, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT rule_source, state, COUNT(*)
+		   FROM rule_sql_cache GROUP BY rule_source, state
+		  ORDER BY rule_source, state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourceStateCount
+	for rows.Next() {
+		var c SourceStateCount
+		var st string
+		if err := rows.Scan(&c.Source, &st, &c.Count); err != nil {
+			return nil, err
+		}
+		c.State = CacheState(st)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListAllSkillSQL returns every skill_sql_cache row regardless of validity
+// signature, ordered canonical-first then by hit_count. Used by the Web UI
+// Rule Library to expose the Tier 1B learned-lens cache for inspection.
+func (m *Manager) ListAllSkillSQL(ctx context.Context) ([]SkillSQLRow, error) {
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT skill, sql_sha256, sql, COALESCE(intent, ''), state,
+		       COALESCE(origin_case, ''), generated_at, hit_count,
+		       COALESCE(last_used_case, ''), schema_version, model_id
+		  FROM skill_sql_cache
+		 ORDER BY CASE state WHEN 'canonical' THEN 0 ELSE 1 END,
+		          hit_count DESC, skill, sql_sha256`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkillRows(rows)
+}
+
 // CountSkillByState returns counts grouped by state across all skills.
 func (m *Manager) CountSkillByState(ctx context.Context) (map[SkillState]int, error) {
 	rows, err := m.db.QueryContext(ctx,
