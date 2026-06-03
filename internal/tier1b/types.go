@@ -18,8 +18,11 @@
 //   - A cached query whose rows the LLM cites in a finding is promoted to
 //     canonical → cost decreases as proven lenses accumulate across cases
 //
-// Still out of scope (deferred):
-//   - Multi-skill orchestration (only anomaly_hunter is wired)
+// v0.2+ (multi-skill): Run() builds one skill at a time (cfg.Skill, default
+// anomaly_hunter); the CLI loops it over --skills to run several. The skill
+// .md is the system prompt (its detection lenses/knowledge); the Tier 1B
+// user message is the AUTHORITATIVE output contract ({findings,
+// proposed_queries}) regardless of any output format the .md describes.
 package tier1b
 
 import "time"
@@ -27,6 +30,7 @@ import "time"
 // Config drives Run().
 type Config struct {
 	CaseID           string
+	Skill            string // skill name (skills/<Skill>.md); default "anomaly_hunter"
 	SkillsDir        string // default "skills"
 	FindingsBaseDir  string // outputs/cases/<id>/findings
 	DBPath           string // outputs/cases.duckdb (read-only opened by Run)

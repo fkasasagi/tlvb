@@ -30,6 +30,12 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 		"rules DuckDB path (skill_sql_cache for Tier 1B v0.2 learned lenses)")
 	noSkillCache := fs.Bool("no-skill-cache", false,
 		"disable the skill SQL cache (v0.1 heuristic-only behaviour)")
+	skill := fs.String("skill", "anomaly_hunter",
+		"skill to run (skills/<skill>.md); the .md is the system prompt")
+	skillsCSV := fs.String("skills", "",
+		"comma-separated skills to run in sequence (overrides --skill). e.g. "+
+			"anomaly_hunter,persistence,credential_access — each gets its own "+
+			"skill_sql_cache namespace and findings/by-skill/<skill>.json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -43,28 +49,47 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 		modelID = "claude-code-default"
 	}
 
-	cfg := tier1b.Config{
-		CaseID:          caseID,
-		SkillsDir:       *skillsDir,
-		FindingsBaseDir: *outDir,
-		DBPath:          *dbPath,
-		MaxEvents:       *maxEvents,
-		Model:           *model,
-		Timeout:         time.Duration(*timeoutMin) * time.Minute,
-		DryRun:          *dryRun,
-		ProgressFn:      tier1bProgress(),
-		RulesDBPath:     *rulesDB,
-		NoSkillCache:    *noSkillCache,
-		SchemaVersion:   casedb.SchemaVersion(),
-		ModelID:         modelID,
+	skills := splitCSV(*skillsCSV)
+	if len(skills) == 0 {
+		skills = []string{*skill}
 	}
-	fmt.Fprintf(os.Stderr, "tier 1B (Skills-driven Anomaly) — case=%s findings_base=%s\n",
-		caseID, *outDir)
-	rep, err := tier1b.Run(context.Background(), cfg)
-	if err != nil {
-		return err
+
+	var totalNew int
+	for _, sk := range skills {
+		cfg := tier1b.Config{
+			CaseID:          caseID,
+			Skill:           sk,
+			SkillsDir:       *skillsDir,
+			FindingsBaseDir: *outDir,
+			DBPath:          *dbPath,
+			MaxEvents:       *maxEvents,
+			Model:           *model,
+			Timeout:         time.Duration(*timeoutMin) * time.Minute,
+			DryRun:          *dryRun,
+			ProgressFn:      tier1bProgress(),
+			RulesDBPath:     *rulesDB,
+			NoSkillCache:    *noSkillCache,
+			SchemaVersion:   casedb.SchemaVersion(),
+			ModelID:         modelID,
+		}
+		fmt.Fprintf(os.Stderr, "tier 1B (Skills-driven Anomaly) — case=%s skill=%s findings_base=%s\n",
+			caseID, sk, *outDir)
+		rep, err := tier1b.Run(context.Background(), cfg)
+		if err != nil {
+			if len(skills) == 1 {
+				return err
+			}
+			// graceful: one skill failing doesn't abort the rest (CLAUDE.md #4).
+			fmt.Fprintf(os.Stderr, "skill %s failed (continuing): %v\n", sk, err)
+			continue
+		}
+		printTier1BReport(rep, sk, *dryRun)
+		totalNew += len(rep.NewFindings)
 	}
-	printTier1BReport(rep, *dryRun)
+	if len(skills) > 1 {
+		fmt.Printf("\nTier 1B multi-skill total — %d skill(s) run, %d new findings\n",
+			len(skills), totalNew)
+	}
 	return nil
 }
 
@@ -74,8 +99,8 @@ func tier1bProgress() func(tier1b.Event) {
 	}
 }
 
-func printTier1BReport(rep *tier1b.Report, dryRun bool) {
-	fmt.Printf("\nTier 1B summary — case=%s\n", rep.CaseID)
+func printTier1BReport(rep *tier1b.Report, skill string, dryRun bool) {
+	fmt.Printf("\nTier 1B summary — case=%s skill=%s\n", rep.CaseID, skill)
 	fmt.Printf("  prior findings consumed:  %d\n", rep.PriorFindings)
 	fmt.Printf("  events scanned:           %d\n", rep.EventsScanned)
 	fmt.Printf("  candidates (in window):   %d  (truncated=%v)\n",
