@@ -60,6 +60,9 @@ func runRulesBuild(args []string) error {
 			"without invalidating them (e.g. --model claude-opus-4-8 --cache-model-id claude-sonnet-4-6)")
 	engine := fs.String("engine", "claude-code",
 		"build engine: claude-code (uses local `claude` CLI, no API key needed) | anthropic-api")
+	timeoutSec := fs.Int("timeout-seconds", 0,
+		"per-rule LLM timeout in seconds (0 = engine default 300). Raise for rules "+
+			"that trigger long chain-of-thought and get killed at the default.")
 	rateIn := fs.Float64("rate-yen-per-m-input", 450.0,
 		"cost rate: yen per 1M input tokens (Sonnet 4.6 list price default)")
 	rateOut := fs.Float64("rate-yen-per-m-output", 2250.0,
@@ -93,6 +96,9 @@ func runRulesBuild(args []string) error {
 		}
 		b := rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
 		b.SignatureModel = *cacheModelID
+		if *timeoutSec > 0 {
+			b.Timeout = time.Duration(*timeoutSec) * time.Second
+		}
 		builder = b
 	case "claude-code":
 		if !*dryRun {
@@ -102,6 +108,9 @@ func runRulesBuild(args []string) error {
 		}
 		b := rulebuild.NewClaudeCodeBuilder(*model, casedb.SchemaDoc())
 		b.SignatureModel = *cacheModelID
+		if *timeoutSec > 0 {
+			b.Timeout = time.Duration(*timeoutSec) * time.Second
+		}
 		builder = b
 	default:
 		return fmt.Errorf("unknown --engine %q (want claude-code | anthropic-api)", *engine)
