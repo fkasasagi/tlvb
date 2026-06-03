@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -21,19 +23,21 @@ import (
 // runRules dispatches `tlvb rules ...` subcommands.
 func runRules(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: tlvb rules build|list ...")
+		return fmt.Errorf("usage: tlvb rules build|list|export ...")
 	}
 	switch args[0] {
 	case "build":
 		return runRulesBuild(args[1:])
 	case "list":
 		return runRulesList(args[1:])
+	case "export":
+		return runRulesExport(args[1:])
 	case "prune-skills":
 		return runRulesPruneSkills(args[1:])
 	case "revalidate-sql":
 		return runRulesRevalidateSQL(args[1:])
 	default:
-		return fmt.Errorf("unknown rules subcommand %q (want build|list|prune-skills|revalidate-sql)", args[0])
+		return fmt.Errorf("unknown rules subcommand %q (want build|list|export|prune-skills|revalidate-sql)", args[0])
 	}
 }
 
@@ -230,6 +234,139 @@ func runRulesList(args []string) error {
 		}
 	}
 	return nil
+}
+
+// ruleExportRow is the diffable, git-vendorable shape of one built rule.
+// generated_at / state / error_message are intentionally dropped: state is
+// always 'built' for an export, and generated_at would churn the diff on every
+// rebuild even when the SQL is byte-identical. The (rule_sha256, schema_version,
+// model_id) triple is kept so a fresh clone can tell whether the vendored SQL
+// still matches its rule corpus / build model.
+type ruleExportRow struct {
+	RuleID             string          `json:"rule_id"`
+	RuleSource         string          `json:"rule_source"`
+	RuleSHA256         string          `json:"rule_sha256"`
+	SchemaVersion      string          `json:"schema_version"`
+	ModelID            string          `json:"model_id"`
+	PrefilterArtifacts []string        `json:"prefilter_artifacts"`
+	SQL                string          `json:"sql"`
+	RuleMeta           json.RawMessage `json:"rule_meta,omitempty"`
+}
+
+// runRulesExport writes the *built* rule SQL cache to diffable JSONL under
+// --out-dir, one file per source (<source>.sql.jsonl). This lets the
+// LLM-generated SQL be committed to git so a fresh clone reuses it instead of
+// re-running the (Sonnet-quota / yen-costing) build. Rows arrive ordered by
+// (rule_source, rule_id) so each file is deterministic without re-sorting.
+func runRulesExport(args []string) error {
+	fs := flag.NewFlagSet("rules export", flag.ContinueOnError)
+	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
+		"path to the rule SQL cache DB")
+	source := fs.String("source", "",
+		"restrict to one source: sigma | hayabusa | stix | custom (default: all)")
+	outDir := fs.String("out-dir", "rules/built",
+		"directory to write <source>.sql.jsonl files into")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	db, err := rulesdb.Open(*rulesDBPath, rulesdb.ReadOnly)
+	if err != nil {
+		return fmt.Errorf("open rules db (read-only): %w", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	rows, err := db.ListAll(ctx, *source, rulesdb.StateBuilt)
+	if err != nil {
+		return fmt.Errorf("list built rules: %w", err)
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("no built rules to export (source=%q)", *source)
+	}
+
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", *outDir, err)
+	}
+
+	type srcOut struct {
+		f   *os.File
+		w   *bufio.Writer
+		enc *json.Encoder
+	}
+	outs := map[string]*srcOut{}
+	counts := map[string]int{}
+	closeAll := func() {
+		for _, o := range outs {
+			o.w.Flush()
+			o.f.Close()
+		}
+	}
+	defer closeAll()
+
+	for _, r := range rows {
+		o, ok := outs[r.RuleSource]
+		if !ok {
+			path := filepath.Join(*outDir, r.RuleSource+".sql.jsonl")
+			f, err := os.Create(path)
+			if err != nil {
+				return fmt.Errorf("create %s: %w", path, err)
+			}
+			w := bufio.NewWriter(f)
+			enc := json.NewEncoder(w)
+			// Keep <, >, & literal so the SQL stays readable in the diff.
+			enc.SetEscapeHTML(false)
+			o = &srcOut{f: f, w: w, enc: enc}
+			outs[r.RuleSource] = o
+		}
+		if err := o.enc.Encode(buildExportRow(r)); err != nil {
+			return fmt.Errorf("encode %s/%s: %w", r.RuleSource, r.RuleID, err)
+		}
+		counts[r.RuleSource]++
+	}
+	closeAll()
+
+	srcs := make([]string, 0, len(counts))
+	for s := range counts {
+		srcs = append(srcs, s)
+	}
+	sort.Strings(srcs)
+	for _, s := range srcs {
+		fmt.Printf("wrote %d %s rules -> %s\n", counts[s], s,
+			filepath.Join(*outDir, s+".sql.jsonl"))
+	}
+	return nil
+}
+
+// buildExportRow maps a cache row to its JSONL projection: the comma-separated
+// prefilter string becomes a real array, and rule_meta is embedded as raw JSON
+// (compacted by the encoder) rather than a JSON-in-string blob. Empty/invalid
+// meta is handled defensively so one bad row can't break the whole export.
+func buildExportRow(r rulesdb.CacheRow) ruleExportRow {
+	arts := []string{}
+	for _, a := range strings.Split(r.PrefilterArtifacts, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			arts = append(arts, a)
+		}
+	}
+	row := ruleExportRow{
+		RuleID:             r.RuleID,
+		RuleSource:         r.RuleSource,
+		RuleSHA256:         r.RuleSHA256,
+		SchemaVersion:      r.SchemaVersion,
+		ModelID:            r.ModelID,
+		PrefilterArtifacts: arts,
+		SQL:                r.SQL,
+	}
+	if meta := strings.TrimSpace(r.RuleMeta); meta != "" {
+		if json.Valid([]byte(meta)) {
+			row.RuleMeta = json.RawMessage(meta)
+		} else {
+			b, _ := json.Marshal(meta)
+			row.RuleMeta = json.RawMessage(b)
+		}
+	}
+	return row
 }
 
 // listSkillCache renders the Tier 1B skill_sql_cache (learned lenses).
