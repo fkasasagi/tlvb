@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/agents"
-	"github.com/tlvb/tlvb/internal/synthesizer"
+	"github.com/tlvb/tlvb/internal/tier2"
 )
 
 // ----------------------------------------------------------------------------
@@ -25,7 +25,7 @@ import (
 // ----------------------------------------------------------------------------
 
 type chatMessage struct {
-	Role    string `json:"role"`    // "user" | "assistant"
+	Role    string `json:"role"` // "user" | "assistant"
 	Content string `json:"content"`
 }
 
@@ -121,93 +121,111 @@ Respond in the same language the user writes in (Japanese ⇄ English are both
 common). Be concise; show command examples in fenced code blocks.
 
 ============================================================================
-ABOUT TLVB
+ABOUT TLVB  (Timeline Longa, Vita Brevis)
 ============================================================================
 
-TLVB is a MITRE ATT&CK tactics-driven autonomous IR agent system that
-runs on SANS SIFT Workstation. It:
-  - Parses Windows forensic artifacts via SIFT tools (Tier 0)
-  - Runs 10+ Tactic Agents in parallel via Claude (Tier 1)
-  - Synthesizes results, checks consistency, builds a Kill Chain (Tier 2)
-  - Generates HTML/CSV/JSON reports (Tier 3)
-  - Provides a Web UI Examiner Portal with Approve/Reject (Review Gate 1)
+TLVB is an autonomous IR agent system that extracts attack traces from
+Windows forensic artifacts. It runs on SANS SIFT Workstation and is built
+in tiers:
+  - Tier 0  — Parse Windows artifacts via SIFT tools → unified_events (DuckDB)
+  - Tier 1A — Signature agent: a rule corpus (Sigma / Hayabusa / ATT&CK STIX /
+              custom) is pre-compiled to SQL at BUILD time; at runtime it just
+              runs the cached SQL (zero LLM) and every hit becomes a finding
+  - Tier 1B — Skills-driven anomaly agent: runs cached SQL from skills/*.md,
+              then an LLM reasons over the results + Tier 1A findings and may
+              propose new queries that grow the cache across cases
+  - Tier 2  — Timeline Analysis Agent (LLM): clusters findings and analyses
+              each cluster's ±N-min raw timeline; optional active search adds
+              hypothesis-driven wide-range SQL → synthesis.json
+  - Tier 3  — DFIR Reporter: HTML / CSV / JSON (ja/en)
+  - Web UI Examiner Portal with Review Gates (0 / 1A / 1B / 2)
 
 ============================================================================
 PIPELINE (in order)
 ============================================================================
 
-  1. Parse        — SIFT tools → unified_events DuckDB rows
-  2. Analyze All  — 10 Tactic Agents run, output findings/<tactic>.json
-  3. Synthesize   — aggregate + consistency check + timeline + Kill Chain
-                    → synthesis.json (optional Corrector loop re-runs
-                    flagged tactics)
-  4. Generate Report — HTML / CSV / JSON to outputs/cases/<id>/reports/
+  1. Parse    — SIFT tools → unified_events DuckDB rows (Tier 0)
+  2. Tier 1A  — cached signature SQL → findings/by-rule/<source>/<id>.json
+  3. Tier 1B  — skills anomaly (+LLM) → findings/by-skill/<skill>.json
+  4. Tier 2   — timeline synthesis → synthesis.json
+  5. Tier 3   — report → outputs/cases/<id>/reports/
 
 CLI equivalents:
   tlvb parse       --case-id ID --evidence-id ID --input PATH
-  tlvb analyze     CASE_ID --tactic <slug>   (or --tactic anomaly_hunter)
-  tlvb synthesize  CASE_ID [--correct]
-  tlvb report      CASE_ID [--language ja|en] [--only-approved]
-  tlvb run         CASE_ID --evidence PATH    (one-shot)
-  tlvb serve       --port 8080                (Web UI)
-  tlvb review      CASE_ID --gate 1           (CLI review)
+  tlvb analyze     CASE_ID --tier 1a                  (cached signature SQL)
+  tlvb analyze     CASE_ID --tier 1b [--skill NAME]   (anomaly / lens)
+  tlvb synthesize  CASE_ID [--active-search]          (Tier 2)
+  tlvb report      CASE_ID [--language ja|en] [--only-approved]   (Tier 3)
+  tlvb run         CASE_ID --evidence PATH --tier all (one-shot)
+  tlvb rules       build|list                         (compile corpus → SQL)
+  tlvb serve       --port 8080                        (Web UI)
+  tlvb review      CASE_ID --gate 1a                  (CLI review)
 
 ============================================================================
-TACTIC AGENTS (10 + 1)
+RULE CORPUS (Tier 1A) & SKILLS (Tier 1B)
 ============================================================================
 
-  TA0001 initial_access        — how the attacker got in
-  TA0002 execution             — what programs they ran
-  TA0003 persistence           — how they stayed in
-  TA0004 privilege_escalation  — how they got admin
-  TA0005 defense_evasion       — how they hid (log clears, etc.)
-  TA0006 credential_access     — how they stole passwords
-  TA0007 discovery             — what they reconnoitered
-  TA0008 lateral_movement      — how they moved between hosts
-  TA0009 collection            — what data they gathered
-  TA0040 impact                — how they damaged things
-  ANOM   anomaly_hunter         — Tier 1.5, anomalies outside the 10
+Tier 1A rules carry a rule_source (one of 4):
+  sigma     — SigmaHQ detection rules (git submodule)
+  hayabusa  — Hayabusa built-in rules / EVTX pass-through
+  stix      — MITRE ATT&CK techniques (STIX 2.1)
+  custom    — in-house rules
+Each rule is compiled once to DuckDB SQL and cached in rules.duckdb. Memory /
+Sysmon rules carry requires_artifact and are skipped when that artifact is
+absent (auto-enabled later, no rebuild).
+
+Tier 1B lenses live in skills/*.md (default anomaly_hunter; tactic skills are
+opt-in via --skill). Queries the LLM proves useful are promoted to a canonical
+cache and re-run LLM-free on later cases.
 
 ============================================================================
-PARSERS (P0 + P1)
+PARSERS (Tier 0)
 ============================================================================
 
-P0: evtx, amcache, prefetch, registry (RECmd/RegRipper), scheduled_tasks
-P1: shimcache, mft ($MFT), shellbags, jumplists, lnk, recyclebin,
-    win10timeline (ActivitiesCache.db)
+evtx, amcache, prefetch, registry, scheduled_tasks, shimcache, mft ($MFT),
+shellbags, jumplists, lnk, recyclebin, win10timeline, usn_journal, hayabusa,
+srum, browser_history (+ skeletons: sqlecmd / bulk_extractor / yara /
+volatility3 / w3c_iis).
 
 ============================================================================
 WEB UI TABS (per case)
 ============================================================================
 
   Events     — parsed unified_events browser + parse_results
-  Findings   — Tactic-grouped, Approve/Reject, evidence drill-down
-  Timeline   — chronological + Kill Chain diagram
-  IOC        — extracted indicators (file_path / domain / ipv4 / sha256 / etc)
-  MITRE Map  — Tactic × Technique grid coloured by max confidence
+  Findings   — Review Gate 1A (signature) + 1B (anomaly), severity-ranked,
+               Approve/Reject, cluster bulk-approve, evidence drill-down
+  Timeline   — key-event timeline derived from findings
+  IOC        — indicators derived from finding evidence (file/path, command,
+               account, host, network, log-source)
+  MITRE Map  — tactic × technique grid coloured by confidence
   Report     — embedded HTML report + CSV/JSON downloads
+  Rules      — global Rule Library: build coverage + learned Tier 1B lenses
   Audit      — actions.jsonl (parser orchestrator activity)
 
 ============================================================================
 KEY CONCEPTS
 ============================================================================
 
-  finding_id   — F-<tactic>-<seq> e.g. F-persistence-001
-  audit_id     — SHA-256 prefix of one parsed event; the unit of evidence
-                 a finding cites
-  confidence   — high (red) | medium (yellow) | low (green)
-  Approved     — examiner-confirmed; included in --only-approved reports
-  Rejected     — examiner-dismissed (with reason); excluded
-  Review Gate  — examiner checkpoint between AI tiers (Gate 1 = findings)
-  Synthesizer  — deterministic Tier 2 (no LLM); Corrector adds optional LLM
-  R1-R4        — consistency rules (e.g. R1 = log-clear vs. low lateral
-                 findings count → suspicious blind spot)
+  Tier 1A finding — one rule hit, saved as
+                    findings/by-rule/<rule_source>/<rule_id>.json with
+                    rule_meta (title, level, mitre_techniques / mitre_tactics)
+  Tier 1B finding — one anomaly, under findings/by-skill/<skill>.json
+  rule_id         — upstream ID, unchanged (Sigma UUID / STIX Txxxx / …);
+                    primary key is (rule_id, rule_source)
+  audit_id        — SHA-256 prefix of one parsed event; the unit of evidence
+                    a finding cites
+  severity        — critical | high | medium | low (from the rule level)
+  Review Gate 1A  — critical/high need review; medium/low auto-approve
+                    (examiner can override); cluster bulk-approve available
+  Tier 1A rule    — runtime LLM-ZERO by design (cached SQL only)
+  synthesis.json  — Tier 2 output: clusters + overall_story + mitre_mapping
+                    + open_questions
 
 When the user asks about a specific finding/timeline event/IOC and case
 context is provided below, ground your answer in that data. When no case
 context is provided, answer about TLVB itself.
 
-Never invent finding_ids, audit_ids, or counts — if you're not sure, say so.`
+Never invent rule_ids, audit_ids, or counts — if you're not sure, say so.`
 
 // buildChatSystemPrompt assembles orientation + optional case context.
 // Case context is intentionally summarised (not the full synthesis.json)
@@ -235,96 +253,41 @@ func (s *Server) buildChatSystemPrompt(caseID string) string {
 
 // summariseCaseForChat produces the dynamic case context block. Keep it
 // dense — bullet points + counts beat narrative for context windows.
-func summariseCaseForChat(cs *synthesizer.CaseSynthesis) string {
+func summariseCaseForChat(cs *tier2.CaseSynthesis) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "============================================================================\n")
 	fmt.Fprintf(&b, "CURRENT CASE: %s\n", cs.CaseID)
 	fmt.Fprintf(&b, "============================================================================\n\n")
-	fmt.Fprintf(&b, "evidence_id: %s   timezone: %s   generated_at: %s\n\n",
-		cs.EvidenceID, cs.Timezone, cs.GeneratedAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "Executive summary (synthesizer-generated):\n  %s\n\n",
-		cs.ExecutiveSummary)
+	fmt.Fprintf(&b, "generated_at: %s   model: %s\n\n",
+		cs.GeneratedAt.UTC().Format(time.RFC3339), orDash(cs.ModelID))
+	fmt.Fprintf(&b, "Overall story (Tier 2 synthesis):\n  %s\n\n",
+		truncateForChat(cs.OverallStory, 1200))
 
 	// Stats
 	fmt.Fprintf(&b, "Stats:\n")
-	fmt.Fprintf(&b, "  total_findings=%d  clusters=%d  merged_duplicates=%d  "+
-		"unique_evidence=%d  timeline_rows=%d  unresolved_audit_ids=%d\n",
-		cs.Stats.TotalFindings, cs.Stats.ClusterCount, cs.Stats.MergedFindings,
-		cs.Stats.UniqueEvidenceIDs, len(cs.Timeline), len(cs.UnresolvedRefs))
-	if len(cs.Stats.FindingsByTactic) > 0 {
-		fmt.Fprintf(&b, "  findings_by_tactic: %s\n",
-			formatCountMap(cs.Stats.FindingsByTactic))
-	}
-	if len(cs.Stats.ConfidenceDistribution) > 0 {
-		fmt.Fprintf(&b, "  confidence: %s\n",
-			formatCountMap(cs.Stats.ConfidenceDistribution))
-	}
+	fmt.Fprintf(&b, "  total_findings=%d  clusters=%d  llm_calls=%d  cost=$%.4f\n",
+		cs.TotalFindings, cs.ClusterCount, cs.Audit.LLMCallsTotal, cs.Audit.TotalCostUSD)
 
-	// Affected scope
-	if len(cs.AffectedScope.CompromisedHosts) > 0 {
-		fmt.Fprintf(&b, "\nCompromised hosts: %s\n",
-			strings.Join(cs.AffectedScope.CompromisedHosts, ", "))
-	}
-
-	// Kill Chain
-	if len(cs.IntrusionPath) > 0 {
-		fmt.Fprintf(&b, "\nInferred Kill Chain:\n")
-		for _, step := range cs.IntrusionPath {
-			fmt.Fprintf(&b, "  %d. %s (%s) %s — %s\n",
-				step.Step, step.Tactic, step.TacticName,
-				step.Timestamp.UTC().Format("2006-01-02 15:04:05Z"),
-				truncateForChat(step.Description, 150))
-		}
-	}
-
-	// Top findings per tactic — id + technique + confidence + 1-line summary
-	if len(cs.FindingsByTactic) > 0 {
-		fmt.Fprintf(&b, "\nFindings (Examiner-facing IDs are stable):\n")
-		tids := make([]string, 0, len(cs.FindingsByTactic))
-		for k := range cs.FindingsByTactic {
-			tids = append(tids, k)
-		}
-		sort.Strings(tids)
-		for _, tid := range tids {
-			list := cs.FindingsByTactic[tid]
-			if len(list) == 0 {
-				continue
+	// Clusters — phase, finding count, techniques, 1-line narrative
+	if len(cs.Clusters) > 0 {
+		fmt.Fprintf(&b, "\nClusters:\n")
+		for _, c := range cs.Clusters {
+			phase := c.AttackPhase
+			if phase == "" {
+				phase = "(unphased)"
 			}
-			fmt.Fprintf(&b, "  [%s] %d findings:\n", tid, len(list))
-			shown := list
-			if len(shown) > 5 {
-				shown = shown[:5]
+			fmt.Fprintf(&b, "  [cluster %d] %s — %d findings · techniques: %s\n",
+				c.ID, phase, len(c.FindingRefs), strings.Join(c.MITRETechniques, ", "))
+			if c.Narrative != "" {
+				fmt.Fprintf(&b, "    %s\n", truncateForChat(c.Narrative, 200))
 			}
-			for _, f := range shown {
-				state := "pending"
-				if f.Approved {
-					state = "approved"
-				} else if f.Rejected {
-					state = "rejected"
-				}
-				fmt.Fprintf(&b, "    - %s [%s/%s] %s — %s\n",
-					f.FindingID, f.Confidence, state, f.TechniqueID,
-					truncateForChat(f.Summary, 120))
-			}
-			if len(list) > 5 {
-				fmt.Fprintf(&b, "    ... +%d more in this tactic\n", len(list)-5)
-			}
-		}
-	}
-
-	// Inconsistencies
-	if len(cs.Inconsistencies) > 0 {
-		fmt.Fprintf(&b, "\nConsistency rule hits:\n")
-		for _, inc := range cs.Inconsistencies {
-			fmt.Fprintf(&b, "  [%s/%s] %s\n",
-				inc.Rule, inc.Severity, truncateForChat(inc.Description, 200))
 		}
 	}
 
 	// MITRE top entries
 	if len(cs.MITREMapping) > 0 {
 		fmt.Fprintf(&b, "\nMITRE ATT&CK mapping (top 10 by finding_count):\n")
-		mm := make([]synthesizer.MITREMappingEntry, len(cs.MITREMapping))
+		mm := make([]tier2.MITREEntry, len(cs.MITREMapping))
 		copy(mm, cs.MITREMapping)
 		sort.SliceStable(mm, func(i, j int) bool {
 			return mm[i].FindingCount > mm[j].FindingCount
@@ -334,26 +297,27 @@ func summariseCaseForChat(cs *synthesizer.CaseSynthesis) string {
 			shown = shown[:10]
 		}
 		for _, m := range shown {
-			fmt.Fprintf(&b, "  %s/%s — %s · findings=%d evidence=%d conf=%s\n",
-				m.Tactic, m.Technique, m.TechniqueName,
-				m.FindingCount, m.EvidenceCount, m.Confidence)
+			fmt.Fprintf(&b, "  %s/%s — findings=%d\n",
+				orDash(m.Tactic), m.Technique, m.FindingCount)
+		}
+	}
+
+	// Open questions carried by the synthesis
+	if len(cs.OpenQuestions) > 0 {
+		fmt.Fprintf(&b, "\nOpen questions:\n")
+		for _, q := range cs.OpenQuestions {
+			fmt.Fprintf(&b, "  - %s\n", truncateForChat(q, 200))
 		}
 	}
 
 	return b.String()
 }
 
-func formatCountMap(m map[string]int) string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
-	}
-	return strings.Join(parts, " ")
+	return s
 }
 
 func truncateForChat(s string, n int) string {

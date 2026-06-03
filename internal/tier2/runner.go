@@ -537,7 +537,7 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			EndTS:           c.EndTS,
 			AttackPhase:     c.AttackPhase,
 			Narrative:       c.Narrative,
-			MITRETechniques: c.MITRETechniques,
+			MITRETechniques: clusterTechniqueUnion(c),
 			OpenQuestions:   c.OpenQuestions,
 			ActiveSearch:    c.ActiveSearch,
 		}
@@ -557,7 +557,39 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 	return cs
 }
 
+// clusterTechniqueUnion merges the LLM-suggested techniques with the
+// deterministic technique IDs each finding already carries from the rule
+// corpus. The per-cluster LLM call frequently returns an empty
+// mitre_techniques list (or fails to parse), so without folding in the
+// finding-level techniques cluster.MITRETechniques — and therefore the
+// whole case MITRE mapping — comes out empty even when the findings are
+// clearly tagged. This is what made the report's mitre.csv and the Web UI
+// MITRE map render empty after an e2e run.
+func clusterTechniqueUnion(c Cluster) []string {
+	out := append([]string(nil), c.MITRETechniques...)
+	for _, f := range c.Findings {
+		out = mergeUnique(out, f.MITRETechniques)
+	}
+	return out
+}
+
 func buildMITREMapping(clusters []Cluster) []MITREEntry {
+	// technique -> authoritative tactic, learned from finding rule_meta
+	// (preferred over the cluster's coarse AttackPhase).
+	techTactic := map[string]string{}
+	for _, c := range clusters {
+		for _, f := range c.Findings {
+			if f.MITRETactic == "" {
+				continue
+			}
+			for _, t := range f.MITRETechniques {
+				if techTactic[t] == "" {
+					techTactic[t] = f.MITRETactic
+				}
+			}
+		}
+	}
+
 	type k struct{ technique string }
 	type v struct {
 		count    int
@@ -566,15 +598,19 @@ func buildMITREMapping(clusters []Cluster) []MITREEntry {
 	}
 	bucket := map[k]*v{}
 	for _, c := range clusters {
-		for _, t := range c.MITRETechniques {
+		for _, t := range clusterTechniqueUnion(c) {
 			key := k{technique: t}
 			if bucket[key] == nil {
 				bucket[key] = &v{clusters: map[int]struct{}{}}
 			}
 			bucket[key].count++
 			bucket[key].clusters[c.ID] = struct{}{}
-			if bucket[key].tactic == "" && c.AttackPhase != "" {
-				bucket[key].tactic = c.AttackPhase
+			if bucket[key].tactic == "" {
+				if tac := techTactic[t]; tac != "" {
+					bucket[key].tactic = tac
+				} else if c.AttackPhase != "" {
+					bucket[key].tactic = c.AttackPhase
+				}
 			}
 		}
 	}

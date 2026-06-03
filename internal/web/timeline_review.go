@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/tier3"
 )
 
 // ----------------------------------------------------------------------------
@@ -100,31 +102,32 @@ func (s *Server) saveTimelineGate(doc timelineGateDoc) error {
 	return os.WriteFile(path, body, 0o644)
 }
 
-// timelineEntryAuditIDs reads synthesis.json and extracts the audit_id of
-// every TimelineEntry. Used to populate the gate doc with pending rows for
-// entries the examiner hasn't acted on yet. Returns ([], nil) if synthesis
-// hasn't been produced — the UI will show an empty table with a "synthesize
-// first" hint instead of breaking.
+// timelineEntryAuditIDs returns the audit_id of every entry in the case
+// timeline. Used to populate the gate doc with pending rows for entries the
+// examiner hasn't acted on yet, and to validate approve/reject targets.
+//
+// Gate 2 sits between Tier 2 and Tier 3, so it stays a no-op until
+// synthesis.json exists (the UI shows a "synthesize first" hint instead of
+// breaking). Once it does, the audit_id set is derived from findings via the
+// SAME tier3 enrichment the Timeline tab renders — the tier2 synthesis.json
+// no longer stores a raw timeline, so reading findings keeps the gate's known
+// set in lockstep with what the examiner actually sees (previously this read
+// the legacy synthesis.json::timeline field and came back empty, which 404'd
+// every approve/reject click).
 func (s *Server) timelineEntryAuditIDs(caseID string) ([]string, error) {
-	body, err := os.ReadFile(filepath.Join(s.cfg.OutputsRoot, caseID, "synthesis.json"))
-	if err != nil {
+	if _, err := os.Stat(filepath.Join(s.cfg.OutputsRoot, caseID, "synthesis.json")); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	var doc struct {
-		Timeline []struct {
-			AuditID string `json:"audit_id"`
-		} `json:"timeline"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(doc.Timeline))
-	for _, e := range doc.Timeline {
-		if e.AuditID != "" {
-			out = append(out, e.AuditID)
+	en := tier3.LoadWebEnrichment(s.findingsDir(caseID))
+	seen := map[string]bool{}
+	out := make([]string, 0, len(en.Timeline))
+	for _, t := range en.Timeline {
+		if t.AuditID != "" && !seen[t.AuditID] {
+			seen[t.AuditID] = true
+			out = append(out, t.AuditID)
 		}
 	}
 	return out, nil

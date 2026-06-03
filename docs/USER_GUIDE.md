@@ -200,7 +200,7 @@ URL: `http://<host>:8080/`
 | `N evidence` | 登録された証拠データの数 |
 | `N events` | 解析済みのイベント数 |
 | `N findings` | 発見事項の数 |
-| `synth` | **Synthesizer**(統合)が完了済み |
+| `synth` | **Tier 2**(タイムライン統合)が完了済み |
 | `report` | レポート生成済み |
 | `no parse yet` | まだ何も処理していない |
 
@@ -231,9 +231,9 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 調査は 4 ステップです。順番に実行する必要があります。
 
 ```
-[Parse]  →  [Analyze All]  →  [Synthesize]  →  [Generate Report]
-証拠を       AIが10戦術を     結果を統合・     人間向けの
-分解する     並列調査         整合性確認       報告書化
+[Parse]  →  [Analyze All]      →  [Synthesize]   →  [Generate Report]
+証拠を       Tier 1A 署名SQL      Tier 2 が         Tier 3 が
+分解する     (+任意で Tier 1B)    タイムライン統合   報告書化
 ```
 
 各ボタンを押すと、確認用のモーダルが開いて細かいオプションを指定できます。
@@ -254,42 +254,43 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 
 処理時間: 証拠データの量によりますが、通常 5〜30 分。
 
-#### Step 2: Analyze All (解析)
+#### Step 2: Analyze All (解析 — Tier 1A + 任意で Tier 1B)
 
-10 種類の **Tactic Agent** を並行して動かし、それぞれの戦術に当てはまる
-痕跡をデータベースから探します。
-
-入力モーダル:
-
-| フィールド | 説明 |
-|---|---|
-| Engine | `claude-code` (推奨) または `anthropic-api` |
-| Model | 空欄でエンジンのデフォルトを使用 |
-| Include anomaly_hunter | チェックすると異常ハンターも実行(計11個) |
-
-> **注意**: AIモデルを呼ぶので、トークン使用料がかかります。
-> 1ケースあたり数百円〜数千円程度を見込んでください。
-> `anthropic-api` を使う場合は環境変数 `ANTHROPIC_API_KEY` の設定が必要です。
-
-処理時間: 1戦術あたり 2〜5 分 × 10〜11 戦術 = 20〜60 分。
-
-#### Step 3: Synthesize (統合)
-
-10 戦術それぞれの結果(**TacticReport**)を読み込み、
-重複の整理・整合性チェック・タイムライン構築・**Kill Chain**(攻撃の
-流れ)の推定を行います。
+**Tier 1A (シグネチャ)** が常に走ります: ルールコーパス (Sigma / Hayabusa /
+STIX / custom / LOLBAS) を build 時に SQL 化したものをこのケースに対して
+実行し、ヒットを finding 化します。**LLM を呼ばないので無料・数秒〜数十秒**で
+完了します。任意で **Tier 1B (anomaly_hunter)** の LLM パスも有効化できます。
 
 入力モーダル:
 
 | フィールド | 説明 |
 |---|---|
-| Run Corrector | チェックすると、矛盾を検出した戦術エージェントを再実行する(数十分追加) |
+| Also run Tier 1B (anomaly_hunter, LLM) | チェックすると Tier 1B 異常ハンターも実行 (LLM 課金あり)。既定は OFF |
+| Tier 1B model | 空欄で claude CLI のデフォルトモデル |
 
-> **Corrector とは**: 例えば「ログを消した痕跡があるのに横移動の発見が
-> 0件」のような不自然なパターンを検出すると、その戦術エージェントを
-> もう一度走らせて見落としを補う仕組みです。
+> **注意**: Tier 1A は LLM 不要・無料です。Tier 1B を有効にした場合のみ
+> AI モデルを呼ぶのでトークン使用料 (1 ケース 〜$1 程度) がかかります。
 
-処理時間: Corrector なし → 数秒、あり → 30 分程度。
+処理時間: Tier 1A ≈ 数秒〜数十秒、Tier 1B (有効時) ≈ 数分。
+
+#### Step 3: Synthesize (統合 — Tier 2)
+
+**Tier 2 (タイムライン解析エージェント)** が Tier 1A / 1B の findings を
+時間的にクラスタ化し、各クラスタ周辺の生タイムラインを LLM が解析して
+**Kill Chain**(攻撃の流れ)・全体ストーリー・MITRE マッピングを推定します。
+出力は `synthesis.json`。
+
+入力モーダル:
+
+| フィールド | 説明 |
+|---|---|
+| Active search | チェックすると各クラスタの未解明点について仮説駆動の広域 SQL を追加実行する (より網羅的・低速) |
+
+> **注意**: Tier 2 は LLM を呼ぶのでトークン使用料がかかります (1 ケース 〜$1 程度)。
+> 整合性チェック (R1-R4) や Corrector を伴う旧 Synthesizer を使いたい場合は
+> CLI で `tlvb synthesize CASE_ID --legacy [--correct]` を使います。
+
+処理時間: クラスタ数によりますが数分程度 (active search 有効時はさらに増加)。
 
 #### Step 4: Generate Report (レポート生成)
 
@@ -349,7 +350,7 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 > AI を信頼しすぎず、最終判断は必ず人間が行うことで、誤検知が
 > 報告書に紛れ込むのを防ぎます。
 
-承認状態は元の `findings/<戦術>.json` ファイルに書き戻されます。
+承認状態は元の `findings/by-rule/<rule_source>/*.json` (Tier 1A) および `findings/by-skill/*.json` (Tier 1B) ファイルに書き戻されます。
 レポート生成時に「Only approved」をチェックすれば、承認したものだけが
 最終レポートに出ます。
 
@@ -481,7 +482,7 @@ TA0003 (Persistence)       │ [T1543.003 (Service)] [T1547.001 (Run Key)] ...
 2. 影響範囲
 3. 侵入経路 (Kill Chain)
 4. 攻撃タイムライン
-5. Tactic 別 Finding 一覧
+5. Finding 一覧 (Tier 1A は rule_source 別、Tier 1B は skill 別)
 6. 未解決事項・整合性チェック
 7. 推奨対応
 8. IOC サマリ
@@ -521,20 +522,22 @@ tlvb case init --case-id INC-2026-0042 --name "test case" --examiner tanaka
 # Step 1: パース
 tlvb parse --case-id INC-2026-0042 --evidence-id EV-001 --input ./evtx-samples
 
-# Step 2: 解析 (1戦術ずつ)
-tlvb analyze INC-2026-0042 --tactic persistence
+# Step 2: 解析 — Tier 1A (署名 SQL, LLM 無し)
+tlvb analyze INC-2026-0042 --tier 1a
+# 任意: Tier 1B 異常ハンター (LLM)
+tlvb analyze INC-2026-0042 --tier 1b --skill anomaly_hunter
 
-# Step 3: 統合
+# Step 3: 統合 — Tier 2 (LLM)。--active-search で広域探索も
 tlvb synthesize INC-2026-0042
 
-# Step 4: レポート
+# Step 4: レポート — Tier 3
 tlvb report INC-2026-0042 --format html,csv,json --language ja
 
-# 全ステップを一括で
-tlvb run INC-2026-0042 --evidence ./evtx-samples --name "auto" 
+# 全ステップを一括で (Tier 0→1A→1B→2→3)
+tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto"
 
 # 対話的に Approve/Reject を行う
-tlvb review INC-2026-0042 --gate 1 --examiner tanaka
+tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 ```
 
 ヘルプ: `tlvb --help`
@@ -677,17 +680,18 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 
 | 用語 | 説明 |
 |---|---|
-| **Tactic Agent** | 1つの戦術を担当する AI エージェント。TLVB は10種類を並列実行 |
-| **Anomaly Hunter** | 既存の戦術カテゴリに当てはまらない「何かおかしい」挙動を探す追加エージェント |
-| **TacticReport** | 1つの Tactic Agent が出力するJSON。発見事項のリスト+判断根拠+実行統計 |
-| **Synthesizer** | 10個の TacticReport を統合する処理。重複整理、整合性チェック、タイムライン構築、Kill Chain 推定を行う |
-| **Corrector (補正器)** | 整合性チェックで矛盾を検出した戦術エージェントを再実行する仕組み |
-| **Reporter** | 統合結果を HTML/CSV/JSON に整形する処理 |
-| **Review Gate** | 各処理の合間に人間がレビュー・承認/却下できるチェックポイント。Gate 0/1/2 がある |
-| **Examiner** | 調査者(ユーザー自身)。承認/却下の操作はExaminer名で記録される |
-| **Tier 0/1/2/3** | TLVB 内部の処理層。Tier 0=パース, Tier 1=解析, Tier 2=統合, Tier 3=レポート |
-| **finding_id** | 個々の発見事項のID。形式: `F-<戦術>-<連番>` (例: `F-persistence-001`) |
-| **audit_id** | 個々のログイベントのID(ハッシュ値)。発見事項が「どのログを根拠にしているか」を一意に指せる |
+| **Tier 1A (シグネチャ)** | ルールコーパス (Sigma / Hayabusa / ATT&CK STIX / custom / LOLBAS) を **build 時**に SQL へコンパイルし (`tlvb rules build`)、**実行時**はキャッシュ済み SQL を回すだけ (LLM ゼロ)。ヒット = finding |
+| **Tier 1B (異常ハンター)** | `skills/*.md` のスキルが SQL を実行 → LLM が Tier 1A findings と併せて抽象的な異常を推論し、必要なら新クエリを考案 (キャッシュが成長)。既定スキル = anomaly_hunter (tactic スキルは `--skill` で opt-in) |
+| **Anomaly Hunter** | Tier 1B の既定スキル。既存ルールに当てはまらない「何かおかしい」挙動を探す |
+| **finding (発見事項)** | Tier 1A は `findings/by-rule/<rule_source>/<rule_id>.json`、Tier 1B は `findings/by-skill/<skill>.json` に保存 |
+| **rule_source** | Tier 1A ルールの出所: `sigma` / `hayabusa` / `stix` / `custom` / `lolbas`。主キーは `(rule_id, rule_source)` で rule_id は上流の原 ID を保持 |
+| **Tier 2 (タイムライン解析)** | Tier 1 findings をクラスタ化し、各クラスタの ±N 分の生タイムラインを LLM が解析。`--active-search` で仮説駆動の広域 SQL も実行。出力 = `synthesis.json` (クラスタ + overall_story + mitre_mapping + open_questions) |
+| **Tier 3 (レポーター)** | `synthesis.json` + findings から HTML / CSV / JSON の DFIR レポートを生成 (LLM ゼロ) |
+| **Review Gate** | 各 Tier の合間の人間レビュー。Gate 0 (parse) / **1A** (署名 findings、重要度で自動承認) / **1B** (異常 findings) / 2 (タイムライン) |
+| **Examiner** | 調査者(ユーザー自身)。承認/却下の操作は Examiner 名で記録される |
+| **Tier 0/1/2/3** | TLVB の処理層。**Tier 0**=パーサ / **Tier 1A**=署名 SQL (LLM=0) / **Tier 1B**=スキル異常 (LLM) / **Tier 2**=タイムライン解析+統合 (LLM) / **Tier 3**=レポート (LLM=0) |
+| **legacy (findevil)** | 旧実装の Tactic Agent / TacticReport / Synthesizer / Corrector。現在は `tlvb synthesize --legacy` / `report --legacy` で opt-in (既定は tier2/tier3) |
+| **audit_id** | 個々のログイベントのID(ハッシュ値)。finding が「どのログを根拠にしているか」を一意に指せる |
 
 ### ツール・ファイル関連
 
@@ -724,12 +728,12 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
                             ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │  Tier 0:  Parser orchestrator (Python + EZ Tools)                  │
-│           ↓ 証拠ファイルを構造化データに変換                          │
-│  Tier 1:  10×Tactic Agent (Claude Code or Anthropic API)            │
-│           ↓ 戦術ごとに発見事項を JSON で出力                         │
-│  Tier 1.5: Anomaly Hunter (オプション)                               │
-│  Tier 2:  Synthesizer (Go) → 統合・整合性・タイムライン               │
-│  Tier 3:  Reporter (Go) → HTML/CSV/JSON レポート                    │
+│           ↓ 証拠ファイルを構造化データに変換 (unified_events)         │
+│  Tier 1A: Signature SQL (cached rules → DuckDB, LLM ゼロ)            │
+│           ↓ ヒットを findings/by-rule/ に出力                        │
+│  Tier 1B: Anomaly Hunter skill (Claude, LLM, 任意) → by-skill/       │
+│  Tier 2:  Timeline Analysis Agent (Claude) → 統合・タイムライン・KC   │
+│  Tier 3:  Reporter (Go) → HTML/CSV/JSON DFIR レポート (LLM ゼロ)     │
 └────────────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -756,7 +760,7 @@ tlvb review INC-2026-0042 --gate 1 --examiner tanaka
 ### Review Gate (人間の介入点)
 
 ```
-Tier 0 ──→ [Gate 0] ──→ Tier 1 ──→ [Gate 1] ──→ Tier 2 ──→ [Gate 2] ──→ Tier 3
+Tier 0 ─→ [Gate 0] ─→ Tier 1A/1B ─→ [Gate 1A/1B] ─→ Tier 2 ─→ [Gate 2] ─→ Tier 3
             ↑                       ↑                       ↑
             パーサ結果の              発見事項の               タイムラインの
             確認                     Approve/Reject          確認
