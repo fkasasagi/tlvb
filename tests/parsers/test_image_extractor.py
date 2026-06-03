@@ -437,3 +437,66 @@ def test_icat_to_file_sparse_creates_sparse_file(tmp_path, monkeypatch):
     assert st.st_blocks * 512 < st.st_size, (
         f"file is not sparse: blocks={st.st_blocks * 512}, size={st.st_size}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GPT partition enumeration — modern Windows NTFS is "Basic data partition"
+# ---------------------------------------------------------------------------
+#
+# Regression: _enumerate_partitions keyed off the literal "NTFS" in the mmls
+# description, but GPT disks (every modern Windows image) label the OS volume
+# "Basic data partition". The mismatch made it fall back to offset 0 and
+# extract zero files. It also misread the START column as bytes when mmls
+# emits 512-byte sectors. Pin both.
+
+_GPT_MMLS = """\
+GUID Partition Table (EFI)
+Offset Sector: 0
+Units are in 512-byte sectors
+
+      Slot      Start        End          Length       Size    Description
+000:  Meta      0000000000   0000000000   0000000001   0000B   Safety Table
+001:  -------   0000000000   0000002047   0000002048   0001M   Unallocated
+002:  Meta      0000000001   0000000001   0000000001   0000B   GPT Header
+003:  Meta      0000000002   0000000033   0000000032   0016K   Partition Table
+004:  000       0000002048   0000206847   0000204800   0100M   EFI system partition
+005:  001       0000206848   0000239615   0000032768   0016M   Microsoft reserved partition
+006:  002       0000239616   0124751871   0124512256   0059G   Basic data partition
+007:  003       0124751872   0125825023   0001073152   0524M
+"""
+
+
+def test_enumerate_partitions_gpt_basic_data(monkeypatch):
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (0, _GPT_MMLS, "", 0.01))
+    parts = image_extractor._enumerate_partitions("/dev/fake")
+    # Keep the Windows NTFS "Basic data partition" (slot 2) and the
+    # unlabelled recovery volume (slot 3); drop EFI / MSR / metadata /
+    # unallocated. Offsets are start_sector * 512 so the downstream `// 512`
+    # recovers the correct `fls -o` sector (239616, not 239616/512).
+    assert parts == [(0, 239616 * 512), (1, 124751872 * 512)]
+
+
+_MBR_MMLS = """\
+DOS Partition Table
+Offset Sector: 0
+Units are in 512-byte sectors
+
+      Slot      Start        End          Length       Description
+000:  Meta      0000000000   0000000000   0000000001   Primary Table (#0)
+001:  -------   0000000000   0000002047   0000002048   Unallocated
+002:  000:000   0000002048   0020971519   0020969472   NTFS / exFAT (0x07)
+"""
+
+
+def test_enumerate_partitions_mbr_ntfs(monkeypatch):
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (0, _MBR_MMLS, "", 0.01))
+    parts = image_extractor._enumerate_partitions("/dev/fake")
+    assert parts == [(0, 2048 * 512)]
+
+
+def test_enumerate_partitions_falls_back_when_mmls_fails(monkeypatch):
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (1, "", "mmls: cannot open", 0.01))
+    assert image_extractor._enumerate_partitions("/dev/fake") == [(0, 0)]

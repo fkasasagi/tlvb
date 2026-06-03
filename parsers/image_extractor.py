@@ -359,11 +359,32 @@ def _find_free_nbd() -> str | None:
 # Filesystem walk via Sleuth Kit
 # ----------------------------------------------------------------------------
 
-_MMLS_NTFS = re.compile(r"^\s*(\d+):\s+\S+\s+(\d+)\s+\d+\s+\d+\s+NTFS", re.M)
+# An mmls row: "<entry>: <slot> <start> <end> <length> [size] <description>".
+# Capture START / END / LENGTH sectors (mmls reports the offset columns in
+# sectors — see the "Units are in N-byte sectors" header; the older
+# `-B`=bytes assumption was wrong and broke every GPT image). MBR and GPT
+# rows share these five leading columns.
+_MMLS_ROW = re.compile(r"^\s*\d+:\s+\S+\s+(\d+)\s+(\d+)\s+(\d+)\b")
+# Rows that are not extractable data volumes: GPT/MBR metadata, unallocated
+# gaps, and the EFI/MSR system partitions. Everything else is a candidate —
+# crucially GPT labels the Windows NTFS volume "Basic data partition", not
+# "NTFS", so we must NOT key off the filesystem name.
+_MMLS_SKIP = re.compile(
+    r"unallocated|EFI system|Microsoft reserved|"
+    r"\bTable\b|GPT Header|Primary\b|Secondary\b",
+    re.I,
+)
 
 
 def _enumerate_partitions(raw_device: str) -> list[tuple[int, int]]:
-    """Return ``[(part_idx, offset_bytes)]`` for NTFS partitions in the image.
+    """Return ``[(part_idx, offset_bytes)]`` for candidate data volumes.
+
+    Parses every ``mmls`` row and keeps the data volumes, dropping GPT/MBR
+    metadata, unallocated gaps and the EFI/MSR system partitions. This
+    handles GPT disks (modern Windows) where the NTFS volume is labelled
+    "Basic data partition" rather than "NTFS". Non-OS volumes that slip
+    through (e.g. a recovery partition) are harmless — the per-target
+    extraction just records them as ``not_found``.
 
     Falls back to ``[(0, 0)]`` (single-volume / no partition table) when
     ``mmls`` errors out — covers single-partition raw dumps.
@@ -374,12 +395,17 @@ def _enumerate_partitions(raw_device: str) -> list[tuple[int, int]]:
     if rc != 0 or not out:
         return [(0, 0)]
     out_parts: list[tuple[int, int]] = []
-    for m in _MMLS_NTFS.finditer(out):
-        part_idx = int(m.group(1))
-        # mmls -B emits bytes; without -B it emits sectors. Stick to -B for
-        # offset stability across mixed sector sizes.
-        offset_bytes = int(m.group(2))
-        out_parts.append((part_idx, offset_bytes))
+    for line in out.splitlines():
+        m = _MMLS_ROW.match(line)
+        if not m:
+            continue
+        start_sector = int(m.group(1))
+        length = int(m.group(3))
+        if start_sector == 0 or length == 0 or _MMLS_SKIP.search(line):
+            continue
+        # Downstream TSK callers recover the sector offset with `// 512`,
+        # so store start_sector * 512 here (512-byte sectors).
+        out_parts.append((len(out_parts), start_sector * 512))
     return out_parts or [(0, 0)]
 
 
