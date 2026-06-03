@@ -234,6 +234,65 @@ func (m *Manager) MarkBuilt(ctx context.Context, ruleID, ruleSource, sqlText, pr
 	return err
 }
 
+// SeedBuilt materialises a row in the 'built' state from an external snapshot —
+// the JSONL produced by `rules export` and vendored in git. It carries the full
+// validity signature (rule_sha256 / schema_version / model_id) verbatim, so a
+// later `rules build` against a drifted corpus or model still resets the row to
+// 'pending' correctly.
+//
+// overwrite=false (the default for `rules import`) NEVER modifies a row that
+// already exists, in any state — so rules already in outputs/rules.duckdb can
+// not be degraded by an import; only genuinely-missing rules are inserted.
+// overwrite=true replaces the existing row with the snapshot.
+//
+// Returns the action taken: "inserted" | "updated" | "skipped".
+func (m *Manager) SeedBuilt(ctx context.Context, r CacheRow, overwrite bool) (string, error) {
+	if m.mode == ReadOnly {
+		return "", errors.New("rulesdb opened read-only")
+	}
+	exists := false
+	switch scanErr := m.db.QueryRowContext(ctx,
+		`SELECT 1 FROM rule_sql_cache WHERE rule_id = ? AND rule_source = ?`,
+		r.RuleID, r.RuleSource).Scan(new(int)); scanErr {
+	case nil:
+		exists = true
+	case sql.ErrNoRows:
+		exists = false
+	default:
+		return "", scanErr
+	}
+	if exists && !overwrite {
+		return "skipped", nil
+	}
+	var meta any
+	if r.RuleMeta != "" {
+		meta = r.RuleMeta
+	}
+	if _, err := m.db.ExecContext(ctx, `
+		INSERT INTO rule_sql_cache
+		    (rule_id, rule_source, rule_sha256, schema_version, model_id,
+		     sql, state, generated_at, prefilter_artifacts, rule_meta, error_message)
+		VALUES (?, ?, ?, ?, ?, ?, 'built', ?, ?, ?, NULL)
+		ON CONFLICT (rule_id, rule_source) DO UPDATE SET
+		    rule_sha256         = excluded.rule_sha256,
+		    schema_version      = excluded.schema_version,
+		    model_id            = excluded.model_id,
+		    sql                 = excluded.sql,
+		    state               = 'built',
+		    generated_at        = excluded.generated_at,
+		    prefilter_artifacts = excluded.prefilter_artifacts,
+		    rule_meta           = excluded.rule_meta,
+		    error_message       = NULL`,
+		r.RuleID, r.RuleSource, r.RuleSHA256, r.SchemaVersion, r.ModelID,
+		r.SQL, time.Now().UTC(), r.PrefilterArtifacts, meta); err != nil {
+		return "", err
+	}
+	if exists {
+		return "updated", nil
+	}
+	return "inserted", nil
+}
+
 // MarkFailed records a build failure (the rule will be retried on next build).
 func (m *Manager) MarkFailed(ctx context.Context, ruleID, ruleSource, errMsg string) error {
 	if m.mode == ReadOnly {

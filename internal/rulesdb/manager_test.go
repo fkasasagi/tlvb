@@ -102,6 +102,82 @@ func TestRulesDBLifecycle(t *testing.T) {
 	}
 }
 
+func TestSeedBuilt(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(filepath.Join(dir, "rules.duckdb"), ReadWrite)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+
+	snap := CacheRow{
+		RuleID: "seed-1", RuleSource: "sigma", RuleSHA256: "sha-v1",
+		SchemaVersion: "uev-aaaa", ModelID: "claude-sonnet-4-6",
+		SQL:                "SELECT audit_id FROM unified_events WHERE case_id = ?",
+		PrefilterArtifacts: "evtx", RuleMeta: `{"level":"high"}`,
+	}
+
+	// 1. Into an empty cache the snapshot is inserted as 'built'.
+	if act, err := m.SeedBuilt(ctx, snap, false); err != nil || act != "inserted" {
+		t.Fatalf("first seed: act=%q err=%v", act, err)
+	}
+	if got, _ := m.GetBuiltSQL(ctx, "seed-1", "sigma"); got != snap.SQL {
+		t.Fatalf("seeded SQL mismatch: %q", got)
+	}
+
+	// 2. Degrade-guard: a row already present is preserved untouched in the
+	//    default (overwrite=false) mode, even when the snapshot differs.
+	changed := snap
+	changed.SQL = "SELECT 1 -- snapshot would clobber this"
+	changed.ModelID = "claude-opus-4-8"
+	if act, err := m.SeedBuilt(ctx, changed, false); err != nil || act != "skipped" {
+		t.Fatalf("expected existing row skipped, got act=%q err=%v", act, err)
+	}
+	if got, _ := m.GetBuiltSQL(ctx, "seed-1", "sigma"); got != snap.SQL {
+		t.Fatalf("default seed degraded an existing row: %q", got)
+	}
+
+	// 3. A locally-built row (via the normal build path) is likewise preserved.
+	other := CacheRow{
+		RuleID: "seed-2", RuleSource: "sigma", RuleSHA256: "sha-local",
+		SchemaVersion: "uev-aaaa", ModelID: "local",
+	}
+	if err := m.UpsertPending(ctx, other); err != nil {
+		t.Fatalf("upsert pending: %v", err)
+	}
+	if err := m.MarkBuilt(ctx, "seed-2", "sigma", "SELECT audit_id FROM unified_events WHERE case_id = ? AND artifact_id='amcache'", "amcache"); err != nil {
+		t.Fatalf("mark built: %v", err)
+	}
+	snap2 := snap
+	snap2.RuleID = "seed-2"
+	snap2.SQL = "SELECT 0 -- snapshot"
+	if act, _ := m.SeedBuilt(ctx, snap2, false); act != "skipped" {
+		t.Fatalf("locally-built row must be preserved, got %q", act)
+	}
+	if got, _ := m.GetBuiltSQL(ctx, "seed-2", "sigma"); got == snap2.SQL {
+		t.Fatal("default seed overwrote a locally-built row")
+	}
+
+	// 4. --overwrite replaces the existing row with the snapshot.
+	if act, err := m.SeedBuilt(ctx, changed, true); err != nil || act != "updated" {
+		t.Fatalf("overwrite seed: act=%q err=%v", act, err)
+	}
+	if got, _ := m.GetBuiltSQL(ctx, "seed-1", "sigma"); got != changed.SQL {
+		t.Fatalf("overwrite did not apply snapshot SQL: %q", got)
+	}
+
+	// 5. ReadOnly handle refuses to seed.
+	ro, err := Open(filepath.Join(dir, "rules.duckdb"), ReadOnly)
+	if err != nil {
+		t.Fatalf("open ro: %v", err)
+	}
+	defer ro.Close()
+	if _, err := ro.SeedBuilt(ctx, snap, true); err == nil {
+		t.Fatal("read-only SeedBuilt should error")
+	}
+}
+
 func TestSkillSQLCacheLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	m, err := Open(filepath.Join(dir, "rules.duckdb"), ReadWrite)
