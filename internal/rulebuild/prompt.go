@@ -40,6 +40,12 @@ match the rule.
    Inline every other value as a literal (e.g. artifact_id = 'evtx',
    EventId = 4688, ILIKE '%mimikatz%'). Do NOT use "?" for anything but
    case_id, and do NOT use "?" inside string literals.
+   For multi-value matching (IN lists, OR chains) inline ALL values — even
+   long lists of 10+ items — as literals:
+     RIGHT:  AND json_extract_string(payload_json,'$.Image') IN ('a.exe','b.exe','c.exe')
+     WRONG:  AND json_extract_string(payload_json,'$.Image') IN (?, ?, ?)
+   Placeholders in an IN/OR list are NOT bound at runtime (only case_id is)
+   and the whole rule is rejected — always spell the values out.
 
 4. Output column list MUST start with:
      audit_id, ts_utc, artifact_id, event_type
