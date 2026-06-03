@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,8 +16,11 @@ import (
 	"github.com/tlvb/tlvb/internal/agents"
 	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/common"
-	"github.com/tlvb/tlvb/internal/reporter"
-	"github.com/tlvb/tlvb/internal/synthesizer"
+	"github.com/tlvb/tlvb/internal/rulesdb"
+	"github.com/tlvb/tlvb/internal/tier1a"
+	"github.com/tlvb/tlvb/internal/tier1b"
+	"github.com/tlvb/tlvb/internal/tier2"
+	"github.com/tlvb/tlvb/internal/tier3"
 )
 
 // formatInt renders an int with thousands separators (e.g. 2_847_193 →
@@ -70,12 +72,12 @@ func slidingWindowDefault() bool {
 // without a chain of follow-up requests.
 type caseSummary struct {
 	casedb.CaseRow
-	EvidenceCount   int  `json:"evidence_count"`
+	EvidenceCount   int   `json:"evidence_count"`
 	UnifiedRowCount int64 `json:"unified_event_rows"`
-	HasFindings     bool `json:"has_findings"`
-	HasSynthesis    bool `json:"has_synthesis"`
-	HasReport       bool `json:"has_report"`
-	FindingsCount   int  `json:"findings_count"`
+	HasFindings     bool  `json:"has_findings"`
+	HasSynthesis    bool  `json:"has_synthesis"`
+	HasReport       bool  `json:"has_report"`
+	FindingsCount   int   `json:"findings_count"`
 }
 
 func (s *Server) handleListCases(w http.ResponseWriter, r *http.Request) {
@@ -173,9 +175,9 @@ func (s *Server) handleGetCase(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	writeJSON(w, 200, map[string]any{
-		"case":             summary,
-		"evidence":         evidence,
-		"parse_results":    st.ParseResults,
+		"case":          summary,
+		"evidence":      evidence,
+		"parse_results": st.ParseResults,
 		"jobs": map[string]JobStatus{
 			"parse":      s.jobs.Status(id, JobParse),
 			"analyze":    s.jobs.Status(id, JobAnalyze),
@@ -503,10 +505,11 @@ func (s *Server) handleParseStatus(w http.ResponseWriter, r *http.Request) {
 // Python orchestrator into a Reporter update.
 //
 // Events the orchestrator emits today (parsers/orchestrator.py):
-//   {"type":"stage", "phase":"extracting"|"detecting"}
-//   {"type":"detect_done", "total":N, "artifact_ids":[...]}
-//   {"type":"parse_start", "artifact_id":..., "i":..., "of":N}
-//   {"type":"parse_done",  "artifact_id":..., "i":..., "of":N, "ok":bool, "row_count":N, "duration_s":F}
+//
+//	{"type":"stage", "phase":"extracting"|"detecting"}
+//	{"type":"detect_done", "total":N, "artifact_ids":[...]}
+//	{"type":"parse_start", "artifact_id":..., "i":..., "of":N}
+//	{"type":"parse_done",  "artifact_id":..., "i":..., "of":N, "ok":bool, "row_count":N, "duration_s":F}
 //
 // totalCount / doneCount / parserDurations live in the caller's scope so we
 // can compute a forward ETA from observed per-parser durations.
@@ -586,24 +589,23 @@ var defaultTactics = []string{
 func (s *Server) handleStartAnalyzeAll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Engine   string   `json:"engine"`
-		Model    string   `json:"model"`
-		Tactics  []string `json:"tactics"`
+		Model string `json:"model"`
+		// IncludeAnomaly opts into the Tier 1B anomaly_hunter pass (LLM). Tier
+		// 1A (cached signature SQL, no LLM) always runs. Default false keeps
+		// the Analyze button LLM-free, mirroring the old "Include anomaly"
+		// opt-in.
 		IncludeAnomaly bool `json:"include_anomaly"`
 	}
 	_ = decodeJSON(r, &req)
-	if req.Engine == "" {
-		req.Engine = "claude-code"
-	}
-	tactics := req.Tactics
-	if len(tactics) == 0 {
-		tactics = defaultTactics
-	}
 
 	caseID := id
 	dbPath := s.cfg.DBPath
+	rulesDBPath := s.cfg.RulesDBPath
+	if rulesDBPath == "" {
+		rulesDBPath = filepath.Join("outputs", "rules.duckdb")
+	}
+	root := s.cfg.OutputsRoot
 	dbMu := &s.dbMu
-	engine := req.Engine
 	model := req.Model
 	includeAnomaly := req.IncludeAnomaly
 
@@ -614,55 +616,80 @@ func (s *Server) handleStartAnalyzeAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tier 1A (signature SQL) + optional Tier 1B (anomaly_hunter) — the same
+	// agents `tlvb run` drives. Writes findings/by-rule/** and
+	// findings/by-skill/**, which is what the migrated Tier 2 synthesize reads.
 	st := s.jobs.StartWithReporter(id, JobAnalyze, "all", func(ctx context.Context, rep *Reporter) (string, error) {
 		dbMu.Lock()
 		defer dbMu.Unlock()
 
-		evIDs, err := allEvidenceIDs(ctx, dbPath, caseID)
-		if err != nil {
-			return "", err
-		}
-		evID := evIDs[0] // primary, for back-compat with TacticReport.EvidenceID
-		all := append([]string(nil), tactics...)
-		if includeAnomaly {
-			all = append(all, "anomaly_hunter")
-		}
-		total := len(all)
-		// Initial bar at 0/N + a baseline ETA from a hard-coded 3-min/tactic
-		// guess (replaced after the first tactic completes with the real
-		// average). Without this the bar shows N/A for several minutes.
-		const baselineSecPerTactic = 180
-		rep.SetAll(fmt.Sprintf("starting %d tactics", total), 0, total, baselineSecPerTactic*total)
+		findingsBase := filepath.Join(root, caseID, "findings")
 
-		var failed []string
-		var done []string
-		var totalTacticDuration time.Duration
-		jobStart := time.Now()
-		for i, tac := range all {
-			tacticStart := time.Now()
-			completedSoFar := len(done) + len(failed)
-			rep.SetAll(
-				fmt.Sprintf("running %s (%d/%d)", tac, i+1, total),
-				completedSoFar, total,
-				etaSeconds(completedSoFar, total, jobStart, totalTacticDuration, baselineSecPerTactic),
-			)
-			if err := runOneTactic(ctx, caseID, evID, tac, engine, model, dbPath, evIDs); err != nil {
-				failed = append(failed, fmt.Sprintf("%s: %v", tac, err))
-			} else {
-				done = append(done, tac)
+		// ---- Tier 1A: cached signature SQL (runtime LLM-zero) ----
+		rep.Text("Tier 1A: running cached signature SQL")
+		cdb, err := casedb.Open(dbPath, casedb.ReadOnly)
+		if err != nil {
+			return "", fmt.Errorf("open case db: %w", err)
+		}
+		rdb, err := rulesdb.Open(rulesDBPath, rulesdb.ReadOnly)
+		if err != nil {
+			cdb.Close()
+			return "", fmt.Errorf("open rules db: %w", err)
+		}
+		a1cfg := tier1a.Config{
+			CaseID:      caseID,
+			RulesDB:     rdb,
+			CaseDB:      cdb,
+			FindingsDir: filepath.Join(findingsBase, "by-rule"),
+			MaxEvidence: 100,
+		}
+		rep1a, runErr := tier1a.Run(ctx, a1cfg)
+		if runErr != nil {
+			cdb.Close()
+			rdb.Close()
+			return "", fmt.Errorf("tier 1a: %w", runErr)
+		}
+		// Hayabusa pass-through (Tier 0 pre-detected events → findings).
+		hb := 0
+		if passRep, perr := tier1a.RunHayabusaPassthrough(ctx, a1cfg,
+			tier1a.HayabusaPassthroughOptions{}); perr == nil {
+			hb = passRep.Matched
+		}
+		cdb.Close()
+		rdb.Close()
+		rep.Text(fmt.Sprintf("Tier 1A: %d rule matches + %d Hayabusa", rep1a.Matched, hb))
+
+		// ---- Tier 1B: skills-driven anomaly (LLM, opt-in) ----
+		anomaly := 0
+		if includeAnomaly {
+			rep.Text("Tier 1B: anomaly_hunter (LLM)")
+			modelID := model
+			if modelID == "" {
+				modelID = "claude-code-default"
 			}
-			totalTacticDuration += time.Since(tacticStart)
-			rep.SetAll(
-				fmt.Sprintf("done %s (%d/%d)", tac, i+1, total),
-				i+1, total,
-				etaSeconds(i+1, total, jobStart, totalTacticDuration, baselineSecPerTactic),
-			)
+			rep1b, berr := tier1b.Run(ctx, tier1b.Config{
+				CaseID:          caseID,
+				Skill:           "anomaly_hunter",
+				SkillsDir:       "skills",
+				FindingsBaseDir: findingsBase,
+				DBPath:          dbPath,
+				MaxEvents:       200,
+				Model:           model,
+				Timeout:         8 * time.Minute,
+				RulesDBPath:     rulesDBPath,
+				SchemaVersion:   casedb.SchemaVersion(),
+				ModelID:         modelID,
+			})
+			if berr != nil {
+				// Tier 1A findings are already written; surface the 1B failure
+				// without discarding the successful 1A run (graceful degrade).
+				return fmt.Sprintf("Tier 1A: %d rules + %d Hayabusa; Tier 1B failed",
+					rep1a.Matched, hb), fmt.Errorf("tier 1b: %w", berr)
+			}
+			anomaly = len(rep1b.NewFindings)
 		}
-		msg := fmt.Sprintf("completed=%d failed=%d", len(done), len(failed))
-		if len(failed) > 0 {
-			return msg, fmt.Errorf("some tactics failed: %s", strings.Join(failed, "; "))
-		}
-		return msg, nil
+		return fmt.Sprintf("Tier 1A: %d rules + %d Hayabusa; Tier 1B: %d anomaly",
+			rep1a.Matched, hb, anomaly), nil
 	})
 	writeJSON(w, 202, st)
 }
@@ -729,10 +756,11 @@ func (s *Server) handleStartAnalyzeOne(w http.ResponseWriter, r *http.Request) {
 // without paying for tactics that have no rows in this artifact.
 //
 // POST /api/cases/{id}/analyze/artifact/{artifact_id}
-//   body: {"engine": "...", "model": "..."} (both optional)
-//   202: JobStatus (poll /analyze/status to track)
-//   409: Review Gate 0 blocks (parse not approved)
-//   404: no tactic references this artifact (empty plan)
+//
+//	body: {"engine": "...", "model": "..."} (both optional)
+//	202: JobStatus (poll /analyze/status to track)
+//	409: Review Gate 0 blocks (parse not approved)
+//	404: no tactic references this artifact (empty plan)
 func (s *Server) handleStartAnalyzeArtifact(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	artifact := r.PathValue("artifact_id")
@@ -883,8 +911,8 @@ func runOneTacticScoped(ctx context.Context, caseID, evID, tactic, engine, model
 		MaxIters:      3,
 		Timeout:       agents.ComputeTimeout(tactic, maxEvents),
 		DBPath:        dbPath,
-		EvidenceIDs:   evIDs, // ★v0.3 #7 — full case scope stamped on the report
-		ArtifactScope: artifactScope, // Wave 20h
+		EvidenceIDs:   evIDs,                  // ★v0.3 #7 — full case scope stamped on the report
+		ArtifactScope: artifactScope,          // Wave 20h
 		SlidingWindow: slidingWindowDefault(), // Wave 22 + Wave 42 (default on)
 		WindowOverlap: 0.2,                    // Wave 22 default
 	}
@@ -948,101 +976,52 @@ func runOneTacticScoped(ctx context.Context, caseID, evID, tactic, engine, model
 func (s *Server) handleStartSynthesize(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Correct        bool   `json:"correct"`
-		Engine         string `json:"engine"`
-		Model          string `json:"model"`
-		ReviewTimeline bool   `json:"review_timeline"`
-		ReviewLanguage string `json:"review_language"`
+		Model        string `json:"model"`
+		ActiveSearch bool   `json:"active_search"`
 	}
 	_ = decodeJSON(r, &req)
-	if req.Engine == "" {
-		req.Engine = "claude-code"
-	}
-	if req.ReviewLanguage == "" {
-		req.ReviewLanguage = "ja"
-	}
 
 	caseID := id
 	dbPath := s.cfg.DBPath
 	dbMu := &s.dbMu
-	correct := req.Correct
-	engine := req.Engine
+	root := s.cfg.OutputsRoot
 	model := req.Model
-	reviewTimeline := req.ReviewTimeline
-	reviewLanguage := req.ReviewLanguage
+	activeSearch := req.ActiveSearch
 
-	st := s.jobs.Start(id, JobSynthesize, fmt.Sprintf("correct=%v", correct), func(ctx context.Context, progress func(string)) (string, error) {
+	st := s.jobs.Start(id, JobSynthesize, fmt.Sprintf("active_search=%v", activeSearch), func(ctx context.Context, progress func(string)) (string, error) {
 		dbMu.Lock()
 		defer dbMu.Unlock()
 
-		progress("aggregating findings")
-		evIDs, _ := allEvidenceIDs(ctx, dbPath, caseID)
-		var evID string
-		if len(evIDs) > 0 {
-			evID = evIDs[0]
-		}
-		cfg := synthesizer.Config{
-			CaseID:      caseID,
-			EvidenceID:  evID,
-			EvidenceIDs: evIDs, // ★v0.3 #7 — full case scope into synthesis
-			Timezone:    "UTC",
-			FindingsDir: filepath.Join("outputs", "cases", caseID, "findings"),
-			DBPath:      dbPath,
-			Correct:     correct,
-			Language:    reviewLanguage, // Wave 26 — drives Recommendations ja/en
-		}
-		if correct {
-			// Wave 20a: corrector も動的 timeout に揃える。tactic="" は
-			// anomaly_hunter ではないので 1.5× multiplier は適用されない
-			// (= 標準 tactic と同じバジェット)。
-			const correctorMaxEvents = 100
-			cfg.CorrectorCfg = synthesizer.CorrectionConfig{
-				Engine:       engine,
-				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-				Model:        model,
-				MaxRounds:    1,
-				AgentTimeout: agents.ComputeTimeout("", correctorMaxEvents),
-				MaxEvents:    correctorMaxEvents,
-				MaxIters:     3,
-			}
-		}
-		if reviewTimeline {
-			cfg.ReviewTimeline = true
-			cfg.TimelineReviewCfg = synthesizer.TimelineReviewConfig{
-				Language:    reviewLanguage,
-				Engine:      engine,
-				APIKey:      os.Getenv("ANTHROPIC_API_KEY"),
-				Model:       model,
-				MaxTokens:   50000,
-				Timeout:     5 * time.Minute,
-				SkillsDir:   "skills",
-				MaxExcerpt:  200,
-				MaxFindings: 50,
-			}
-		}
-		timeout := 5 * time.Minute
-		if correct {
-			timeout = 30 * time.Minute
-		}
-		if reviewTimeline {
-			timeout += 7 * time.Minute
+		// Tier 2 (Timeline Analysis Agent) — same pipeline the CLI `tlvb run`
+		// drives. Active search adds a hypothesis-driven wide-range SQL pass
+		// per cluster, so give it a longer budget.
+		timeout := 15 * time.Minute
+		if activeSearch {
+			timeout = 25 * time.Minute
 		}
 		sctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		cs, err := synthesizer.Synthesize(sctx, cfg)
+
+		rep, err := tier2.Run(sctx, tier2.Config{
+			CaseID:          caseID,
+			FindingsBaseDir: filepath.Join(root, caseID, "findings"),
+			OutputPath:      filepath.Join(root, caseID, "synthesis.json"),
+			DBPath:          dbPath,
+			Model:           model,
+			ActiveSearch:    activeSearch,
+			ProgressFn: func(e tier2.Event) {
+				if e.Message != "" {
+					progress(e.Message)
+				} else if e.Phase != "" {
+					progress(e.Phase)
+				}
+			},
+		})
 		if err != nil {
 			return "", err
 		}
-		out := filepath.Join("outputs", "cases", caseID, "synthesis.json")
-		body, err := json.MarshalIndent(cs, "", "  ")
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(out, body, 0o644); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("findings=%d clusters=%d inconsistencies=%d",
-			cs.Stats.TotalFindings, cs.Stats.ClusterCount, len(cs.Inconsistencies)), nil
+		return fmt.Sprintf("findings=%d clusters=%d analyzed=%d cost=$%.4f",
+			rep.TotalFindings, rep.ClusterCount, rep.ClustersAnalyzed, rep.TotalCostUSD), nil
 	})
 	writeJSON(w, 202, st)
 }
@@ -1061,13 +1040,13 @@ func (s *Server) handleGetSynthesis(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, cs)
 }
 
-func (s *Server) loadSynthesis(caseID string) (*synthesizer.CaseSynthesis, error) {
+func (s *Server) loadSynthesis(caseID string) (*tier2.CaseSynthesis, error) {
 	path := filepath.Join(s.cfg.OutputsRoot, caseID, "synthesis.json")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read synthesis: %w", err)
 	}
-	var cs synthesizer.CaseSynthesis
+	var cs tier2.CaseSynthesis
 	if err := json.Unmarshal(body, &cs); err != nil {
 		return nil, fmt.Errorf("parse synthesis: %w", err)
 	}
@@ -1110,15 +1089,24 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 
 	st := s.jobs.Start(id, JobReport, lang, func(ctx context.Context, progress func(string)) (string, error) {
 		progress("rendering report")
-		cfg := reporter.Config{
+		// Forensic case metadata (evidence inventory, chain-of-custody SHA-256,
+		// per-artifact event counts) for the report's section 4. Best-effort —
+		// nil simply omits that section, matching the CLI `report --tier 3`.
+		meta, examiner := s.reportCaseMeta(ctx, caseID)
+		// Tier 3 (DFIR Reporter) — same renderer the CLI `tlvb report --tier 3`
+		// drives. Reads the tier2 synthesis.json + derives timeline/IOC/MITRE
+		// from findings/.
+		res, err := tier3.Render(tier3.Config{
 			CaseID:        caseID,
 			SynthesisPath: filepath.Join(root, caseID, "synthesis.json"),
 			OutDir:        filepath.Join(root, caseID, "reports"),
+			FindingsDir:   filepath.Join(root, caseID, "findings"),
 			Formats:       formats,
 			Language:      lang,
 			OnlyApproved:  onlyApproved,
-		}
-		res, err := reporter.Render(cfg)
+			CaseMeta:      meta,
+			Examiner:      examiner,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -1129,6 +1117,67 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReportStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobReport))
+}
+
+// reportCaseMeta mirrors the CLI's loadReportCaseMeta (cmd/tlvb/report_tier3.go):
+// it pulls case identity, the evidence inventory and per-artifact event counts
+// from cases.duckdb so the Tier 3 report's "Evidence & Chain of Custody"
+// section renders. Best-effort — a DB error returns (nil, "") and the report
+// simply omits that section (the section template is wrapped in {{if .Meta}}).
+func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.CaseMeta, string) {
+	meta := &tier3.CaseMeta{}
+	examiner := ""
+	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
+		if cases, err := m.ListCases(ctx); err == nil {
+			for _, c := range cases {
+				if c.CaseID == caseID {
+					meta.DisplayName = c.Name
+					meta.Status = c.Status
+					meta.CreatedAt = c.CreatedAt
+					examiner = c.Examiner
+					break
+				}
+			}
+		}
+		if evs, err := m.ListEvidence(ctx, caseID); err == nil {
+			for _, e := range evs {
+				meta.Evidence = append(meta.Evidence, tier3.EvidenceItem{
+					EvidenceID:   e.EvidenceID,
+					SourcePath:   filepath.Base(e.Path),
+					SHA256:       e.SHA256,
+					SizeBytes:    e.SizeBytes,
+					RegisteredAt: e.RegisteredAt,
+					SourceHost:   e.SourceHost,
+					EvidenceType: e.EvidenceType,
+				})
+			}
+		}
+		// Per-artifact event counts (Tier 0 coverage) — best-effort raw query.
+		rows, qerr := m.DB().QueryContext(ctx,
+			`SELECT artifact_id, COUNT(*) AS n
+			 FROM unified_events WHERE case_id = ?
+			 GROUP BY artifact_id ORDER BY n DESC`, caseID)
+		if qerr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var a string
+				var n int
+				if rows.Scan(&a, &n) == nil {
+					meta.ArtifactCounts = append(meta.ArtifactCounts,
+						tier3.ArtifactCount{ArtifactID: a, EventCount: n})
+					meta.TotalEvents += n
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, ""
+	}
+	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {
+		return nil, examiner
+	}
+	return meta, examiner
 }
 
 func (s *Server) handleGetReportHTML(w http.ResponseWriter, r *http.Request) {
@@ -1184,75 +1233,37 @@ func isSafeName(s string) bool {
 // Timeline / IOC / MITRE / Events / Audit
 // ----------------------------------------------------------------------------
 
-func (s *Server) handleGetTimeline(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	cs, err := s.loadSynthesis(id)
-	if err != nil {
-		writeError(w, 404, "%v", err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"timeline":                    cs.Timeline,
-		"intrusion_path":              cs.IntrusionPath,
-		"cross_evidence_correlations": cs.CrossEvidenceCorrelations, // Wave 27
-	})
+// findingsDir is the per-case findings/ directory (Tier 1A by-rule + Tier 1B
+// by-skill). The Timeline / IOC / MITRE tabs are derived from it because the
+// current tier2 synthesis.json no longer carries that material (it drops the
+// raw timeline, never stored IOCs, and its mitre_mapping is often empty).
+func (s *Server) findingsDir(caseID string) string {
+	return filepath.Join(s.cfg.OutputsRoot, caseID, "findings")
 }
 
-// iocDTO is the JSON-friendly shape for an IOC. The reporter's IOCExtraction
-// stores findings/tactics as map sets — convert to sorted slices for the wire.
-type iocDTO struct {
-	Type     string   `json:"type"`
-	Value    string   `json:"value"`
-	Count    int      `json:"count"`
-	Findings []string `json:"findings"`
-	Tactics  []string `json:"tactics"`
+func (s *Server) handleGetTimeline(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	en := tier3.LoadWebEnrichment(s.findingsDir(id))
+	// intrusion_path / cross_evidence_correlations were legacy-synthesizer
+	// concepts; the tier2/tier3 pipeline doesn't produce them. Return empty
+	// arrays so the UI renders the timeline without those panels.
+	writeJSON(w, 200, map[string]any{
+		"timeline":                    en.Timeline,
+		"intrusion_path":              []any{},
+		"cross_evidence_correlations": []any{},
+	})
 }
 
 func (s *Server) handleGetIOCs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cs, err := s.loadSynthesis(id)
-	if err != nil {
-		writeError(w, 404, "%v", err)
-		return
-	}
-	raw := reporter.ExtractIOCs(cs)
-	out := make([]iocDTO, 0, len(raw))
-	for _, ioc := range raw {
-		findings := make([]string, 0, len(ioc.Findings))
-		for k := range ioc.Findings {
-			findings = append(findings, k)
-		}
-		sort.Strings(findings)
-		tactics := make([]string, 0, len(ioc.Tactics))
-		for k := range ioc.Tactics {
-			tactics = append(tactics, k)
-		}
-		sort.Strings(tactics)
-		out = append(out, iocDTO{
-			Type:     string(ioc.Type),
-			Value:    ioc.Value,
-			Count:    len(ioc.Findings),
-			Findings: findings,
-			Tactics:  tactics,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].Value < out[j].Value
-	})
-	writeJSON(w, 200, out)
+	en := tier3.LoadWebEnrichment(s.findingsDir(id))
+	writeJSON(w, 200, en.IOCs)
 }
 
 func (s *Server) handleGetMITRE(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cs, err := s.loadSynthesis(id)
-	if err != nil {
-		writeError(w, 404, "%v", err)
-		return
-	}
-	writeJSON(w, 200, cs.MITREMapping)
+	en := tier3.LoadWebEnrichment(s.findingsDir(id))
+	writeJSON(w, 200, en.MITRE)
 }
 
 func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {

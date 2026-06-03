@@ -15,7 +15,7 @@ SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI 
 | 0b. サンプル EVTX を取得 | 1 分 | なし |
 | 1. MCP サーバ経由で覗く | 5 分 | なし |
 | 2. Review Gate 1 を体験する | 5 分 | なし(Step 4 か 5 完了が前提) |
-| 3. 小さい新規ケースで `analyze` 1 タクティック | 5–10 分 | あり (1 回) |
+| 3. 小さい新規ケースで `analyze --tier 1a` (任意で 1b) | 5–10 分 | Tier 1A なし / 1B 1 回 |
 | 4. 小さい新規ケースで全パイプライン (`run`) | 35 分 | あり (11 回) |
 
 ---
@@ -150,11 +150,17 @@ TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 
 ---
 
-## 2. Review Gate 1 を体験する (LLM 呼び出しなし)
+## 2. Review Gate を体験する (LLM 呼び出しなし)
 
-> このステップを試すには、Tactic Agent が出力した findings JSON が必要です。
-> Step 3 か Step 4 を先に走らせて、生成されたケースで体験してください
-> (以下の例では `MY-TEST-001` を使います — Step 3 で作ります)。
+> **主経路は Web UI の Review Gate 1A (署名 findings) / 1B (異常 findings)** です
+> (`tlvb serve` → Findings タブ)。これらは Tier 1A の `findings/by-rule/` と
+> Tier 1B の `findings/by-skill/` を読み、重要度ベースの自動承認やクラスタ単位の
+> 一括承認に対応します。
+>
+> 以下の CLI `tlvb review` は **legacy (TacticReport 形式) 専用**のデモで、
+> 新パイプライン (tier1a/1b) の findings は読めません。`tlvb analyze --legacy`
+> 系の tactic-agent findings がある場合のみ動きます。
+> (以下の例では `MY-TEST-001` を使います。)
 
 ```bash
 CASE=MY-TEST-001    # Step 3 / 4 で作ったケース ID に置き換える
@@ -212,7 +218,7 @@ for f in r['findings']:
 
 ---
 
-## 3. 小さい新規ケースで 1 タクティック試す (LLM 呼び出し 1 回)
+## 3. 小さい新規ケースで Tier 1A を試す (LLM 呼び出しなし、任意で Tier 1B)
 
 EVTX サンプル `Other` (~8 ファイル / 750 events) で Persistence Agent
 だけ走らせます。
@@ -240,69 +246,59 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 #     --inputs "$EVTX_DIR/Other,$EVTX_DIR/Persistence" \
 #     --only evtx
 
-# 3-3: Tier 1 — Persistence Agent だけ走らせる (~2-4 分)
-./bin/tlvb analyze MY-TEST-001 \
-    --tactic persistence \
-    --engine claude-code
+# 3-3: Tier 1A — キャッシュ済み署名 SQL を実行 (LLM 不要・数秒〜数十秒)
+./bin/tlvb analyze MY-TEST-001 --tier 1a
 
-# 3-4: 出力を見る
-ls outputs/cases/MY-TEST-001/findings/
-cat outputs/cases/MY-TEST-001/findings/persistence.json | python3 -m json.tool | head -50
+# 任意: Tier 1B — 異常ハンター (LLM、~数分)。API key 不要の claude CLI を使用
+./bin/tlvb analyze MY-TEST-001 --tier 1b --skill anomaly_hunter
+
+# 3-4: 出力を見る (Tier 1A は by-rule/、Tier 1B は by-skill/)
+ls -R outputs/cases/MY-TEST-001/findings/
+cat outputs/cases/MY-TEST-001/findings/by-rule/sigma/*.json | python3 -m json.tool | head -50
 ```
 
-API key 無しで動かすコツは `--engine claude-code` の指定です。
-デフォルトなので省略可ですが明示しておくのが安全。
+Tier 1A は LLM を呼ばないので API key も claude CLI も不要です。Tier 1B のみ
+LLM を使い、`claude` CLI があれば API key 無しで動きます。
 
 ---
 
-## 4. 全パイプラインを試す (LLM 呼び出し 11 回 / 約 35 分)
+## 4. 全パイプラインを試す (Tier 1A は LLM ゼロ / Tier 1B + Tier 2 で LLM 数回・〜$1・約 10 分)
 
 ```bash
 EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
 ./bin/tlvb run MY-FULL-001 \
+    --tier all \
     --evidence "$EVTX_DIR/Other" \
     --name "first-full-run" \
-    --examiner "$USER" \
-    --engine claude-code
+    --examiner "$USER"
 ```
 
-これ 1 コマンドで以下全てが走ります:
+これ 1 コマンドで Tier 0→1A→1B→2→3 が走ります:
 
 ```
 [run] case-init  ok  (new case)
-[run] tier0      ok  in 3.2s
-[run] tier1.initial_access       ok 130s
-[run] tier1.execution            ok 200s
-[run] tier1.persistence          ok 195s
-[run] tier1.privilege_escalation ok ~390s
-[run] tier1.defense_evasion      ok ~240s
-[run] tier1.credential_access    ok ~290s
-[run] tier1.discovery            ok ~120s
-[run] tier1.lateral_movement     ok ~185s
-[run] tier1.collection           ok ~300s
-[run] tier1.impact               ok ~170s
-[run] tier1      ok  in ~37min (10/10 completed)
-[run] tier1.5    ok  in ~250s   (Anomaly Hunter)
-[run] tier2      ok  in ~5min   (Synthesizer + Corrector)
-[run] tier3      ok  in 0.5s    (HTML/CSV/JSON)
-[run] DONE  case=MY-FULL-001  total=~45min
+[run] tier0      ok  in 3.2s    (parser → unified_events)
+[run] tier1a     ok  in ~10s    (cached signature SQL + Hayabusa, LLM=0)
+[run] tier1b     ok  in ~4min   (anomaly_hunter skill, LLM)
+[run] tier2      ok  in ~3min   (Timeline Analysis, LLM)
+[run] tier3      ok  in 0.5s    (HTML/CSV/JSON DFIR report, LLM=0)
+[run] DONE  case=MY-FULL-001  total=~8min
 ```
 
-途中で 1 タクティックが失敗してもケース全体は止まりません — `[FAIL]`
-でログされて次へ進みます。
+1 段が失敗してもケース全体は止まりません — `[FAIL]` でログされて次へ進みます。
 
-途中段階だけスキップしたい時:
+途中段階だけスキップしたい時 (`--skip-1a` / `--skip-1b` / `--skip-2` / `--skip-report`):
 
 ```bash
-# Tier 0 (parse) はもう済んでる、analyze からやり直し
-./bin/tlvb run MY-FULL-001 --skip-parse
+# Tier 0 (parse) はもう済んでる、Tier 1A からやり直し
+./bin/tlvb run MY-FULL-001 --tier all --skip-parse
 
-# Tier 1 までは終わった、Anomaly Hunter から
-./bin/tlvb run MY-FULL-001 --skip-parse --skip-analyze
+# Tier 1A/1B までは終わった、Tier 2 から
+./bin/tlvb run MY-FULL-001 --tier all --skip-parse --skip-1a --skip-1b
 
-# Corrector を飛ばす (時間節約)
-./bin/tlvb run MY-FULL-001 --skip-correct
+# Tier 2 の能動探索を有効化 (広域 SQL)
+./bin/tlvb run MY-FULL-001 --tier all --skip-parse --active-search
 ```
 
 完了後:
@@ -370,28 +366,28 @@ zip は `outputs/cases/<id>/extractions/extracted/` に展開されます (元
 
 ## 6. 既存ケースを再解析する
 
-LLM が改善された / 新しいスキルファイルが追加された / Anomaly Hunter
-が後から追加された、というケースで使えます:
+ルールコーパスを再 build した / 新しいスキルを追加した、というケースで使えます:
 
 ```bash
 CASE=MY-FULL-001    # 自分のケース ID
 
-# 既存ケースに対して Anomaly Hunter だけ追加で走らせる
-./bin/tlvb analyze $CASE \
-    --tactic anomaly_hunter \
-    --engine claude-code
+# Tier 1A を回し直す (キャッシュ署名 SQL、LLM 不要)
+./bin/tlvb analyze $CASE --tier 1a
 
-# Synthesize し直し (Corrector も含む)
-./bin/tlvb synthesize $CASE --correct
+# 既存ケースに Tier 1B (anomaly_hunter) を追加で走らせる
+./bin/tlvb analyze $CASE --tier 1b --skill anomaly_hunter
 
-# レポート再生成
+# Tier 2 で統合し直し (既定。--active-search で広域探索)
+./bin/tlvb synthesize $CASE
+
+# レポート再生成 (既定で Tier 3)
 ./bin/tlvb report $CASE --format html,csv,json
 ```
 
-特定 tactic だけ再走:
+特定の Tier 1B スキル (lens) だけ再走:
 
 ```bash
-./bin/tlvb analyze $CASE --tactic credential_access
+./bin/tlvb analyze $CASE --tier 1b --skill credential_access
 ./bin/tlvb synthesize $CASE
 ./bin/tlvb report $CASE --format html
 ```
@@ -452,7 +448,7 @@ Ubuntu 24.04+ で system pip が拒否される。`scripts/setup.sh` が
 ### `case has no registered evidence`
 `tlvb parse` を先に走らせる(または WebUI から Parse ボタン)。
 
-### Tactic Agent が `status=partial` で終わる
+### Tier 1B (anomaly_hunter) が `status=partial` で終わる
 LLM が evidence 不足を保守的にマークした正常動作。`partial` 自体は
 失敗ではなく、Examiner レビューを促すサイン。
 
@@ -497,21 +493,24 @@ altpf 配置後に再 parse すると Audit タブの command 列が `/opt/altpf
 ├── bin/tlvb                       # ビルドした CLI
 ├── outputs/
 │   ├── cases.duckdb                   # 全ケース横断 DB (read-only mostly)
+│   ├── rules.duckdb                    # Tier 1A ルール SQL キャッシュ
 │   └── cases/<case_id>/
-│       ├── findings/<tactic>.json     # Tactic Report (DRAFT)
-│       │   anomaly_hunter.json        # Tier 1.5 出力
+│       ├── findings/
+│       │   ├── by-rule/<source>/<id>.json  # Tier 1A 署名 findings
+│       │   └── by-skill/<skill>.json       # Tier 1B 異常 findings
 │       ├── extractions/               # パーサ中間データ
-│       ├── synthesis.json             # CaseSynthesis
+│       ├── synthesis.json             # Tier 2 CaseSynthesis
 │       ├── parse_review.json          # Review Gate 0 のステート
+│       ├── timeline_gate.json         # Review Gate 2 のステート
 │       ├── actions.jsonl              # 監査トレイル
 │       └── reports/
-│           ├── report.html            # メイン成果物
+│           ├── report.html            # メイン成果物 (Tier 3)
 │           ├── report.json            # 機械可読版
 │           ├── findings.csv           # Excel 取り込み用
-│           ├── timeline.csv
-│           ├── iocs.csv
+│           ├── mitre.csv  clusters.csv
+│           ├── timeline.csv  ioc.csv
 │           └── HANDOFF.md             # 配布用説明
-├── skills/<tactic>.md                 # Tactic Agent system prompts
+├── skills/<skill>.md                  # Tier 1B スキル (既定 anomaly_hunter)
 ├── config/artifacts.yaml              # アーティファクト定義
 ├── parsers/                           # Tier 0 (Python)
 ├── internal/                          # Tier 1〜3 + web (Go)
@@ -533,8 +532,9 @@ evidence(`$EVTX_DIR` や自分の調査対象 zip)は **read-only**。書き込�
 
 - 自分の調査ケースで `tlvb run` を 1 度通す
 - HTML レポートをチームに配布(zip + SHA-256 確認 — `HANDOFF.md` 参照)
-- `skills/<tactic>.md` を自社の TTPs に合わせてカスタマイズ
-  (technique 表の列とアンチパターンを足す)
+- `skills/<skill>.md` (Tier 1B のレンズ) を自社の TTPs に合わせてカスタマイズ
+  (新しい観点のクエリ意図を足す)
+- `rules/custom/` に自社ルールを足して `tlvb rules build` で Tier 1A に反映
 - `config/artifacts.yaml` に独自パーサを追加(Linux syslog 等)
 - `internal/synthesizer/consistency.go` に独自ルール R5+ を追加
 

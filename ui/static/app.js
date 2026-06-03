@@ -1112,8 +1112,9 @@ async function startAnalyze(caseID) {
     h("strong", { style: "color:#e74c3c;" }, "⚠ LLM access not detected"),
     h("p", { class: "muted", style: "margin: 4px 0 0 0; font-size: 11px;" },
       "Neither the `claude` CLI nor the ANTHROPIC_API_KEY env var is " +
-      "available. Analyze will fail at iter=1 for every tactic. " +
-      "Either install Claude Code CLI (`npm i -g @anthropic-ai/claude-code` + " +
+      "available. Tier 1A (cached signature SQL) still runs fine without an " +
+      "LLM — only the optional Tier 1B anomaly_hunter pass needs one. " +
+      "To enable it, install Claude Code CLI (`npm i -g @anthropic-ai/claude-code` + " +
       "`claude` once to /login), or `export ANTHROPIC_API_KEY=...` and " +
       "restart the server."),
   ]) : null;
@@ -1124,20 +1125,16 @@ async function startAnalyze(caseID) {
     (llm.api_key_set ? "ANTHROPIC_API_KEY set" : "")) : null;
 
   const close = modal([
-    h("h3", {}, "Run all 10 Tactic Agents"),
+    h("h3", {}, "Analyze — Tier 1A (signature SQL) + Tier 1B (optional)"),
     warn,
     llmInfo,
     h("p", { class: "muted" },
-      "Engine: claude-code (default). Set ANTHROPIC_API_KEY first if you choose anthropic-api."),
-    h("div", { class: "form-row" }, [h("label", {}, "Engine"),
-      h("select", { id: "a_engine" }, [
-        h("option", { value: "claude-code" }, "claude-code"),
-        h("option", { value: "anthropic-api" }, "anthropic-api"),
-      ])]),
-    h("div", { class: "form-row" }, [h("label", {}, "Model"),
-      h("input", { id: "a_model", placeholder: "(engine default)" })]),
-    h("div", { class: "form-row" }, [h("label", {}, "Include anomaly_hunter"),
+      "Tier 1A always runs: cached signature SQL (Sigma / Hayabusa / STIX / custom / LOLBAS) " +
+      "against this case — no LLM, no cost. Tier 1B (anomaly_hunter) is an optional LLM pass."),
+    h("div", { class: "form-row" }, [h("label", {}, "Also run Tier 1B (anomaly_hunter, LLM)"),
       h("input", { id: "a_anomaly", type: "checkbox" })]),
+    h("div", { class: "form-row" }, [h("label", {}, "Tier 1B model"),
+      h("input", { id: "a_model", placeholder: "(claude CLI default)" })]),
     // Issue #11: surface the already-existing Gate 0 skip-all so the
     // examiner can opt out of parse-result review from this modal.
     h("div", { class: "form-row" }, [
@@ -1162,7 +1159,6 @@ async function startAnalyze(caseID) {
               { auto_skip: true });
           }
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/analyze`, {
-            engine: $("#a_engine").value,
             model:  $("#a_model").value.trim(),
             include_anomaly: $("#a_anomaly").checked,
           });
@@ -1175,16 +1171,16 @@ async function startAnalyze(caseID) {
 
 async function startSynthesize(caseID) {
   const close = modal([
-    h("h3", {}, "Run Synthesizer"),
-    h("div", { class: "form-row" }, [h("label", {}, "Run Corrector"),
-      h("input", { id: "s_correct", type: "checkbox" })]),
-    h("p", { class: "muted" }, "Without Corrector this is purely deterministic; with it, Tactic Agents may be re-run for inconsistency rules."),
+    h("h3", {}, "Run Tier 2 (Timeline Analysis)"),
+    h("div", { class: "form-row" }, [h("label", {}, "Active search"),
+      h("input", { id: "s_active", type: "checkbox" })]),
+    h("p", { class: "muted" }, "Tier 2 clusters Tier 1 findings and analyses each cluster's ±N-min timeline with an LLM. Active search adds a hypothesis-driven wide-range SQL pass per cluster (slower, more thorough)."),
     h("div", { class: "actions" }, [
       h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
       h("button", { class: "primary", onclick: async () => {
         try {
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/synthesize`, {
-            correct: $("#s_correct").checked,
+            active_search: $("#s_active").checked,
           });
           close(); toast("Synthesis started", "success");
         } catch (e) { toast(e.message, "error"); }
@@ -1301,7 +1297,7 @@ async function autopilotChain(caseID, lang) {
     toast("Auto-pilot: analyze ✓ — starting synthesize…", "success");
     await api("POST",
       `/api/cases/${encodeURIComponent(caseID)}/synthesize`,
-      { correct: false });
+      { active_search: false });
     await waitForJob(caseID, "synthesize");
     toast("Auto-pilot: synthesize ✓ — starting report…", "success");
     await api("POST",
@@ -2025,7 +2021,7 @@ async function renderIOCs(pane, caseID) {
 
   pane.innerHTML = "";
   pane.appendChild(h("div", { class: "row", style: "margin-bottom: 12px;" }, [
-    h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/iocs`, download: "iocs.csv" },
+    h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/ioc`, download: "ioc.csv" },
        h("button", {}, "Download CSV")),
   ]));
 
@@ -2110,7 +2106,7 @@ async function renderReport(pane, caseID) {
        h("button", {}, "Findings CSV")),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/timeline`, download: "timeline.csv" },
        h("button", {}, "Timeline CSV")),
-    h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/iocs`, download: "iocs.csv" },
+    h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/ioc`, download: "ioc.csv" },
        h("button", {}, "IOC CSV")),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/json`, download: "report.json" },
        h("button", {}, "JSON")),

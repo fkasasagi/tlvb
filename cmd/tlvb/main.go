@@ -1,10 +1,11 @@
 // Command tlvb is the TLVB CLI / MCP server entry point.
 //
 // Subcommands (Phase 1 — only mcp-serve is functional):
-//   tlvb mcp-serve     run the Tier 0 MCP server over stdio
-//   tlvb case init     (TODO Phase 2.x)
-//   tlvb parse <id>    (TODO Phase 2.x)
-//   tlvb version       print build info
+//
+//	tlvb mcp-serve     run the Tier 0 MCP server over stdio
+//	tlvb case init     (TODO Phase 2.x)
+//	tlvb parse <id>    (TODO Phase 2.x)
+//	tlvb version       print build info
 package main
 
 import (
@@ -132,8 +133,10 @@ Usage:
   tlvb parse --case-id ID --inputs PATH1,PATH2,... [--evidence-ids EV1,EV2,...]   ★ multi-evidence
   tlvb analyze CASE_ID --tactic NAME [--engine claude-code|anthropic-api]    # legacy tactic-based
   tlvb analyze CASE_ID --tier 1a [--source S] [--rule R] [--max-evidence N]   # Tier 1A signature SQL runtime
-  tlvb synthesize CASE_ID [--correct] [--findings-dir DIR] [--out PATH]
-  tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]
+  tlvb synthesize CASE_ID [--active-search] [--model M]                     # Tier 2 timeline analysis (LLM; default)
+  tlvb synthesize CASE_ID --legacy [--correct]                              # legacy findevil synthesizer (no LLM)
+  tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]   # Tier 3 DFIR report (default)
+  tlvb report CASE_ID --legacy                                              # legacy findevil reporter
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
   tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy tactic-based pipeline
   tlvb run CASE_ID --tier all --evidence PATH [--active-search]              # TLVB v0.1 one-shot pipeline
@@ -272,7 +275,7 @@ func runCaseExport(args []string) error {
 		DBPath:          *dbPath,
 		OutputPath:      *out,
 		IncludeEvidence: *includeEv,
-		TLVBVersion: version,
+		TLVBVersion:     version,
 	})
 	if err != nil {
 		return err
@@ -772,8 +775,8 @@ func runAnalyze(args []string) error {
 		timeout = agents.ComputeTimeout(*tactic, *maxEvents)
 	}
 	cfg := agents.Config{
-		Tactic:      *tactic,
-		Engine:      *engine,
+		Tactic:        *tactic,
+		Engine:        *engine,
 		APIKey:        apiKey,
 		Model:         *model,
 		MaxEvents:     *maxEvents,
@@ -979,21 +982,35 @@ func runReport(args []string) error {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
 	}
 
-	// TLVB v0.1: `tlvb report CASE_ID --tier 3` renders Tier 2's
-	// CaseSynthesis (TLVB schema) instead of the legacy findevil
-	// reporter (TacticReport schema).
-	for i, a := range rest {
-		if a == "--tier" && i+1 < len(rest) && rest[i+1] == "3" {
-			inner := append([]string{}, rest[:i]...)
-			inner = append(inner, rest[i+2:]...)
-			return runReportTier3(caseID, inner)
-		}
-		if strings.ToLower(a) == "--tier=3" {
-			inner := append([]string{}, rest[:i]...)
-			inner = append(inner, rest[i+1:]...)
-			return runReportTier3(caseID, inner)
+	// Renderer selection (TLVB): the Tier 3 DFIR reporter (default) renders
+	// the tier2 CaseSynthesis. The legacy findevil reporter (TacticReport
+	// schema) is opt-in via --legacy (alias --tier 1). --tier 3 is accepted
+	// as an explicit no-op for the default. (legacy retired 2026-06-03.)
+	legacy := false
+	filtered := make([]string, 0, len(rest))
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		la := strings.ToLower(a)
+		switch {
+		case la == "--legacy":
+			legacy = true
+		case a == "--tier" && i+1 < len(rest):
+			if rest[i+1] == "1" {
+				legacy = true
+			}
+			i++ // consume the tier value (1 or 3)
+		case la == "--tier=1":
+			legacy = true
+		case la == "--tier=3":
+			// explicit form of the default; drop the flag
+		default:
+			filtered = append(filtered, a)
 		}
 	}
+	if !legacy {
+		return runReportTier3(caseID, filtered)
+	}
+	rest = filtered
 
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	formatStr := fs.String("format", "html,csv,json",
@@ -1065,22 +1082,37 @@ func runSynthesize(args []string) error {
 		return fmt.Errorf("first argument must be CASE_ID, got %q", caseID)
 	}
 
-	// TLVB v0.1: `tlvb synthesize CASE_ID --tier 2` routes to the new
-	// Tier 2 Timeline Analysis Agent. Without --tier, the legacy
-	// findevil synthesizer runs (still works for TacticReport-format
-	// findings). Same prescan pattern as analyze --tier 1a|1b.
-	for i, a := range rest {
-		if a == "--tier" && i+1 < len(rest) && rest[i+1] == "2" {
-			inner := append([]string{}, rest[:i]...)
-			inner = append(inner, rest[i+2:]...)
-			return runSynthesizeTier2(caseID, inner)
-		}
-		if strings.ToLower(a) == "--tier=2" {
-			inner := append([]string{}, rest[:i]...)
-			inner = append(inner, rest[i+1:]...)
-			return runSynthesizeTier2(caseID, inner)
+	// Agent selection (TLVB): the Tier 2 Timeline Analysis Agent (default)
+	// clusters Tier 1 findings and analyses each cluster's timeline with an
+	// LLM. The legacy findevil synthesizer (deterministic, no LLM) is opt-in
+	// via --legacy (alias --tier 1). --tier 2 is accepted as an explicit
+	// no-op for the default. NOTE: the default now calls the LLM (cost).
+	// (legacy retired 2026-06-03.)
+	legacy := false
+	filtered := make([]string, 0, len(rest))
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		la := strings.ToLower(a)
+		switch {
+		case la == "--legacy":
+			legacy = true
+		case a == "--tier" && i+1 < len(rest):
+			if rest[i+1] == "1" {
+				legacy = true
+			}
+			i++ // consume the tier value (1 or 2)
+		case la == "--tier=1":
+			legacy = true
+		case la == "--tier=2":
+			// explicit form of the default; drop the flag
+		default:
+			filtered = append(filtered, a)
 		}
 	}
+	if !legacy {
+		return runSynthesizeTier2(caseID, filtered)
+	}
+	rest = filtered
 
 	fs := flag.NewFlagSet("synthesize", flag.ContinueOnError)
 	findingsDir := fs.String("findings-dir", "",
@@ -1801,12 +1833,12 @@ func runServe(args []string) error {
 // --keep-cases or --drop-cases.
 //
 // Operation:
-//   1. Read existing cases + filter to keep set
-//   2. CREATE TABLE new_<table> with same schema, ATTACH '<dbpath>.new'
-//   3. INSERT INTO new_cases SELECT * FROM cases WHERE case_id IN (...)
-//      (same for evidence / parse_results / unified_events)
-//   4. Verify row counts match expected
-//   5. Move current → backup, new → current
+//  1. Read existing cases + filter to keep set
+//  2. CREATE TABLE new_<table> with same schema, ATTACH '<dbpath>.new'
+//  3. INSERT INTO new_cases SELECT * FROM cases WHERE case_id IN (...)
+//     (same for evidence / parse_results / unified_events)
+//  4. Verify row counts match expected
+//  5. Move current → backup, new → current
 //
 // Safety:
 //   - Refuses to run if the DB is locked (running server / parse)
@@ -1994,10 +2026,12 @@ func runCaseVacuum(args []string) error {
 // is 5 s/event; this tool produces the data-driven estimate to swap in.
 //
 // Output (per tactic + global):
-//   tactic        runs  ev_min  ev_max  dur_min  dur_max  per_event_sec  R²
+//
+//	tactic        runs  ev_min  ev_max  dur_min  dur_max  per_event_sec  R²
 //
 // Usage:
-//   tlvb calibrate [--outputs DIR] [--tactic NAME] [--csv PATH]
+//
+//	tlvb calibrate [--outputs DIR] [--tactic NAME] [--csv PATH]
 func runCalibrate(args []string) error {
 	fs := flag.NewFlagSet("calibrate", flag.ContinueOnError)
 	outputsDir := fs.String("outputs", "outputs/cases",
@@ -2014,15 +2048,15 @@ func runCalibrate(args []string) error {
 
 	// Sample collection. Each sample = one TacticReport's Audit block.
 	type sample struct {
-		Case        string
-		Tactic      string
+		Case          string
+		Tactic        string
 		ArtifactScope string
-		Events      int  // Audit.InputEvents
-		MaxEvents   int  // Audit.MaxEvents (Wave 20b)
-		PromptChars int  // Audit.PromptSizeChars (Wave 20b)
-		DurationSec float64
-		Iterations  int
-		ModelID     string
+		Events        int // Audit.InputEvents
+		MaxEvents     int // Audit.MaxEvents (Wave 20b)
+		PromptChars   int // Audit.PromptSizeChars (Wave 20b)
+		DurationSec   float64
+		Iterations    int
+		ModelID       string
 	}
 	var samples []sample
 
@@ -2109,16 +2143,18 @@ func runCalibrate(args []string) error {
 			continue
 		}
 		var (
-			evMin, evMax   = 1 << 30, 0
-			durMin, durMax = 1e9, 0.0
+			evMin, evMax     = 1 << 30, 0
+			durMin, durMax   = 1e9, 0.0
 			sx, sy, sxy, sxx float64
 		)
 		n := float64(len(ss))
 		for _, s := range ss {
 			x := float64(s.Events)
 			y := s.DurationSec
-			sx += x; sy += y
-			sxy += x * y; sxx += x * x
+			sx += x
+			sy += y
+			sxy += x * y
+			sxx += x * x
 			if s.Events < evMin {
 				evMin = s.Events
 			}
@@ -2193,7 +2229,8 @@ func runCalibrate(args []string) error {
 // matching the convention examiners are used to from curl / pip / etc.
 //
 // Format:
-//   tier1  [█████████░░░░░░░░░░░░░]  4/10 (40%)  current=persistence running
+//
+//	tier1  [█████████░░░░░░░░░░░░░]  4/10 (40%)  current=persistence running
 //
 // done=true emits a final line with newline so the next println starts clean.
 func printRunProgress(stage string, completed, total int, current, state string) {

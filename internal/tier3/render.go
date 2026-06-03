@@ -45,8 +45,17 @@ func Render(cfg Config) (*Report, error) {
 	}
 
 	// Best-effort enrichment from per-finding evidence files (severity counts,
-	// IOCs, key-event timeline, per-finding evidence detail).
+	// IOCs, key-event timeline, MITRE matrix, per-finding evidence detail).
 	en := loadEnrichment(cfg.FindingsDir)
+
+	// The Tier 2 LLM frequently leaves synthesis.json's mitre_mapping empty
+	// (it relies on per-cluster LLM output). Fall back to the deterministic
+	// findings-derived MITRE so the report's MITRE section, mitre.csv and the
+	// rule-based intrusion path / affected scope are populated. This mirrors
+	// how IOCs and the timeline are already derived from findings.
+	if len(cs.MITREMapping) == 0 {
+		cs.MITREMapping = mitreEntriesFromEnrichment(en)
+	}
 
 	rep := &Report{
 		CaseID:      cfg.CaseID,
@@ -113,6 +122,22 @@ func renderJSON(path string, cs tier2.CaseSynthesis) error {
 		return err
 	}
 	return os.WriteFile(path, body, 0o644)
+}
+
+// mitreEntriesFromEnrichment projects the findings-derived MITRE matrix onto
+// the tier2.MITREEntry shape the report renderers consume. Used only as a
+// fallback when synthesis.json carried no mitre_mapping. ClusterIDs is left
+// empty — enrichment is finding-scoped, not cluster-scoped.
+func mitreEntriesFromEnrichment(en *enrichment) []tier2.MITREEntry {
+	out := make([]tier2.MITREEntry, 0, len(en.MITRE))
+	for _, m := range en.MITRE {
+		out = append(out, tier2.MITREEntry{
+			Technique:    m.Technique,
+			Tactic:       m.Tactic,
+			FindingCount: m.FindingCount,
+		})
+	}
+	return out
 }
 
 func fileMeta(format, path string) OutputFile {

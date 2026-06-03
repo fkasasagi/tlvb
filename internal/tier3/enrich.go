@@ -63,11 +63,13 @@ type diskSkillFile struct {
 
 // loadedFinding is the normalised in-memory shape after reading either source.
 type loadedFinding struct {
-	Source   string
-	RuleID   string
-	Title    string
-	Severity string
-	Evidence []findingEvidence
+	Source     string
+	RuleID     string
+	Title      string
+	Severity   string
+	Tactics    []string // mitre_tactics from rule_meta (by-rule only)
+	Techniques []string // mitre_techniques from rule_meta (by-rule only)
+	Evidence   []findingEvidence
 }
 
 // enrichment is the computed bundle handed to the renderer.
@@ -75,6 +77,7 @@ type enrichment struct {
 	SeverityCounts []sevCount
 	Timeline       []timelineRow
 	IOCs           []iocRow
+	MITRE          []mitreRow
 	// detail keyed by "source\x00ruleid" and by normalised title for fallback.
 	detailByKey   map[string]*findingDetail
 	detailByTitle map[string]*findingDetail
@@ -92,6 +95,10 @@ type timelineRow struct {
 	Source    string
 	Severity  string
 	Title     string
+	Tactic    string
+	Technique string
+	Computer  string
+	AuditID   string
 }
 
 type iocRow struct {
@@ -99,6 +106,20 @@ type iocRow struct {
 	Value    string
 	Artifact string
 	Count    int
+	tactics  map[string]bool // owning findings' mitre_tactics
+	findings map[string]bool // owning findings' titles (for the "src" column)
+}
+
+// mitreRow aggregates one MITRE technique across findings. Derived
+// deterministically from the rule corpus tags carried by each finding, so
+// it is populated even when the Tier 2 LLM left synthesis.json's
+// mitre_mapping empty.
+type mitreRow struct {
+	Tactic        string
+	Technique     string
+	FindingCount  int
+	EvidenceCount int
+	worstSeverity string // tracks the strongest finding severity for confidence
 }
 
 type findingDetail struct {
@@ -125,25 +146,33 @@ func loadEnrichment(findingsDir string) *enrichment {
 	findings := readFindings(findingsDir)
 
 	sevTotals := map[string]int{}
-	iocAgg := map[string]*iocRow{} // key: type\x00value
+	iocAgg := map[string]*iocRow{}     // key: type\x00value
+	mitreAgg := map[string]*mitreRow{} // key: tactic\x00technique
 
 	for _, f := range findings {
 		sevTotals[normSeverity(f.Severity)]++
 
-		// per-finding detail (first-seen, artifacts, evidence count)
+		// per-finding detail (first-seen, artifacts, evidence count) plus the
+		// audit_id / computer of the earliest-stamped evidence (used by the
+		// Web UI timeline + Review Gate 2).
 		det := &findingDetail{}
 		artSet := map[string]bool{}
+		var earliestAudit, computer string
 		for _, ev := range f.Evidence {
 			if ev.hasTS() {
 				if !det.HasTS || ev.TsUTC.Before(det.FirstSeen) {
 					det.FirstSeen = ev.TsUTC
 					det.HasTS = true
+					earliestAudit = ev.AuditID
 				}
 			}
 			if ev.ArtifactID != "" {
 				artSet[ev.ArtifactID] = true
 			}
-			collectIOCs(iocAgg, ev)
+			if computer == "" {
+				computer = evComputer(ev)
+			}
+			collectIOCs(iocAgg, ev, f.Tactics, f.Title)
 		}
 		det.EvidenceCount = len(f.Evidence)
 		det.Artifacts = sortedKeys(artSet)
@@ -159,13 +188,41 @@ func loadEnrichment(findingsDir string) *enrichment {
 				Source:    f.Source,
 				Severity:  normSeverity(f.Severity),
 				Title:     f.Title,
+				Tactic:    firstOr(f.Tactics, ""),
+				Technique: firstOr(f.Techniques, ""),
+				Computer:  computer,
+				AuditID:   earliestAudit,
 			})
+		}
+
+		// MITRE matrix: one entry per (tactic, technique). A finding with N
+		// techniques and M tactics contributes to N×M cells; techniques with
+		// no tactic land under "(unmapped)" so they still surface.
+		tactics := f.Tactics
+		if len(tactics) == 0 {
+			tactics = []string{""}
+		}
+		for _, tech := range f.Techniques {
+			for _, tac := range tactics {
+				key := tac + "\x00" + tech
+				m := mitreAgg[key]
+				if m == nil {
+					m = &mitreRow{Tactic: tac, Technique: tech}
+					mitreAgg[key] = m
+				}
+				m.FindingCount++
+				m.EvidenceCount += len(f.Evidence)
+				if severityRank(f.Severity) > severityRank(m.worstSeverity) {
+					m.worstSeverity = normSeverity(f.Severity)
+				}
+			}
 		}
 	}
 
 	sort.Slice(en.Timeline, func(i, j int) bool { return en.Timeline[i].TS.Before(en.Timeline[j].TS) })
 	en.SeverityCounts = orderSeverities(sevTotals)
 	en.IOCs = finalizeIOCs(iocAgg)
+	en.MITRE = finalizeMITRE(mitreAgg)
 	return en
 }
 
@@ -187,11 +244,13 @@ func readFindings(findingsDir string) []loadedFinding {
 			return nil
 		}
 		out = append(out, loadedFinding{
-			Source:   orStr(rf.RuleSource, "rule"),
-			RuleID:   rf.RuleID,
-			Title:    rf.RuleMeta.Title,
-			Severity: rf.RuleMeta.Level,
-			Evidence: rf.Evidence,
+			Source:     orStr(rf.RuleSource, "rule"),
+			RuleID:     rf.RuleID,
+			Title:      rf.RuleMeta.Title,
+			Severity:   rf.RuleMeta.Level,
+			Tactics:    rf.RuleMeta.MITRETactics,
+			Techniques: rf.RuleMeta.MITRETechniques,
+			Evidence:   rf.Evidence,
 		})
 		return nil
 	})
@@ -252,7 +311,7 @@ func iocKeyClass(key string) string {
 	}
 }
 
-func collectIOCs(agg map[string]*iocRow, ev findingEvidence) {
+func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, findingLabel string) {
 	for k, v := range ev.Extra {
 		cls := iocKeyClass(k)
 		if cls == "" {
@@ -263,10 +322,22 @@ func collectIOCs(agg map[string]*iocRow, ev findingEvidence) {
 			continue
 		}
 		key := cls + "\x00" + val
-		if r, ok := agg[key]; ok {
-			r.Count++
-		} else {
-			agg[key] = &iocRow{Type: cls, Value: val, Artifact: ev.ArtifactID, Count: 1}
+		r, ok := agg[key]
+		if !ok {
+			r = &iocRow{
+				Type: cls, Value: val, Artifact: ev.ArtifactID, Count: 0,
+				tactics: map[string]bool{}, findings: map[string]bool{},
+			}
+			agg[key] = r
+		}
+		r.Count++
+		for _, t := range tactics {
+			if t = strings.TrimSpace(t); t != "" {
+				r.tactics[t] = true
+			}
+		}
+		if findingLabel = strings.TrimSpace(findingLabel); findingLabel != "" {
+			r.findings[findingLabel] = true
 		}
 	}
 }
@@ -362,4 +433,184 @@ func orStr(s, def string) string {
 		return def
 	}
 	return s
+}
+
+func severityRank(s string) int {
+	switch normSeverity(s) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// severityConfidence maps a severity to the low|medium|high bucket the Web UI
+// MITRE matrix uses to colour each cell.
+func severityConfidence(sev string) string {
+	switch severityRank(sev) {
+	case 4, 3:
+		return "high"
+	case 2:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// evComputer pulls a host/computer name out of an evidence row's extra fields.
+func evComputer(ev findingEvidence) string {
+	for k, v := range ev.Extra {
+		lk := strings.ToLower(k)
+		if strings.Contains(lk, "computer") || strings.Contains(lk, "workstation") ||
+			strings.Contains(lk, "hostname") || lk == "host" {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" && s != "-" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// prettyTactic turns a tactic slug ("credential-access") into a display name
+// ("Credential Access"). Empty / "(unmapped)" pass through.
+func prettyTactic(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func finalizeMITRE(agg map[string]*mitreRow) []mitreRow {
+	out := make([]mitreRow, 0, len(agg))
+	for _, r := range agg {
+		out = append(out, *r)
+	}
+	// tactic asc, then finding_count desc, then technique asc — deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Tactic != out[j].Tactic {
+			return out[i].Tactic < out[j].Tactic
+		}
+		if out[i].FindingCount != out[j].FindingCount {
+			return out[i].FindingCount > out[j].FindingCount
+		}
+		return out[i].Technique < out[j].Technique
+	})
+	return out
+}
+
+// ----------------------------------------------------------------------------
+// Web enrichment — findings-derived Timeline / IOC / MITRE for the Web UI.
+//
+// The Tier 2 / Tier 3 pipeline writes synthesis.json in the tier2.CaseSynthesis
+// shape, which intentionally drops the raw timeline and never stored IOCs; its
+// mitre_mapping can also be empty (the LLM often omits it). The Web UI's
+// /timeline, /iocs and /mitre endpoints used to read the legacy synthesizer
+// model, so after an e2e run all three tabs came up empty. These DTOs let the
+// web layer derive the same material the HTML/CSV report derives — straight
+// from findings/ — so the source of truth is shared.
+// ----------------------------------------------------------------------------
+
+// WebTimelineEntry mirrors the field names the Web UI timeline table reads.
+type WebTimelineEntry struct {
+	Timestamp time.Time `json:"timestamp"`
+	Tactic    string    `json:"tactic,omitempty"`
+	Technique string    `json:"technique,omitempty"`
+	Computer  string    `json:"computer,omitempty"`
+	Summary   string    `json:"summary"`
+	Artifact  string    `json:"artifact,omitempty"`
+	Severity  string    `json:"severity,omitempty"`
+	AuditID   string    `json:"audit_id,omitempty"`
+}
+
+// WebIOC mirrors the iocDTO the Web UI IOC table reads.
+type WebIOC struct {
+	Type     string   `json:"type"`
+	Value    string   `json:"value"`
+	Count    int      `json:"count"`
+	Findings []string `json:"findings"`
+	Tactics  []string `json:"tactics"`
+}
+
+// WebMITRE mirrors the MITRE matrix cell the Web UI reads.
+type WebMITRE struct {
+	Tactic        string `json:"tactic"`
+	TacticName    string `json:"tactic_name"`
+	Technique     string `json:"technique"`
+	TechniqueName string `json:"technique_name"`
+	FindingCount  int    `json:"finding_count"`
+	EvidenceCount int    `json:"evidence_count"`
+	Confidence    string `json:"confidence"`
+}
+
+// WebEnrichment is the findings-derived bundle the Web UI serves.
+type WebEnrichment struct {
+	Timeline []WebTimelineEntry
+	IOCs     []WebIOC
+	MITRE    []WebMITRE
+}
+
+// LoadWebEnrichment reads findings/ and returns wire-ready Timeline / IOC /
+// MITRE data. A missing/unreadable dir yields empty (non-nil) slices.
+func LoadWebEnrichment(findingsDir string) *WebEnrichment {
+	en := loadEnrichment(findingsDir)
+	out := &WebEnrichment{
+		Timeline: make([]WebTimelineEntry, 0, len(en.Timeline)),
+		IOCs:     make([]WebIOC, 0, len(en.IOCs)),
+		MITRE:    make([]WebMITRE, 0, len(en.MITRE)),
+	}
+	for _, t := range en.Timeline {
+		out.Timeline = append(out.Timeline, WebTimelineEntry{
+			Timestamp: t.TS,
+			Tactic:    t.Tactic,
+			Technique: t.Technique,
+			Computer:  t.Computer,
+			Summary:   t.Title,
+			Artifact:  t.Artifact,
+			Severity:  t.Severity,
+			AuditID:   t.AuditID,
+		})
+	}
+	const maxIOCLabels = 8
+	for _, r := range en.IOCs {
+		labels := sortedKeys(r.findings)
+		if len(labels) > maxIOCLabels {
+			labels = labels[:maxIOCLabels]
+		}
+		out.IOCs = append(out.IOCs, WebIOC{
+			Type:     r.Type,
+			Value:    r.Value,
+			Count:    r.Count,
+			Findings: labels,
+			Tactics:  sortedKeys(r.tactics),
+		})
+	}
+	for _, m := range en.MITRE {
+		tactic := m.Tactic
+		if tactic == "" {
+			tactic = "(unmapped)"
+		}
+		out.MITRE = append(out.MITRE, WebMITRE{
+			Tactic:        tactic,
+			TacticName:    prettyTactic(m.Tactic),
+			Technique:     m.Technique,
+			FindingCount:  m.FindingCount,
+			EvidenceCount: m.EvidenceCount,
+			Confidence:    severityConfidence(m.worstSeverity),
+		})
+	}
+	return out
 }

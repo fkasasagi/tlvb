@@ -37,6 +37,36 @@ func TestBuildMITREMapping(t *testing.T) {
 	}
 }
 
+// Regression: the per-cluster LLM often returns an empty mitre_techniques
+// list, so the case MITRE mapping must be derivable from the finding-level
+// technique/tactic tags carried by the rule corpus. Previously this yielded
+// an empty mapping (and an empty report MITRE table / Web UI MITRE map).
+func TestBuildMITREMappingFoldsFindingTags(t *testing.T) {
+	clusters := []Cluster{{
+		ID:              1,
+		MITRETechniques: nil, // LLM supplied nothing
+		Findings: []Finding{
+			{MITRETechniques: []string{"T1003.001"}, MITRETactic: "credential-access"},
+			{MITRETechniques: []string{"T1003.001", "T1059"}, MITRETactic: "execution"},
+		},
+	}}
+	got := buildMITREMapping(clusters)
+	if len(got) != 2 {
+		t.Fatalf("want 2 techniques folded from findings, got %d (%+v)", len(got), got)
+	}
+	byTech := map[string]MITREEntry{}
+	for _, e := range got {
+		byTech[e.Technique] = e
+	}
+	// tactic learned from the first finding that carried the technique
+	if e := byTech["T1003.001"]; e.Tactic != "credential-access" {
+		t.Errorf("T1003.001 tactic = %q, want credential-access (from finding tag)", e.Tactic)
+	}
+	if e := byTech["T1059"]; e.Tactic != "execution" {
+		t.Errorf("T1059 tactic = %q, want execution", e.Tactic)
+	}
+}
+
 func TestMergeAllOpenQuestions(t *testing.T) {
 	clusters := []Cluster{
 		{OpenQuestions: []string{"how did they get in?", "  ", "what was exfiltrated?"}},
