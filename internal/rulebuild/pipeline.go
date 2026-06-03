@@ -39,6 +39,10 @@ type Pipeline struct {
 	SchemaVer string
 	Rates     Rates
 
+	// Compiler (optional) runtime-validates generated SQL against an empty
+	// unified_events before it is cached as "built". nil disables the gate.
+	Compiler *SQLCompiler
+
 	// Budget guards. 0 = no limit.
 	MaxRules  int
 	BudgetYen float64
@@ -59,10 +63,10 @@ type Pipeline struct {
 
 // BuildEvent is delivered to Pipeline.Progress for each rule processed.
 type BuildEvent struct {
-	Phase      string  // "loading" | "planning" | "building" | "done"
+	Phase      string // "loading" | "planning" | "building" | "done"
 	RuleID     string
 	RuleSource string
-	State      string  // "built" | "failed" | "skipped_cached" | "skipped_loader" | "skipped_budget"
+	State      string // "built" | "failed" | "skipped_cached" | "skipped_loader" | "skipped_budget"
 	Index      int
 	Total      int
 	CostYen    float64 // running cost so far
@@ -71,11 +75,11 @@ type BuildEvent struct {
 
 // DryRunReport summarises what a real Build would do.
 type DryRunReport struct {
-	TotalRules        int
-	ToBuild           int // not skipped by loader, not already cached
-	AlreadyCached     int
-	SkippedByLoader   int // sysmon / non-windows / parse-error / etc.
-	SkippedReasons    map[string]int
+	TotalRules      int
+	ToBuild         int // not skipped by loader, not already cached
+	AlreadyCached   int
+	SkippedByLoader int // sysmon / non-windows / parse-error / etc.
+	SkippedReasons  map[string]int
 
 	// Token / cost projections (chars/4 estimate; cache-read counted at 1x
 	// input for safety since cache hits depend on call order).
@@ -91,7 +95,7 @@ type BuildReport struct {
 	Failed        int
 	SkippedCached int
 	SkippedLoader int
-	StoppedReason string  // "budget" | "max_rules" | "context" | "complete"
+	StoppedReason string // "budget" | "max_rules" | "context" | "complete"
 	ActualCostYen float64
 }
 
@@ -232,6 +236,20 @@ func (p *Pipeline) Build(ctx context.Context) (*BuildReport, error) {
 			p.emit(BuildEvent{Phase: "building", RuleID: r.RuleID, RuleSource: r.RuleSource,
 				State: "failed", Index: i + 1, Total: len(rules), CostYen: rep.ActualCostYen,
 				Error: "empty SQL"})
+			processed++
+			continue
+		}
+
+		// Runtime compile-check: reject SQL that parses but won't execute
+		// against unified_events (unknown function / bad regex / etc.) so it
+		// never gets cached as "built" then skipped at Tier 1A runtime (#6).
+		if cerr := p.Compiler.Check(built.SQL); cerr != nil {
+			_ = p.RulesDB.MarkFailed(ctx, r.RuleID, r.RuleSource, "SQL compile-check: "+cerr.Error())
+			rep.Failed++
+			p.addCost(rep, built)
+			p.emit(BuildEvent{Phase: "building", RuleID: r.RuleID, RuleSource: r.RuleSource,
+				State: "failed", Index: i + 1, Total: len(rules), CostYen: rep.ActualCostYen,
+				Error: "compile-check: " + truncate(cerr.Error(), 80)})
 			processed++
 			continue
 		}
