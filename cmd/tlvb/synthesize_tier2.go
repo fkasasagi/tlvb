@@ -71,6 +71,9 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	fmt.Printf("  clusters:          %d\n", rep.ClusterCount)
 	fmt.Printf("  clusters analysed: %d\n", rep.ClustersAnalyzed)
 	fmt.Printf("  duration:          %.1fs\n", rep.Duration)
+	fmt.Printf("  llm calls:         %d\n", rep.LLMCalls)
+	fmt.Printf("  tokens:            in %d / cache_read %d / out %d  (cost $%.4f)\n",
+		rep.InputTokens, rep.CacheReadTokens, rep.OutputTokens, rep.TotalCostUSD)
 	if rep.OutputPath != "" {
 		fmt.Printf("  output:            %s\n", rep.OutputPath)
 	}

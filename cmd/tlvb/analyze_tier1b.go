@@ -118,6 +118,8 @@ func printTier1BReport(rep *tier1b.Report, skill string, dryRun bool) {
 			rep.CandidatesProposed, rep.CandidatesAppended, rep.Promoted)
 	}
 	fmt.Printf("  LLM call duration:        %.1fs\n", rep.LLMCallDurationS)
+	fmt.Printf("  tokens:                   in %d / cache_read %d / out %d  (cost $%.4f)\n",
+		rep.InputTokens, rep.CacheReadTokens, rep.OutputTokens, rep.TotalCostUSD)
 	fmt.Printf("  new findings:             %d\n", len(rep.NewFindings))
 	if rep.OutputPath != "" {
 		fmt.Printf("  output:                   %s\n", rep.OutputPath)

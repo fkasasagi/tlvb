@@ -21,13 +21,13 @@ import (
 // Config drives Run.
 type Config struct {
 	CaseID            string
-	FindingsBaseDir   string // outputs/cases/<id>/findings
-	OutputPath        string // outputs/cases/<id>/synthesis.json (default)
-	DBPath            string // outputs/cases.duckdb
-	SkillsDir         string // default "skills"
-	SkillName         string // default "timeline_review" (skills/<name>.md)
-	ClaudeBinary      string // default "claude"
-	Model             string // empty = CLI default
+	FindingsBaseDir   string        // outputs/cases/<id>/findings
+	OutputPath        string        // outputs/cases/<id>/synthesis.json (default)
+	DBPath            string        // outputs/cases.duckdb
+	SkillsDir         string        // default "skills"
+	SkillName         string        // default "timeline_review" (skills/<name>.md)
+	ClaudeBinary      string        // default "claude"
+	Model             string        // empty = CLI default
 	ClusterGap        time.Duration // default 30 min
 	TimelineWindow    time.Duration // default 5 min
 	MaxRowsPerCluster int           // default 300
@@ -46,12 +46,19 @@ type Event struct {
 
 // Report mirrors what gets returned to the CLI.
 type Report struct {
-	CaseID          string
-	TotalFindings   int
-	ClusterCount    int
+	CaseID           string
+	TotalFindings    int
+	ClusterCount     int
 	ClustersAnalyzed int
-	OutputPath      string
-	Duration        float64
+	OutputPath       string
+	Duration         float64
+
+	// LLM token / cost totals across all Tier 2 calls (from SynthAudit).
+	LLMCalls        int
+	InputTokens     int
+	CacheReadTokens int
+	OutputTokens    int
+	TotalCostUSD    float64
 }
 
 // Run executes the Tier 2 MVP. Reads Tier 1 findings, clusters them
@@ -194,6 +201,11 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	rep.OutputPath = cfg.OutputPath
 	rep.Duration = time.Since(start).Seconds()
+	rep.LLMCalls = audit.LLMCallsTotal
+	rep.InputTokens = audit.InputTokensTotal
+	rep.CacheReadTokens = audit.CacheReadTokensTotal
+	rep.OutputTokens = audit.OutputTokensTotal
+	rep.TotalCostUSD = audit.TotalCostUSD
 	emit(cfg, Event{Phase: "done",
 		Message: fmt.Sprintf("done in %.1fs (%d clusters, %d LLM calls)",
 			rep.Duration, len(clusters), audit.LLMCallsTotal),
@@ -223,8 +235,7 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	if err != nil {
 		return err
 	}
-	audit.InputTokensTotal += out.InputTokens
-	audit.OutputTokensTotal += out.OutputTokens
+	audit.addUsage(out)
 
 	resp, err := parseClusterAnalysis(out.Result)
 	if err != nil {
@@ -265,8 +276,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		audit.LLMCallsTotal++
 		cancel()
 		if err == nil {
-			audit.InputTokensTotal += out.InputTokens
-			audit.OutputTokensTotal += out.OutputTokens
+			audit.addUsage(out)
 			return strings.TrimSpace(out.Result), nil
 		}
 		// transient — wait a bit before retry, but only if there are
@@ -456,13 +466,16 @@ ClusterSummaries:
 // ----------------------------------------------------------------------------
 
 type claudeOutput struct {
-	IsError      bool   `json:"is_error"`
-	Result       string `json:"result"`
-	StopReason   string `json:"stop_reason"`
-	SessionID    string `json:"session_id"`
+	IsError      bool    `json:"is_error"`
+	Result       string  `json:"result"`
+	StopReason   string  `json:"stop_reason"`
+	SessionID    string  `json:"session_id"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
 	Usage        struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
 	} `json:"usage"`
 	InputTokens  int `json:"-"`
 	OutputTokens int `json:"-"`

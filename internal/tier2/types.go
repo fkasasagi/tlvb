@@ -1,7 +1,9 @@
 // Package tier2 is the Timeline Analysis Agent — Tier 2 of TLVB.
 //
 // Input: outputs/cases/<id>/findings/by-rule/**.json (Tier 1A)
-//        outputs/cases/<id>/findings/by-skill/*.json  (Tier 1B)
+//
+//	outputs/cases/<id>/findings/by-skill/*.json  (Tier 1B)
+//
 // Output: outputs/cases/<id>/synthesis.json
 //
 // Tier 2 (v0.1 MVP scope):
@@ -26,12 +28,12 @@ import "time"
 //   - Tier 1A Hayabusa pass-through — by-rule/hayabusa/<id>.json (same shape)
 //   - Tier 1B anomaly_hunter — by-skill/anomaly_hunter.json (wrapped array)
 type Finding struct {
-	FindingID  string
-	Source     string // "sigma" | "hayabusa" | "stix" | "custom" | "anomaly_hunter"
-	RuleID     string // upstream id (Sigma UUID, Hayabusa UUID, T-number, or skill lens id)
-	Title      string
-	Description string // populated for Tier 1B; empty for Tier 1A signature hits
-	Severity   string // critical | high | medium | low | informational
+	FindingID       string
+	Source          string // "sigma" | "hayabusa" | "stix" | "custom" | "anomaly_hunter"
+	RuleID          string // upstream id (Sigma UUID, Hayabusa UUID, T-number, or skill lens id)
+	Title           string
+	Description     string // populated for Tier 1B; empty for Tier 1A signature hits
+	Severity        string // critical | high | medium | low | informational
 	MITRETechniques []string
 	MITRETactic     string
 	Evidence        []FindingEvidence
@@ -68,15 +70,15 @@ func (f Finding) FirstTimestamp() time.Time {
 // Cluster is a temporal grouping of findings whose evidence falls within
 // a configurable max gap (default 30 min) of each other.
 type Cluster struct {
-	ID            int
-	StartTS       time.Time
-	EndTS         time.Time
-	Findings      []Finding
+	ID       int
+	StartTS  time.Time
+	EndTS    time.Time
+	Findings []Finding
 	// Narrative is filled in by the LLM pass.
 	Narrative          string
 	MITRETechniques    []string // union of finding-level + LLM-added
 	OpenQuestions      []string
-	AttackPhase        string // e.g. "initial-access", "execution", "impact"
+	AttackPhase        string          // e.g. "initial-access", "execution", "impact"
 	RawTimelineExcerpt []TimelineEvent // ±N min around the cluster (raw events)
 	// ActiveSearch holds wide-range hypothesis-driven query results.
 	// Populated only when --active-search is enabled. Each entry pairs an
@@ -105,16 +107,16 @@ type TimelineEvent struct {
 
 // CaseSynthesis is the final Tier 2 output. Serialised to synthesis.json.
 type CaseSynthesis struct {
-	CaseID        string          `json:"case_id"`
-	GeneratedAt   time.Time       `json:"generated_at"`
-	ModelID       string          `json:"model_id,omitempty"`
-	TotalFindings int             `json:"total_findings"`
-	ClusterCount  int             `json:"cluster_count"`
-	Clusters      []SynthCluster  `json:"clusters"`
-	OverallStory  string          `json:"overall_story"`
-	MITREMapping  []MITREEntry    `json:"mitre_mapping"`
-	OpenQuestions []string        `json:"open_questions,omitempty"`
-	Audit         SynthAudit      `json:"audit"`
+	CaseID        string         `json:"case_id"`
+	GeneratedAt   time.Time      `json:"generated_at"`
+	ModelID       string         `json:"model_id,omitempty"`
+	TotalFindings int            `json:"total_findings"`
+	ClusterCount  int            `json:"cluster_count"`
+	Clusters      []SynthCluster `json:"clusters"`
+	OverallStory  string         `json:"overall_story"`
+	MITREMapping  []MITREEntry   `json:"mitre_mapping"`
+	OpenQuestions []string       `json:"open_questions,omitempty"`
+	Audit         SynthAudit     `json:"audit"`
 }
 
 // SynthCluster is the cluster shape in synthesis.json. Drops the heavy
@@ -150,14 +152,31 @@ type MITREEntry struct {
 
 // SynthAudit captures provenance for the synthesis.
 type SynthAudit struct {
-	LLMCallsTotal        int     `json:"llm_calls_total"`
-	LLMDurationS         float64 `json:"llm_duration_s"`
-	InputTokensTotal     int     `json:"input_tokens_total,omitempty"`
-	OutputTokensTotal    int     `json:"output_tokens_total,omitempty"`
-	ClustersAnalysed     int     `json:"clusters_analysed"`
-	ClustersSkippedNoLLM int     `json:"clusters_skipped_no_llm,omitempty"`
-	ActiveSearchEnabled  bool    `json:"active_search_enabled,omitempty"`
-	ActiveSQLAttempted   int     `json:"active_sql_attempted,omitempty"`
-	ActiveSQLSucceeded   int     `json:"active_sql_succeeded,omitempty"`
-	SkillSHA256          string  `json:"skill_sha256,omitempty"`
+	LLMCallsTotal int     `json:"llm_calls_total"`
+	LLMDurationS  float64 `json:"llm_duration_s"`
+	// Token accounting across all Tier 2 LLM calls. InputTokensTotal is the
+	// non-cached (newly billed) input; CacheRead/CacheCreation are tracked
+	// separately because prompt caching serves most of the input.
+	InputTokensTotal         int     `json:"input_tokens_total,omitempty"`
+	CacheReadTokensTotal     int     `json:"cache_read_tokens_total,omitempty"`
+	CacheCreationTokensTotal int     `json:"cache_creation_tokens_total,omitempty"`
+	OutputTokensTotal        int     `json:"output_tokens_total,omitempty"`
+	TotalCostUSD             float64 `json:"total_cost_usd,omitempty"`
+	ClustersAnalysed         int     `json:"clusters_analysed"`
+	ClustersSkippedNoLLM     int     `json:"clusters_skipped_no_llm,omitempty"`
+	ActiveSearchEnabled      bool    `json:"active_search_enabled,omitempty"`
+	ActiveSQLAttempted       int     `json:"active_sql_attempted,omitempty"`
+	ActiveSQLSucceeded       int     `json:"active_sql_succeeded,omitempty"`
+	SkillSHA256              string  `json:"skill_sha256,omitempty"`
+}
+
+// addUsage folds one claudeOutput's token + cost figures into the audit.
+// Centralises the accumulation so every call site (per-cluster, overall,
+// active-search) records cache_read / cache_creation / cost consistently.
+func (a *SynthAudit) addUsage(out *claudeOutput) {
+	a.InputTokensTotal += out.Usage.InputTokens
+	a.CacheReadTokensTotal += out.Usage.CacheReadInputTokens
+	a.CacheCreationTokensTotal += out.Usage.CacheCreationInputTokens
+	a.OutputTokensTotal += out.Usage.OutputTokens
+	a.TotalCostUSD += out.TotalCostUSD
 }

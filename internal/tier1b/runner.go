@@ -220,6 +220,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return rep, fmt.Errorf("claude CLI: %w", err)
 	}
 	rep.LLMCallDurationS = time.Since(llmStart).Seconds()
+	rep.InputTokens = resp.InputTokens
+	rep.CacheReadTokens = resp.Usage.CacheReadInputTokens
+	rep.OutputTokens = resp.OutputTokens
+	rep.TotalCostUSD = resp.TotalCostUSD
 
 	// Always persist the raw response next to the report for triage of
 	// parse failures or unexpected empties.
@@ -257,11 +261,14 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		PriorFindings:  prior.Total,
 		Findings:       findings,
 		Audit: AnomalyAudit{
-			LLMCallDurationS: rep.LLMCallDurationS,
-			InputTokens:      resp.InputTokens,
-			OutputTokens:     resp.OutputTokens,
-			StopReason:       resp.StopReason,
-			SessionID:        resp.SessionID,
+			LLMCallDurationS:    rep.LLMCallDurationS,
+			InputTokens:         resp.InputTokens,
+			CacheReadTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
+			OutputTokens:        resp.OutputTokens,
+			TotalCostUSD:        resp.TotalCostUSD,
+			StopReason:          resp.StopReason,
+			SessionID:           resp.SessionID,
 		},
 	}); err != nil {
 		return rep, fmt.Errorf("write anomaly report: %w", err)
@@ -483,9 +490,10 @@ type claudeOutput struct {
 	InputTokens    int     `json:"-"`
 	OutputTokens   int     `json:"-"`
 	Usage          struct {
-		InputTokens          int `json:"input_tokens"`
-		CacheReadInputTokens int `json:"cache_read_input_tokens"`
-		OutputTokens         int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
 	} `json:"usage"`
 	ModelUsage map[string]struct {
 		InputTokens  int `json:"inputTokens"`
