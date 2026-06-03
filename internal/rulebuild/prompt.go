@@ -35,7 +35,11 @@ match the rule.
    DROP / CREATE / ATTACH / PRAGMA. NO trailing semicolons.
 
 3. The first WHERE predicate MUST be literally: case_id = ?
-   (parameterised; the runtime supplies the case_id).
+   (parameterised; the runtime supplies the case_id). This is the ONLY
+   placeholder allowed — your SQL must contain EXACTLY ONE "?" character.
+   Inline every other value as a literal (e.g. artifact_id = 'evtx',
+   EventId = 4688, ILIKE '%mimikatz%'). Do NOT use "?" for anything but
+   case_id, and do NOT use "?" inside string literals.
 
 4. Output column list MUST start with:
      audit_id, ts_utc, artifact_id, event_type
@@ -48,6 +52,12 @@ match the rule.
    to INTEGER when comparing.
 
 7. Use ILIKE for case-insensitive substring; LIKE for case-sensitive.
+   Use ONLY DuckDB-supported functions/operators. In particular:
+     - regex: use regexp_matches(col, 'pat') — NOT regexp_like (does not exist).
+     - NO "ILIKE ANY (...)" / "LIKE ANY (...)" (unsupported); expand to
+       OR'd ILIKE terms instead.
+     - keep regex patterns valid (balanced brackets); prefer plain ILIKE
+       substring matching when a regex isn't essential.
 
 8. If the rule cannot be expressed in SQL against unified_events (e.g. requires
    correlation across multiple time windows, or refers to data not in our

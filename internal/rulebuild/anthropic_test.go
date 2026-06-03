@@ -37,6 +37,10 @@ func TestValidateSQL_Rejects(t *testing.T) {
 		{"SELECT * FROM unified_events", "case_id"},
 		// SELECT, has case_id, but trailing semicolon.
 		{"SELECT * FROM unified_events WHERE case_id = ?;", "semicolon"},
+		// More than one ? placeholder — runtime binds only case_id (#6).
+		{"SELECT audit_id FROM unified_events WHERE case_id = ? AND artifact_id = ?", "exactly one ? placeholder"},
+		// Zero ? placeholders (case_id inlined) — also rejected.
+		{"SELECT audit_id FROM unified_events WHERE case_id = 'x'", "exactly one ? placeholder"},
 		// SELECT with embedded DROP — dangerous-keyword check fires before
 		// the semicolon check.
 		{"SELECT audit_id FROM unified_events WHERE case_id = ?; DROP TABLE foo", "disallowed"},

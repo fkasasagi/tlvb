@@ -30,8 +30,10 @@ func runRules(args []string) error {
 		return runRulesList(args[1:])
 	case "prune-skills":
 		return runRulesPruneSkills(args[1:])
+	case "revalidate-sql":
+		return runRulesRevalidateSQL(args[1:])
 	default:
-		return fmt.Errorf("unknown rules subcommand %q (want build|list|prune-skills)", args[0])
+		return fmt.Errorf("unknown rules subcommand %q (want build|list|prune-skills|revalidate-sql)", args[0])
 	}
 }
 
@@ -117,10 +119,19 @@ func runRulesBuild(args []string) error {
 	default:
 		return fmt.Errorf("unknown --engine %q (want claude-code | anthropic-api)", *engine)
 	}
+	// Runtime compile-check gate (known issue #6): reject generated SQL that
+	// won't execute against unified_events before it's cached as "built".
+	compiler, err := rulebuild.NewSQLCompiler(casedb.UnifiedEventsDDL)
+	if err != nil {
+		return fmt.Errorf("init sql compiler: %w", err)
+	}
+	defer compiler.Close()
+
 	pipeline := &rulebuild.Pipeline{
 		Loaders:   loaders,
 		Builder:   builder,
 		RulesDB:   db,
+		Compiler:  compiler,
 		SchemaDoc: casedb.SchemaDoc(),
 		SchemaVer: casedb.SchemaVersion(),
 		Rates: rulebuild.Rates{
@@ -312,6 +323,72 @@ func runRulesPruneSkills(args []string) error {
 		return err
 	}
 	fmt.Printf("pruned %d unpromoted skill candidate(s) older than %.0f days\n", n, *maxAgeDays)
+	return nil
+}
+
+// runRulesRevalidateSQL re-checks every 'built' rule's cached SQL against the
+// unified_events schema (empty-table execution) and marks rows whose SQL no
+// longer runs as 'failed' — so a subsequent `rules build` regenerates them
+// into executable SQL. Sonnet-free. Cleans up known issue #6's existing rows.
+func runRulesRevalidateSQL(args []string) error {
+	fs := flag.NewFlagSet("rules revalidate-sql", flag.ContinueOnError)
+	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb", "path to the rule SQL cache DB")
+	source := fs.String("source", "", "restrict to one source: sigma | hayabusa | stix (default: all)")
+	dryRun := fs.Bool("dry-run", false, "report broken rows without marking them failed")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	compiler, err := rulebuild.NewSQLCompiler(casedb.UnifiedEventsDDL)
+	if err != nil {
+		return fmt.Errorf("init sql compiler: %w", err)
+	}
+	defer compiler.Close()
+
+	mode := rulesdb.ReadWrite
+	if *dryRun {
+		mode = rulesdb.ReadOnly
+	}
+	db, err := rulesdb.Open(*rulesDBPath, mode)
+	if err != nil {
+		return fmt.Errorf("open rules db: %w", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	rows, err := db.ListAll(ctx, *source, rulesdb.StateBuilt)
+	if err != nil {
+		return fmt.Errorf("list built: %w", err)
+	}
+
+	var broken, marked int
+	for _, r := range rows {
+		// Match the Tier 1A runtime contract: exactly one ? (case_id). The
+		// runtime rejects other counts before execution, so compiler.Check
+		// (which binds a single arg) won't surface them — check explicitly.
+		var reason string
+		if n := strings.Count(r.SQL, "?"); n != 1 {
+			reason = fmt.Sprintf("expected exactly one ? placeholder, got %d", n)
+		} else if cerr := compiler.Check(r.SQL); cerr != nil {
+			reason = cerr.Error()
+		}
+		if reason == "" {
+			continue
+		}
+		broken++
+		fmt.Printf("  BROKEN %s/%s: %s\n", r.RuleSource, r.RuleID, truncateStr(reason, 80))
+		if !*dryRun {
+			if err := db.MarkFailed(ctx, r.RuleID, r.RuleSource, "revalidate: "+reason); err == nil {
+				marked++
+			}
+		}
+	}
+	fmt.Printf("\nrevalidate-sql — checked %d built rows, %d broken", len(rows), broken)
+	if *dryRun {
+		fmt.Printf(" (dry-run: none marked). Run without --dry-run to mark them failed, then `rules build` to regenerate.\n")
+	} else {
+		fmt.Printf(", %d marked failed. Run `rules build` to regenerate them into executable SQL.\n", marked)
+	}
 	return nil
 }
 

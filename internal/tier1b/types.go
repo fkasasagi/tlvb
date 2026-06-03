@@ -71,6 +71,14 @@ type Report struct {
 	OutputPath       string // findings/by-skill/anomaly_hunter.json
 	SkillSHA256      string // for cache invalidation tracking
 
+	// Token / cost of the LLM call (mirrors AnomalyReport.Audit; surfaced for
+	// the CLI summary). InputTokens excludes cache; CacheReadTokens is the
+	// cached portion (the bulk of the prompt). TotalCostUSD is the CLI figure.
+	InputTokens     int
+	CacheReadTokens int
+	OutputTokens    int
+	TotalCostUSD    float64
+
 	// --- Tier 1B v0.2 skill SQL cache accounting ---
 	CacheEnabled       bool // skill_sql_cache was consulted this run
 	SkillSQLAvailable  int  // cached queries matching the current signature
@@ -134,8 +142,15 @@ type AnomalyReport struct {
 
 type AnomalyAudit struct {
 	LLMCallDurationS float64 `json:"llm_call_duration_s"`
-	InputTokens      int     `json:"input_tokens,omitempty"`
-	OutputTokens     int     `json:"output_tokens,omitempty"`
-	StopReason       string  `json:"stop_reason,omitempty"`
-	SessionID        string  `json:"session_id,omitempty"`
+	// Token accounting. InputTokens is the non-cached (newly billed) input;
+	// the bulk of a Tier 1B prompt is usually served from prompt cache, so
+	// CacheReadTokens/CacheCreationTokens are recorded separately for accurate
+	// per-run cost. TotalCostUSD is the claude CLI's own cost figure.
+	InputTokens         int     `json:"input_tokens,omitempty"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	OutputTokens        int     `json:"output_tokens,omitempty"`
+	TotalCostUSD        float64 `json:"total_cost_usd,omitempty"`
+	StopReason          string  `json:"stop_reason,omitempty"`
+	SessionID           string  `json:"session_id,omitempty"`
 }

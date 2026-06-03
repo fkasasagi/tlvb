@@ -81,8 +81,7 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, c *Cluster,
 	if err != nil {
 		return nil, fmt.Errorf("active-search LLM: %w", err)
 	}
-	audit.InputTokensTotal += out.InputTokens
-	audit.OutputTokensTotal += out.OutputTokens
+	audit.addUsage(out)
 	entries, err := parseActiveSearchEntries(out.Result)
 	if err != nil {
 		return nil, fmt.Errorf("parse active-search entries: %w (head: %s)",
@@ -292,8 +291,7 @@ Return ONLY the addendum text. No JSON, no markdown.`
 	if err != nil {
 		return "", err
 	}
-	audit.InputTokensTotal += out.InputTokens
-	audit.OutputTokensTotal += out.OutputTokens
+	audit.addUsage(out)
 	return strings.TrimSpace(out.Result), nil
 }
 

@@ -228,6 +228,13 @@ func validateSQL(s string) error {
 	if !strings.Contains(s, "case_id") {
 		return fmt.Errorf("SQL missing required case_id predicate")
 	}
+	// The Tier 1A runtime (and tier2 active_search) bind exactly one
+	// parameter — case_id — via a naive `strings.Count(sql, "?")`. SQL with
+	// any other number of placeholders is built-but-unrunnable, so reject it
+	// here at build time with the same count so it never reaches the cache.
+	if n := strings.Count(s, "?"); n != 1 {
+		return fmt.Errorf("SQL must have exactly one ? placeholder (case_id = ?), got %d", n)
+	}
 	if strings.HasSuffix(s, ";") {
 		return fmt.Errorf("SQL must not end with semicolon")
 	}
