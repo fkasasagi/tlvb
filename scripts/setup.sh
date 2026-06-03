@@ -268,6 +268,23 @@ else
   errors=$((errors + 1))
 fi
 
+# ---- seed rule SQL cache ---------------------------------------------------
+# The LLM-built Tier 1A SQL lives in outputs/rules.duckdb, which is gitignored.
+# A fresh clone instead carries the vendored JSONL snapshot (rules/built/) — seed
+# it so Tier 1A has cached SQL without re-running the costly `rules build`. Safe
+# mode: existing rules are never overwritten, so re-running setup is a no-op.
+if [[ -x bin/tlvb ]] && compgen -G 'rules/built/*.sql.jsonl' >/dev/null; then
+  echo
+  bold "Seeding rule SQL cache (rules/built → outputs/rules.duckdb) ..."
+  if ./bin/tlvb rules import 2>&1 | sed 's/^/  /'; then
+    green "  ✓ rule SQL cache seeded"
+  else
+    yellow "  ! rules import failed — Tier 1A will have no cached SQL until you"
+    yellow "    run './bin/tlvb rules import' (or 'rules build') manually"
+    warnings=$((warnings + 1))
+  fi
+fi
+
 # ---- summary ---------------------------------------------------------------
 echo
 echo "─────────────────────────────────────────────"
