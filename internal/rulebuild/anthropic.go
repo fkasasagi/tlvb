@@ -24,11 +24,15 @@ const (
 // The system prompt is sent with cache_control: ephemeral so subsequent calls
 // in the same build run only pay 10% on the cached portion.
 type AnthropicBuilder struct {
-	APIKey    string
-	Model     string
-	MaxTokens int
-	Timeout   time.Duration
-	SchemaDoc string // injected into the system prompt
+	APIKey string
+	Model  string
+	// SignatureModel overrides the cache-signature model id (ModelID),
+	// decoupling it from the execution Model — see ClaudeCodeBuilder.
+	// Empty = use Model.
+	SignatureModel string
+	MaxTokens      int
+	Timeout        time.Duration
+	SchemaDoc      string // injected into the system prompt
 
 	httpClient *http.Client
 }
@@ -47,7 +51,12 @@ func NewAnthropicBuilder(apiKey, model, schemaDoc string) *AnthropicBuilder {
 	}
 }
 
-func (b *AnthropicBuilder) ModelID() string { return b.Model }
+func (b *AnthropicBuilder) ModelID() string {
+	if b.SignatureModel != "" {
+		return b.SignatureModel
+	}
+	return b.Model
+}
 
 func (b *AnthropicBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule, schemaDoc string) (*BuiltSQL, error) {
 	if b.APIKey == "" {
@@ -158,13 +167,37 @@ func parseBuilderJSON(text string) (*BuiltSQL, error) {
 		Notes              string   `json:"notes"`
 	}
 	if err := json.Unmarshal([]byte(s), &raw); err != nil {
-		return nil, err
+		// LLMs occasionally emit SQL with lone backslashes (Windows paths
+		// like \Users, regex metachars like \d) that are invalid JSON escape
+		// sequences ("invalid character ... in string escape code"). Repair
+		// the illegal escapes and retry once before giving up.
+		if err2 := json.Unmarshal([]byte(repairJSONEscapes(s)), &raw); err2 != nil {
+			return nil, err // original error is the more informative one
+		}
 	}
 	return &BuiltSQL{
 		SQL:                strings.TrimSpace(raw.SQL),
 		PrefilterArtifacts: raw.PrefilterArtifacts,
 		Notes:              raw.Notes,
 	}, nil
+}
+
+// jsonBackslashSeq matches a backslash plus the following character.
+var jsonBackslashSeq = regexp.MustCompile(`\\(.)`)
+
+// repairJSONEscapes doubles any backslash that does NOT form a valid JSON
+// escape, so LLM output with unescaped Windows paths (\Users) or regex
+// metacharacters (\d, \s) parses instead of erroring. Valid escapes
+// (\" \\ \/ \b \f \n \r \t \uXXXX) are left untouched, and already-escaped
+// pairs (\\) are consumed as a unit so they are not re-doubled.
+func repairJSONEscapes(s string) string {
+	return jsonBackslashSeq.ReplaceAllStringFunc(s, func(m string) string {
+		switch m[1] {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+			return m // valid escape — leave as-is
+		}
+		return `\` + m // illegal: escape the lone backslash (\X -> \\X)
+	})
 }
 
 // validateSQL rejects obviously dangerous statements. The empty-SQL case is

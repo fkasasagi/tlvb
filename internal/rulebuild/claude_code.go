@@ -22,8 +22,16 @@ import (
 // Production builds switch to AnthropicBuilder via `tlvb rules build --engine
 // anthropic-api`.
 type ClaudeCodeBuilder struct {
-	Binary    string        // path to `claude` binary; default "claude"
-	Model     string        // model id; empty = let Claude Code default
+	Binary string // path to `claude` binary; default "claude"
+	Model  string // model id used for the actual `claude --model` call
+
+	// SignatureModel overrides the model id recorded in the cache signature
+	// (ModelID), decoupling it from the execution Model. Use when filling
+	// gaps with a different model (e.g. Opus) without invalidating rows
+	// already built under another model — set this to the existing rows'
+	// model so the signature matches and they stay 'built'. Empty = use Model.
+	SignatureModel string
+
 	Timeout   time.Duration // per-rule timeout
 	SchemaDoc string
 
@@ -52,8 +60,12 @@ func NewClaudeCodeBuilder(model, schemaDoc string) *ClaudeCodeBuilder {
 // EffectiveModel) so future cache invalidation can distinguish CLI-built
 // rows from API-built rows.
 func (b *ClaudeCodeBuilder) ModelID() string {
-	if b.Model != "" {
-		return "claude-code/" + b.Model
+	m := b.SignatureModel
+	if m == "" {
+		m = b.Model
+	}
+	if m != "" {
+		return "claude-code/" + m
 	}
 	return "claude-code/default"
 }
