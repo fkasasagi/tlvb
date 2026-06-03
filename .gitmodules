@@ -7,3 +7,6 @@
 [submodule "rules/stix/mitre-attack"]
 	path = rules/stix/mitre-attack
 	url = https://github.com/mitre/cti.git
+[submodule "rules/lolbas/upstream"]
+	path = rules/lolbas/upstream
+	url = https://github.com/LOLBAS-Project/LOLBAS.git
