@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRulesDBLifecycle(t *testing.T) {
@@ -183,5 +184,63 @@ func TestSkillSQLCacheLifecycle(t *testing.T) {
 	stale, _ := m.ListSkillSQL(ctx, skill, "uev-aaaa", "claude-sonnet-4-6")
 	if len(stale) != 0 {
 		t.Fatalf("rows under a different model signature must be excluded, got %d", len(stale))
+	}
+}
+
+func TestPruneSkillCandidates(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(filepath.Join(dir, "rules.duckdb"), ReadWrite)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+
+	mk := func(sqlText, intent string) SkillSQLRow {
+		return SkillSQLRow{
+			Skill: "anomaly_hunter", SQL: sqlText, Intent: intent,
+			OriginCase: "C1", SchemaVersion: "v1", ModelID: "m1",
+		}
+	}
+	c1 := "SELECT audit_id, ts_utc, artifact_id FROM unified_events WHERE case_id = ? AND artifact_id = 'lnk' LIMIT 10"
+	c2 := "SELECT audit_id, ts_utc, artifact_id FROM unified_events WHERE case_id = ? AND artifact_id = 'registry' LIMIT 10"
+	if _, err := m.UpsertSkillCandidate(ctx, mk(c1, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpsertSkillCandidate(ctx, mk(c2, "registry")); err != nil {
+		t.Fatal(err)
+	}
+	// Promote one → canonical (hit_count=1); it must survive pruning forever.
+	if err := m.PromoteSkillSQL(ctx, "anomaly_hunter", SkillSQLHash(c1), "C2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A past cutoff prunes nothing — both rows were generated "now".
+	past := time.Now().Add(-1 * time.Hour)
+	if victims, _ := m.ListPrunableSkillCandidates(ctx, past); len(victims) != 0 {
+		t.Fatalf("past cutoff should prune nothing, got %d", len(victims))
+	}
+
+	// A future cutoff makes the lone candidate (c2) prunable; the canonical
+	// (c1) is excluded.
+	future := time.Now().Add(1 * time.Hour)
+	victims, err := m.ListPrunableSkillCandidates(ctx, future)
+	if err != nil {
+		t.Fatalf("list prunable: %v", err)
+	}
+	if len(victims) != 1 || victims[0].Intent != "registry" {
+		t.Fatalf("expected only the unpromoted candidate prunable, got %+v", victims)
+	}
+
+	n, err := m.PruneSkillCandidates(ctx, future)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+	counts, _ := m.CountSkillByState(ctx)
+	if counts[SkillCanonical] != 1 || counts[SkillCandidate] != 0 {
+		t.Fatalf("after prune expected 1 canonical / 0 candidate, got %v", counts)
 	}
 }

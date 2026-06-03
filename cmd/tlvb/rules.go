@@ -28,8 +28,10 @@ func runRules(args []string) error {
 		return runRulesBuild(args[1:])
 	case "list":
 		return runRulesList(args[1:])
+	case "prune-skills":
+		return runRulesPruneSkills(args[1:])
 	default:
-		return fmt.Errorf("unknown rules subcommand %q (want build|list)", args[0])
+		return fmt.Errorf("unknown rules subcommand %q (want build|list|prune-skills)", args[0])
 	}
 }
 
@@ -165,6 +167,8 @@ func runRulesList(args []string) error {
 		"filter by state: pending | built | failed (default: all)")
 	showSQL := fs.Bool("show-sql", false,
 		"print the cached SQL body for each row (long output)")
+	skills := fs.Bool("skills", false,
+		"list the Tier 1B skill_sql_cache (learned lenses) instead of rule_sql_cache")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -176,6 +180,9 @@ func runRulesList(args []string) error {
 	defer db.Close()
 
 	ctx := context.Background()
+	if *skills {
+		return listSkillCache(ctx, db, *showSQL)
+	}
 	rows, err := db.ListAll(ctx, *source, rulesdb.CacheState(*state))
 	if err != nil {
 		return fmt.Errorf("list: %w", err)
@@ -211,6 +218,100 @@ func runRulesList(args []string) error {
 			fmt.Printf("# %s/%s\n%s\n\n", r.RuleSource, r.RuleID, r.SQL)
 		}
 	}
+	return nil
+}
+
+// listSkillCache renders the Tier 1B skill_sql_cache (learned lenses).
+func listSkillCache(ctx context.Context, db *rulesdb.Manager, showSQL bool) error {
+	rows, err := db.ListAllSkillSQL(ctx)
+	if err != nil {
+		return fmt.Errorf("list skill cache: %w", err)
+	}
+	counts, _ := db.CountSkillByState(ctx)
+	fmt.Printf("Tier 1B skill SQL cache  (canonical=%d candidate=%d total=%d)\n\n",
+		counts[rulesdb.SkillCanonical], counts[rulesdb.SkillCandidate], len(rows))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SKILL\tSTATE\tHITS\tORIGIN\tLAST_USED\tGENERATED\tINTENT")
+	for _, r := range rows {
+		ts := "-"
+		if r.GeneratedAt != nil {
+			ts = r.GeneratedAt.UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			r.Skill, r.State, r.HitCount,
+			orDash(r.OriginCase), orDash(r.LastUsedCase), ts,
+			truncateStr(r.Intent, 60))
+	}
+	w.Flush()
+
+	if showSQL {
+		fmt.Println()
+		for _, r := range rows {
+			fmt.Printf("# %s [%s] %s\n%s\n\n", r.Skill, r.State, r.Intent, r.SQL)
+		}
+	}
+	return nil
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// runRulesPruneSkills removes never-promoted (hit_count=0) skill candidates
+// older than --max-age-days so the cache doesn't accumulate dead lenses as it
+// grows across cases. Canonical (proven) queries are never touched.
+func runRulesPruneSkills(args []string) error {
+	fs := flag.NewFlagSet("rules prune-skills", flag.ContinueOnError)
+	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
+		"path to the rule SQL cache DB")
+	maxAgeDays := fs.Float64("max-age-days", 30,
+		"prune unpromoted (hit_count=0) candidates generated more than this many "+
+			"days ago (0 = prune ALL unpromoted candidates regardless of age)")
+	dryRun := fs.Bool("dry-run", false,
+		"show what would be pruned without deleting")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cutoff := time.Now().Add(-time.Duration(*maxAgeDays * 24 * float64(time.Hour)))
+	ctx := context.Background()
+
+	mode := rulesdb.ReadWrite
+	if *dryRun {
+		mode = rulesdb.ReadOnly
+	}
+	db, err := rulesdb.Open(*rulesDBPath, mode)
+	if err != nil {
+		return fmt.Errorf("open rules db: %w", err)
+	}
+	defer db.Close()
+
+	if *dryRun {
+		victims, err := db.ListPrunableSkillCandidates(ctx, cutoff)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("dry-run: %d candidate(s) would be pruned (hit_count=0, older than %.0f days)\n",
+			len(victims), *maxAgeDays)
+		for _, r := range victims {
+			ts := "-"
+			if r.GeneratedAt != nil {
+				ts = r.GeneratedAt.UTC().Format(time.RFC3339)
+			}
+			fmt.Printf("  %s  [%s]  %s\n", ts, r.Skill, truncateStr(r.Intent, 70))
+		}
+		return nil
+	}
+
+	n, err := db.PruneSkillCandidates(ctx, cutoff)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pruned %d unpromoted skill candidate(s) older than %.0f days\n", n, *maxAgeDays)
 	return nil
 }
 

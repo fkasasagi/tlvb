@@ -546,6 +546,43 @@ func (m *Manager) ListAllSkillSQL(ctx context.Context) ([]SkillSQLRow, error) {
 	return scanSkillRows(rows)
 }
 
+// ListPrunableSkillCandidates returns 'candidate' rows that were never
+// promoted (hit_count = 0) and generated before olderThan — dead weight that
+// was proposed across one or more cases but never cited in a finding.
+// Canonical rows are always excluded.
+func (m *Manager) ListPrunableSkillCandidates(ctx context.Context, olderThan time.Time) ([]SkillSQLRow, error) {
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT skill, sql_sha256, sql, COALESCE(intent, ''), state,
+		       COALESCE(origin_case, ''), generated_at, hit_count,
+		       COALESCE(last_used_case, ''), schema_version, model_id
+		  FROM skill_sql_cache
+		 WHERE state = 'candidate' AND hit_count = 0 AND generated_at < ?
+		 ORDER BY generated_at`, olderThan.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkillRows(rows)
+}
+
+// PruneSkillCandidates deletes the rows ListPrunableSkillCandidates would
+// return and reports how many were removed. Canonical rows are never touched,
+// so a query that has proven itself in any case is permanent.
+func (m *Manager) PruneSkillCandidates(ctx context.Context, olderThan time.Time) (int, error) {
+	if m.mode == ReadOnly {
+		return 0, errors.New("rulesdb opened read-only")
+	}
+	res, err := m.db.ExecContext(ctx, `
+		DELETE FROM skill_sql_cache
+		 WHERE state = 'candidate' AND hit_count = 0 AND generated_at < ?`,
+		olderThan.UTC())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // CountSkillByState returns counts grouped by state across all skills.
 func (m *Manager) CountSkillByState(ctx context.Context) (map[SkillState]int, error) {
 	rows, err := m.db.QueryContext(ctx,
