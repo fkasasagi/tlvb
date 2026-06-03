@@ -46,7 +46,7 @@ type eventForLLM struct {
 	Excerpt    map[string]any `json:"excerpt"`
 }
 
-const skillName = "anomaly_hunter"
+const defaultSkill = "anomaly_hunter"
 
 // Run executes the Tier 1B MVP for a case. Reads prior Tier 1A findings,
 // prefilters anomaly candidates, builds the LLM context, calls Claude CLI
@@ -57,6 +57,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	if cfg.DBPath == "" {
 		return nil, fmt.Errorf("Tier 1B: DBPath is required")
+	}
+	if cfg.Skill == "" {
+		cfg.Skill = defaultSkill
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "skills"
@@ -88,7 +91,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	emit(cfg, Event{Phase: "loading", Message: "reading skill + prior findings"})
 
-	skillPath := filepath.Join(cfg.SkillsDir, skillName+".md")
+	skillPath := filepath.Join(cfg.SkillsDir, cfg.Skill+".md")
 	skillBytes, err := os.ReadFile(skillPath)
 	if err != nil {
 		return nil, fmt.Errorf("read skill: %w", err)
@@ -159,7 +162,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	if cacheEnabled {
 		rep.CacheEnabled = true
-		cacheRows, listErr := cacheMgr.ListSkillSQL(ctx, skillName, cfg.SchemaVersion, cfg.ModelID)
+		cacheRows, listErr := cacheMgr.ListSkillSQL(ctx, cfg.Skill, cfg.SchemaVersion, cfg.ModelID)
 		if listErr != nil {
 			emit(cfg, Event{Phase: "cache", Message: "list skill SQL failed: " + listErr.Error()})
 		} else {
@@ -221,7 +224,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	// Always persist the raw response next to the report for triage of
 	// parse failures or unexpected empties.
 	rawDebugPath := filepath.Join(cfg.FindingsBaseDir, "by-skill",
-		skillName+".raw_response.txt")
+		cfg.Skill+".raw_response.txt")
 	_ = os.MkdirAll(filepath.Dir(rawDebugPath), 0o755)
 	_ = os.WriteFile(rawDebugPath, []byte(resp.Result), 0o644)
 
@@ -242,10 +245,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		}
 	}
 
-	outPath := filepath.Join(cfg.FindingsBaseDir, "by-skill", skillName+".json")
+	outPath := filepath.Join(cfg.FindingsBaseDir, "by-skill", cfg.Skill+".json")
 	if err := writeAnomalyReport(outPath, AnomalyReport{
 		CaseID:         cfg.CaseID,
-		Skill:          skillName,
+		Skill:          cfg.Skill,
 		SkillSHA256:    rep.SkillSHA256,
 		GeneratedAt:    time.Now().UTC(),
 		ModelID:        resp.EffectiveModel,
@@ -277,7 +280,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 				continue // never store a query that fails the safety guard
 			}
 			inserted, upErr := cacheMgr.UpsertSkillCandidate(ctx, rulesdb.SkillSQLRow{
-				Skill: skillName, SQL: p.SQL, Intent: p.Intent,
+				Skill: cfg.Skill, SQL: p.SQL, Intent: p.Intent,
 				OriginCase: cfg.CaseID, SchemaVersion: cfg.SchemaVersion, ModelID: cfg.ModelID,
 			})
 			if upErr == nil && inserted {
@@ -285,7 +288,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			}
 		}
 		for _, sha := range promotableHashes(findings, auditToSQL) {
-			if cacheMgr.PromoteSkillSQL(ctx, skillName, sha, cfg.CaseID) == nil {
+			if cacheMgr.PromoteSkillSQL(ctx, cfg.Skill, sha, cfg.CaseID) == nil {
 				rep.Promoted++
 			}
 		}
@@ -386,6 +389,18 @@ const findingShapeDoc = `    {
       "tactic": "execution"           // optional kill-chain phase
     }`
 
+// outputAuthorityNote makes the Tier 1B user-message contract authoritative
+// over the skill .md system prompt. The 10 MITRE Tactic Agent skills define
+// their own output format (per-technique verdicts / TacticReport); when one of
+// them is used as a Tier 1B lens we must override that so the response matches
+// the {findings, proposed_queries} shape the runner parses.
+const outputAuthorityNote = `IMPORTANT: your system prompt supplies the detection lenses/domain knowledge
+for this scan. IGNORE any output-format, schema, or per-technique-verdict
+workflow it describes — for THIS Tier 1B run, emit ONLY the JSON specified
+below and nothing else.
+
+`
+
 func buildUserMessage(hctx llmContext, cacheEnabled bool) (string, error) {
 	var prelude string
 	if !cacheEnabled {
@@ -452,7 +467,7 @@ AnomalyContext:
 	if err != nil {
 		return "", err
 	}
-	return prelude + string(body), nil
+	return outputAuthorityNote + prelude + string(body), nil
 }
 
 // claudeOutput captures the fields we use from `claude --output-format json`.
