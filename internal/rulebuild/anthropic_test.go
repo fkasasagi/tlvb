@@ -57,20 +57,20 @@ func TestValidateSQL_Rejects(t *testing.T) {
 
 func TestParseBuilderJSON(t *testing.T) {
 	cases := []struct {
-		name, input string
-		wantSQL     string
+		name, input   string
+		wantSQL       string
 		wantPrefilter []string
 	}{
 		{
-			name: "clean JSON",
-			input: `{"sql":"SELECT audit_id FROM unified_events WHERE case_id = ?","prefilter_artifacts":["evtx"],"notes":"ok"}`,
-			wantSQL: "SELECT audit_id FROM unified_events WHERE case_id = ?",
+			name:          "clean JSON",
+			input:         `{"sql":"SELECT audit_id FROM unified_events WHERE case_id = ?","prefilter_artifacts":["evtx"],"notes":"ok"}`,
+			wantSQL:       "SELECT audit_id FROM unified_events WHERE case_id = ?",
 			wantPrefilter: []string{"evtx"},
 		},
 		{
-			name: "markdown-wrapped",
-			input: "```json\n{\"sql\":\"SELECT audit_id FROM unified_events WHERE case_id = ?\",\"prefilter_artifacts\":[\"evtx\"],\"notes\":\"x\"}\n```",
-			wantSQL: "SELECT audit_id FROM unified_events WHERE case_id = ?",
+			name:          "markdown-wrapped",
+			input:         "```json\n{\"sql\":\"SELECT audit_id FROM unified_events WHERE case_id = ?\",\"prefilter_artifacts\":[\"evtx\"],\"notes\":\"x\"}\n```",
+			wantSQL:       "SELECT audit_id FROM unified_events WHERE case_id = ?",
 			wantPrefilter: []string{"evtx"},
 		},
 		{
@@ -78,14 +78,36 @@ func TestParseBuilderJSON(t *testing.T) {
 			input: `Here is my output:
 
 {"sql":"SELECT audit_id FROM unified_events WHERE case_id = ?","prefilter_artifacts":["evtx"],"notes":"x"}`,
-			wantSQL: "SELECT audit_id FROM unified_events WHERE case_id = ?",
+			wantSQL:       "SELECT audit_id FROM unified_events WHERE case_id = ?",
 			wantPrefilter: []string{"evtx"},
 		},
 		{
-			name: "empty SQL signal",
-			input: `{"sql":"","prefilter_artifacts":[],"notes":"not expressible"}`,
-			wantSQL: "",
+			name:          "empty SQL signal",
+			input:         `{"sql":"","prefilter_artifacts":[],"notes":"not expressible"}`,
+			wantSQL:       "",
 			wantPrefilter: []string{},
+		},
+		{
+			// LLM left a lone backslash before a Windows path (\Users) — an
+			// invalid JSON escape that repairJSONEscapes must fix.
+			name:          "lone backslash in windows path",
+			input:         `{"sql":"SELECT audit_id FROM unified_events WHERE case_id = ? AND payload_json ILIKE '%\Users\Public%'","prefilter_artifacts":["evtx"],"notes":"x"}`,
+			wantSQL:       `SELECT audit_id FROM unified_events WHERE case_id = ? AND payload_json ILIKE '%\Users\Public%'`,
+			wantPrefilter: []string{"evtx"},
+		},
+		{
+			// Regex metacharacters (\d, \s) are also invalid JSON escapes.
+			name:          "regex metachars",
+			input:         `{"sql":"SELECT audit_id FROM unified_events WHERE case_id = ? AND raw ~ '\d{3}\s'","prefilter_artifacts":["evtx"],"notes":"x"}`,
+			wantSQL:       `SELECT audit_id FROM unified_events WHERE case_id = ? AND raw ~ '\d{3}\s'`,
+			wantPrefilter: []string{"evtx"},
+		},
+		{
+			// Already-valid escapes (\\ and \n) must survive untouched.
+			name:          "valid escapes preserved",
+			input:         `{"sql":"SELECT audit_id FROM unified_events WHERE case_id = ? AND path LIKE '%\\\\Temp%'","prefilter_artifacts":["mft"],"notes":"line1\nline2"}`,
+			wantSQL:       `SELECT audit_id FROM unified_events WHERE case_id = ? AND path LIKE '%\\Temp%'`,
+			wantPrefilter: []string{"mft"},
 		},
 	}
 	for _, c := range cases {
