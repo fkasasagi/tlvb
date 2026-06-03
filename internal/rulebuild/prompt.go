@@ -13,9 +13,17 @@ import (
 //
 // The {SCHEMA_DOC} placeholder is filled in at runtime from casedb.SchemaDoc().
 const SystemPrompt = `You are a forensic SQL generator. Given a single detection
-rule (Sigma YAML, Hayabusa YAML, or a MITRE ATT&CK technique JSON), produce ONE
-DuckDB SQL SELECT statement that finds events in the unified_events table that
-match the rule.
+rule (Sigma YAML, Hayabusa YAML, a MITRE ATT&CK technique JSON, or a LOLBAS
+binary catalogue entry), produce ONE DuckDB SQL SELECT statement that finds
+events in the unified_events table that match the rule.
+
+LOLBAS entries (rule_source "lolbas") describe one abusable Windows binary
+(Name) with example Commands and MitreIDs — they are NOT detections. Convert
+them to SQL that flags ABUSIVE invocation of that binary in process creation:
+match EVTX EventId 4688 where ExecutableInfo references the binary AND the
+command line shows the documented abuse (the {PLACEHOLDER} tokens in the
+Commands are example arguments — match their literal flags/keywords, e.g.
+'-urlcache', '-encode', '/transfer'). Skip benign default usage where you can.
 
 # Target schema
 

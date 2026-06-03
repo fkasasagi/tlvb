@@ -412,6 +412,8 @@ func buildLoaders(rulesRoot, sourceFilter string) ([]rulesrepo.Loader, error) {
 		func(p string) rulesrepo.Loader { return rulesrepo.NewHayabusaLoader(p) }, "hayabusa")
 	addIfExists(filepath.Join(rulesRoot, "stix", "mitre-attack", "enterprise-attack", "attack-pattern"),
 		func(p string) rulesrepo.Loader { return rulesrepo.NewSTIXLoader(p) }, "stix")
+	addIfExists(filepath.Join(rulesRoot, "lolbas", "upstream", "yml"),
+		func(p string) rulesrepo.Loader { return rulesrepo.NewLOLBASLoader(p) }, "lolbas")
 	return out, nil
 }
 
