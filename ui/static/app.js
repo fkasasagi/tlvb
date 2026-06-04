@@ -695,6 +695,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   setCrumbs([{ label: "Dashboard", href: "/" }, { label: caseID }]);
 
   let detail;
+  let staleFromCache = false;
   try {
     detail = await api("GET", `/api/cases/${encodeURIComponent(caseID)}`);
     caseDetailCache[caseID] = detail;
@@ -703,7 +704,9 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
       // A job holds the DB, but we have last-known case metadata: render the
       // page anyway so the tab bar, pipeline progress and disk-backed tabs
       // (Findings/Report/…) stay usable. DB-backed tabs show their own notice.
+      // Mark it stale so the header flags that counts are pre-job values.
       detail = caseDetailCache[caseID];
+      staleFromCache = true;
     } else if (e && e.busy) {
       // No cached metadata (first visit during a job) — minimal notice with a
       // Dashboard escape + auto-refresh, instead of a full-page dead-end.
@@ -715,7 +718,8 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
       throw e;
     }
   }
-  setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}`);
+  setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}` +
+    (staleFromCache ? " ⏳(処理開始前の値)" : ""));
 
   const app = $("#app");
   app.innerHTML = "";
@@ -726,6 +730,10 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
     h("div", { class: "row", style: "align-items: center;" }, [
       h("div", { style: "flex: 1;" }, [
         h("h1", {}, c.case_id + " — " + c.name),
+        staleFromCache ? h("span", {
+          class: "badge warn",
+          title: "別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。",
+        }, "⏳ 処理中（表示はジョブ開始前の値）") : null,
         h("div", { class: "muted" },
           `Examiner: ${c.examiner || "—"} · TZ: ${c.timezone || "UTC"} · Status: ${c.status || "active"} · Created: ${fmtTS(c.created_at)}`),
       ]),
