@@ -266,19 +266,30 @@ function showError(e) {
   toast(e.message || String(e), "error");
 }
 
+// Last-known case-detail payload per case id. When a job holds the DB, the
+// case route falls back to this so the page (tabs, progress, disk-backed tabs)
+// keeps rendering instead of collapsing to a full-page busy notice.
+let caseDetailCache = {};
+
 // busyNotice renders the "the DB is held by a running job" state. It exists so
 // a blocked read shows an explicit "processing — temporarily unavailable" card
 // (with a retry) rather than a spinner that looks frozen. onRetry re-runs the
 // current view; it auto-clears once the job releases the DB.
 function busyNotice(onRetry) {
+  // Auto-refresh so the view self-heals when the job releases the DB — the user
+  // never has to sit on a dead-end. A single timer per render forms one chain.
+  if (onRetry) setTimeout(onRetry, 3000);
   return h("div", { class: "card busy-notice" }, [
     h("h2", {}, "⏳ 処理中のため表示できません"),
     h("p", { class: "muted" },
       "別の処理 (Parse など) がケースのデータベースを使用中のため、この表示は一時的に参照できません。" +
-      "フリーズではありません — 処理が完了すると参照できるようになります。"),
+      "フリーズではありません — 完了すると自動で表示されます。"),
     h("p", { class: "muted" },
-      "Temporarily unavailable: a running job (e.g. Parse) holds the case database. This is by design, not a freeze."),
-    onRetry ? h("button", { class: "ghost", onclick: onRetry }, "再読み込み / Retry") : null,
+      "Temporarily unavailable: a running job (e.g. Parse) holds the case database. Auto-refreshing…"),
+    h("div", { class: "row", style: "gap: 8px; margin-top: 8px;" }, [
+      onRetry ? h("button", { class: "ghost", onclick: onRetry }, "今すぐ再読み込み / Retry") : null,
+      h("button", { class: "ghost", onclick: () => navigate("/") }, "← Dashboard へ戻る"),
+    ]),
   ]);
 }
 
@@ -303,7 +314,20 @@ function setMeta(text) { $("#topMeta").textContent = text || ""; }
 route(/^\/$/, async () => {
   setCrumbs([{ label: "Dashboard" }]);
   setMeta("");
-  const cases = await api("GET", "/api/cases");
+  let cases;
+  try {
+    cases = await api("GET", "/api/cases");
+  } catch (e) {
+    // The case list reads cases.duckdb, which a Parse holds exclusively. Show
+    // the auto-refreshing notice instead of an error so the Dashboard recovers.
+    if (e && e.busy) {
+      const app = $("#app");
+      app.innerHTML = "";
+      app.appendChild(busyNotice(() => dispatch()));
+      return;
+    }
+    throw e;
+  }
   const app = $("#app");
   app.innerHTML = "";
 
@@ -671,20 +695,31 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   setCrumbs([{ label: "Dashboard", href: "/" }, { label: caseID }]);
 
   let detail;
+  let staleFromCache = false;
   try {
     detail = await api("GET", `/api/cases/${encodeURIComponent(caseID)}`);
+    caseDetailCache[caseID] = detail;
   } catch (e) {
-    // DB held by a running job — show the "processing" notice (not a freeze)
-    // with a retry, instead of a full-page error.
-    if (e && e.busy) {
+    if (e && e.busy && caseDetailCache[caseID]) {
+      // A job holds the DB, but we have last-known case metadata: render the
+      // page anyway so the tab bar, pipeline progress and disk-backed tabs
+      // (Findings/Report/…) stay usable. DB-backed tabs show their own notice.
+      // Mark it stale so the header flags that counts are pre-job values.
+      detail = caseDetailCache[caseID];
+      staleFromCache = true;
+    } else if (e && e.busy) {
+      // No cached metadata (first visit during a job) — minimal notice with a
+      // Dashboard escape + auto-refresh, instead of a full-page dead-end.
       const app = $("#app");
       app.innerHTML = "";
       app.appendChild(busyNotice(() => dispatch()));
       return;
+    } else {
+      throw e;
     }
-    throw e;
   }
-  setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}`);
+  setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}` +
+    (staleFromCache ? " ⏳(処理開始前の値)" : ""));
 
   const app = $("#app");
   app.innerHTML = "";
@@ -695,6 +730,10 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
     h("div", { class: "row", style: "align-items: center;" }, [
       h("div", { style: "flex: 1;" }, [
         h("h1", {}, c.case_id + " — " + c.name),
+        staleFromCache ? h("span", {
+          class: "badge warn",
+          title: "別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。",
+        }, "⏳ 処理中（表示はジョブ開始前の値）") : null,
         h("div", { class: "muted" },
           `Examiner: ${c.examiner || "—"} · TZ: ${c.timezone || "UTC"} · Status: ${c.status || "active"} · Created: ${fmtTS(c.created_at)}`),
       ]),

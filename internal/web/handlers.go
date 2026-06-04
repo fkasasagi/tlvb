@@ -81,21 +81,31 @@ type caseSummary struct {
 }
 
 func (s *Server) handleListCases(w http.ResponseWriter, r *http.Request) {
+	// Fresh install: no DB yet means no cases (a read-only open would error).
+	if _, statErr := os.Stat(s.cfg.DBPath); os.IsNotExist(statErr) {
+		writeJSON(w, 200, []caseSummary{})
+		return
+	}
 	var rows []casedb.CaseRow
-	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+	// Read-only so the Dashboard stays reachable (busy, not hung) while a Parse
+	// holds the DB — listing is the user's escape hatch out of a busy case view.
+	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 		var ierr error
 		rows, ierr = m.ListCases(r.Context())
 		return ierr
 	})
 	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
 		writeError(w, 500, "list cases: %v", err)
 		return
 	}
 	out := make([]caseSummary, 0, len(rows))
 	for _, c := range rows {
 		summary := caseSummary{CaseRow: c}
-		// Best-effort enrich; ignore individual-case errors.
-		_ = s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+		// Best-effort enrich; ignore individual-case errors (incl. ErrDBBusy).
+		_ = s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 			st, err := m.GetCaseStatus(r.Context(), c.CaseID)
 			if err == nil && st != nil {
 				summary.EvidenceCount = st.EvidenceCount
