@@ -107,9 +107,31 @@ FIXTURE = [
     ("taskmasq_neg_nonsysproc", "scheduled_tasks",  # user-writable path but not a system-proc name
      {"task_name": "MyApp/Update",
       "actions": [{"type": "Exec", "command": r"C:\Users\u\AppData\Local\MyApp\update.exe"}]}),
+    # --- scheduled task running hidden/encoded PowerShell ---
+    ("taskps_pos", "scheduled_tasks",
+     {"task_name": "Microsoft/Windows/WindowsUpdate/SysCheck",
+      "actions": [{"type": "Exec", "command": "powershell.exe",
+                   "arguments": "-nop -w hidden -c Get-ComputerInfo"}]}),
+    ("taskps_neg_normalps", "scheduled_tasks",  # PowerShell but no hidden/encoded flags
+     {"task_name": "Vendor/Maintenance",
+      "actions": [{"type": "Exec", "command": "powershell.exe",
+                   "arguments": "-File C:\\Program Files\\Vendor\\maint.ps1"}]}),
+    ("taskps_neg_notps", "scheduled_tasks",  # hidden flag text but not a PowerShell action
+     {"task_name": "Other/Task",
+      "actions": [{"type": "Exec", "command": r"%windir%\system32\cmd.exe",
+                   "arguments": "/c echo -w hidden"}]}),
+    # --- NTDS.dit copied to a user-writable path (domain-DB theft) ---
+    ("ntds_pos", "mft",
+     {"FileName": "ntds.dit", "ParentPath": r".\Users\taro.yamada\AppData\Roaming\sysupdate"}),
+    ("ntds_neg_legit", "mft",  # the real DC database location
+     {"FileName": "ntds.dit", "ParentPath": r".\Windows\NTDS"}),
+    ("ntds_neg_winsxs", "mft",  # the install template under WinSxS
+     {"FileName": "ntds.dit", "ParentPath": r".\Windows\WinSxS\amd64_microsoft-windows-d..rvices-domain-files"}),
 ]
 
 EXPECTED = {
+    "tlvb-ntds-dit-exfil-writable-path": {"ntds_pos"},
+    "tlvb-scheduled-task-hidden-powershell": {"taskps_pos"},
     "tlvb-scheduled-task-system-process-masquerade": {"taskmasq_pos"},
     "tlvb-powershell-c2-reserved-tld": {"psc2_pos"},
     "tlvb-exec-from-world-writable-path": {"exec_pos_public"},
