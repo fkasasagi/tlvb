@@ -44,8 +44,8 @@ type Server struct {
 	cfg     Config
 	mux     *http.ServeMux
 	jobs    *JobsManager
-	dbMu    sync.Mutex // serialises every casedb.Open call to avoid file-lock fights with async jobs
-	rulesMu sync.Mutex // serialises rules.duckdb opens (separate file from cases.duckdb)
+	dbMu    sync.RWMutex // guards casedb.Open: writers (parse, mutations) take Lock; read-only opens take RLock so Events/case-detail stay usable while a read-only job (Analyze/Synthesize) runs
+	rulesMu sync.Mutex   // serialises rules.duckdb opens (separate file from cases.duckdb)
 	logger  *slog.Logger
 }
 
@@ -248,6 +248,20 @@ func writeError(w http.ResponseWriter, code int, format string, args ...any) {
 	})
 }
 
+// writeIfDBBusy returns true (after writing a 503 + busy:true response) when err
+// is ErrDBBusy — i.e. a job holds the case DB. Read handlers call it before
+// their normal error path so the UI can show "processing, not frozen".
+func writeIfDBBusy(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, ErrDBBusy) {
+		writeJSON(w, 503, map[string]any{
+			"error": "処理中のためデータベースを参照できません",
+			"busy":  true,
+		})
+		return true
+	}
+	return false
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -261,9 +275,28 @@ func decodeJSON(r *http.Request, dst any) error {
 
 // withDB acquires the global DB mutex, opens a fresh casedb.Manager,
 // invokes fn, and tears down. Any returned error becomes a 500 JSON.
+// ErrDBBusy is returned by a read-only withDB when the case DB is exclusively
+// held by a job (Parse holds it read-write via its orchestrator subprocess, and
+// case mutations take the write lock). Read handlers map it to HTTP 503 so the
+// UI can say "busy" instead of hanging — the request fails fast rather than
+// blocking until the job finishes.
+var ErrDBBusy = errors.New("case database is busy: a job is using it")
+
 func (s *Server) withDB(mode casedb.Mode, fn func(m *casedb.Manager) error) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
+	// Read-only opens share the lock so several can run at once (and alongside a
+	// read-only Analyze/Synthesize job); only a writer needs exclusivity. DuckDB
+	// permits concurrent access_mode=read_only connections to the same file.
+	// A read uses TryRLock so it returns ErrDBBusy immediately while a writer
+	// (Parse / mutation) holds the lock, rather than blocking the HTTP handler.
+	if mode == casedb.ReadOnly {
+		if !s.dbMu.TryRLock() {
+			return ErrDBBusy
+		}
+		defer s.dbMu.RUnlock()
+	} else {
+		s.dbMu.Lock()
+		defer s.dbMu.Unlock()
+	}
 	m, err := casedb.Open(s.cfg.DBPath, mode)
 	if err != nil {
 		return fmt.Errorf("open casedb: %w", err)

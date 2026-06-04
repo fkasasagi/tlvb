@@ -152,12 +152,18 @@ func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCase(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var st *casedb.CaseStatus
-	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+	// Read-only: GetCaseStatus only SELECTs, and a read lock lets case-detail
+	// polling keep working while a read-only Analyze/Synthesize job runs (a
+	// ReadWrite open here would take the exclusive lock and re-block readers).
+	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 		var ierr error
 		st, ierr = m.GetCaseStatus(r.Context(), id)
 		return ierr
 	})
 	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
 		writeError(w, 404, "%v", err)
 		return
 	}
@@ -620,8 +626,11 @@ func (s *Server) handleStartAnalyzeAll(w http.ResponseWriter, r *http.Request) {
 	// agents `tlvb run` drives. Writes findings/by-rule/** and
 	// findings/by-skill/**, which is what the migrated Tier 2 synthesize reads.
 	st := s.jobs.StartWithReporter(id, JobAnalyze, "all", func(ctx context.Context, rep *Reporter) (string, error) {
-		dbMu.Lock()
-		defer dbMu.Unlock()
+		// Analyze opens the case DB read-only (Tier 1A/1B read unified_events,
+		// write findings to disk), so take a read lock — Events / case-detail
+		// reads run concurrently. A writer (parse / delete) still blocks.
+		dbMu.RLock()
+		defer dbMu.RUnlock()
 
 		findingsBase := filepath.Join(root, caseID, "findings")
 
@@ -733,8 +742,9 @@ func (s *Server) handleStartAnalyzeOne(w http.ResponseWriter, r *http.Request) {
 	}
 
 	st := s.jobs.Start(id, JobAnalyze, tactic, func(ctx context.Context, progress func(string)) (string, error) {
-		dbMu.Lock()
-		defer dbMu.Unlock()
+		// Read-only analyze (see Analyze-all): share the lock so reads stay live.
+		dbMu.RLock()
+		defer dbMu.RUnlock()
 
 		progress(fmt.Sprintf("running tactic %s", tactic))
 		evIDs, err := allEvidenceIDs(ctx, dbPath, caseID)
@@ -792,8 +802,9 @@ func (s *Server) handleStartAnalyzeArtifact(w http.ResponseWriter, r *http.Reque
 
 	subkind := "artifact=" + artifact
 	st := s.jobs.StartWithReporter(id, JobAnalyze, subkind, func(ctx context.Context, rep *Reporter) (string, error) {
-		dbMu.Lock()
-		defer dbMu.Unlock()
+		// Read-only analyze (see Analyze-all): share the lock so reads stay live.
+		dbMu.RLock()
+		defer dbMu.RUnlock()
 
 		evIDs, err := allEvidenceIDs(ctx, dbPath, caseID)
 		if err != nil {
@@ -989,8 +1000,10 @@ func (s *Server) handleStartSynthesize(w http.ResponseWriter, r *http.Request) {
 	activeSearch := req.ActiveSearch
 
 	st := s.jobs.Start(id, JobSynthesize, fmt.Sprintf("active_search=%v", activeSearch), func(ctx context.Context, progress func(string)) (string, error) {
-		dbMu.Lock()
-		defer dbMu.Unlock()
+		// Tier 2 opens the case DB read-only (access_mode=read_only); take a read
+		// lock so Events / case-detail reads run concurrently with synthesis.
+		dbMu.RLock()
+		defer dbMu.RUnlock()
 
 		// Tier 2 (Timeline Analysis Agent) — same pipeline the CLI `tlvb run`
 		// drives. Active search adds a hypothesis-driven wide-range SQL pass
@@ -1307,6 +1320,9 @@ func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 		return ierr
 	})
 	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
 		writeError(w, 500, "query events: %v", err)
 		return
 	}
