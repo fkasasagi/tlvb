@@ -31,10 +31,15 @@ import re
 MFT_RE = re.compile(r"^(?:[A-Za-z]_)?\$MFT$", re.IGNORECASE)
 
 # `$J` with optional drive prefix and optional `$UsnJrnl-`/`$UsnJrnl_` middle.
+# The `$J` is the alternate data stream of `$Extend\$UsnJrnl`; collectors render
+# that `:$J` separator differently — some keep the `$` (`$UsnJrnl-$J`,
+# `$UsnJrnl_$J`), others drop it (`$UsnJrnl_J`, seen from the WINDEV triage
+# collector), so the `$` before the final `J` is optional in the prefixed form.
 # Also accepts the legacy `USNJournal__J` convention that older Velociraptor
-# artifact packs emitted.
+# artifact packs emitted. A bare `J` (no `$` and no `$UsnJrnl` prefix) is
+# intentionally NOT matched, to avoid grabbing unrelated single-letter files.
 USN_J_RE = re.compile(
-    r"^(?:[A-Za-z]_)?(?:\$UsnJrnl[-_])?\$J$|^USNJournal__J$",
+    r"^(?:[A-Za-z]_)?(?:\$UsnJrnl[-_]\$?J|\$J)$|^USNJournal__J$",
     re.IGNORECASE,
 )
 

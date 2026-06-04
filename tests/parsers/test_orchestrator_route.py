@@ -168,6 +168,13 @@ def test_usn_detected_with_drive_prefix(tmp_path):
     assert "usn_journal" in _ids(orchestrator.detect(tmp_path))
 
 
+def test_usn_detected_dollarless_j_suffix(tmp_path):
+    # WINDEV triage collector renders the `$UsnJrnl:$J` ADS as `$UsnJrnl_J`
+    # (no `$` before the final J). Must still route to usn_journal.
+    (tmp_path / "$UsnJrnl_J").write_bytes(b"")
+    assert "usn_journal" in _ids(orchestrator.detect(tmp_path))
+
+
 def test_usn_detected_legacy_alt_name(tmp_path):
     (tmp_path / "USNJournal__J").write_bytes(b"")
     assert "usn_journal" in _ids(orchestrator.detect(tmp_path))
