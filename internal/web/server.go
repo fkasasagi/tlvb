@@ -45,7 +45,7 @@ type Server struct {
 	mux     *http.ServeMux
 	jobs    *JobsManager
 	dbMu    sync.RWMutex // guards casedb.Open: writers (parse, mutations) take Lock; read-only opens take RLock so Events/case-detail stay usable while a read-only job (Analyze/Synthesize) runs
-	rulesMu sync.Mutex // serialises rules.duckdb opens (separate file from cases.duckdb)
+	rulesMu sync.Mutex   // serialises rules.duckdb opens (separate file from cases.duckdb)
 	logger  *slog.Logger
 }
 
