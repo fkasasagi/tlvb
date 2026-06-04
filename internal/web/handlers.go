@@ -161,6 +161,9 @@ func (s *Server) handleGetCase(w http.ResponseWriter, r *http.Request) {
 		return ierr
 	})
 	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
 		writeError(w, 404, "%v", err)
 		return
 	}
@@ -1317,6 +1320,9 @@ func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 		return ierr
 	})
 	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
 		writeError(w, 500, "query events: %v", err)
 		return
 	}

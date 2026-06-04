@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -90,5 +93,50 @@ func TestWithDBWriterWaitsForReaders(t *testing.T) {
 	case <-writerDone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("writer never completed after the reader released")
+	}
+}
+
+// A read must fail fast with ErrDBBusy (not block) while a writer holds the
+// lock — that is what lets the HTTP layer answer "processing" instead of hanging.
+func TestWithDBReadOnlyReturnsBusyUnderWriter(t *testing.T) {
+	s := newDBServer(t)
+	writerIn := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = s.withDB(casedb.ReadWrite, func(*casedb.Manager) error {
+			close(writerIn)
+			<-release
+			return nil
+		})
+	}()
+	<-writerIn
+	err := s.withDB(casedb.ReadOnly, func(*casedb.Manager) error { return nil })
+	if err == nil || err.Error() != ErrDBBusy.Error() {
+		t.Fatalf("want ErrDBBusy while writer holds lock, got %v", err)
+	}
+	close(release)
+}
+
+// End-to-end of the busy contract: while a job holds the write lock, the Events
+// handler answers 503 + busy:true (the UI cue) rather than hanging or 500.
+func TestEventsHandlerReturns503BusyUnderWriter(t *testing.T) {
+	s := newDBServer(t)
+	s.dbMu.Lock() // stand in for a Parse/mutation job holding the case DB
+	defer s.dbMu.Unlock()
+
+	req := httptest.NewRequest("GET", "/api/cases/C1/events", nil)
+	req.SetPathValue("id", "C1")
+	w := httptest.NewRecorder()
+	s.handleQueryEvents(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d (%s)", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["busy"] != true {
+		t.Fatalf("want busy:true, got %v", body)
 	}
 }

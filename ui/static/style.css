@@ -964,3 +964,12 @@ details[open] > .rule-summary::before { content: "▾"; }
 .badge.state-rule-pending { background: #2a3556; color: var(--pending); }
 .badge.state-rule-failed  { background: #3a1e1e; color: var(--conf-high); }
 .badge.source-rule { background: #1e2c44; color: #8ec5ff; }
+
+/* "Processing — DB held by a job" notice (busyNotice in app.js). A left accent
+   bar marks it apart from a generic card / error so the examiner reads it as a
+   transient by-design state, not a frozen view. */
+.busy-notice {
+  border-left: 4px solid var(--warn, #d8a200);
+}
+.busy-notice h2 { margin-top: 0; }
+.busy-notice button { margin-top: 8px; }

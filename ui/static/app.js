@@ -175,12 +175,17 @@ async function api(method, path, body) {
   const ct = r.headers.get("content-type") || "";
   if (!r.ok) {
     let msg = r.status + " " + r.statusText;
+    let busy = false;
     if (ct.includes("application/json")) {
-      try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+      try { const j = await r.json(); if (j.error) msg = j.error; if (j.busy) busy = true; } catch (_) {}
     } else {
       try { msg = (await r.text()).slice(0, 200) || msg; } catch (_) {}
     }
-    throw new Error(msg);
+    const err = new Error(msg);
+    // 503 + busy:true — the case DB is held by a running job (Parse / mutation),
+    // not a real failure. Callers render a "processing" notice instead of an error.
+    if (busy || r.status === 503) err.busy = true;
+    throw err;
   }
   if (ct.includes("application/json")) return r.json();
   return r.text();
@@ -259,6 +264,22 @@ function showError(e) {
     h("pre", { class: "muted" }, e.message || String(e)),
   ]));
   toast(e.message || String(e), "error");
+}
+
+// busyNotice renders the "the DB is held by a running job" state. It exists so
+// a blocked read shows an explicit "processing — temporarily unavailable" card
+// (with a retry) rather than a spinner that looks frozen. onRetry re-runs the
+// current view; it auto-clears once the job releases the DB.
+function busyNotice(onRetry) {
+  return h("div", { class: "card busy-notice" }, [
+    h("h2", {}, "⏳ 処理中のため表示できません"),
+    h("p", { class: "muted" },
+      "別の処理 (Parse など) がケースのデータベースを使用中のため、この表示は一時的に参照できません。" +
+      "フリーズではありません — 処理が完了すると参照できるようになります。"),
+    h("p", { class: "muted" },
+      "Temporarily unavailable: a running job (e.g. Parse) holds the case database. This is by design, not a freeze."),
+    onRetry ? h("button", { class: "ghost", onclick: onRetry }, "再読み込み / Retry") : null,
+  ]);
 }
 
 function navigate(p) { window.location.hash = "#" + p; }
@@ -649,7 +670,20 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   const tab = params.tab || "findings";
   setCrumbs([{ label: "Dashboard", href: "/" }, { label: caseID }]);
 
-  const detail = await api("GET", `/api/cases/${encodeURIComponent(caseID)}`);
+  let detail;
+  try {
+    detail = await api("GET", `/api/cases/${encodeURIComponent(caseID)}`);
+  } catch (e) {
+    // DB held by a running job — show the "processing" notice (not a freeze)
+    // with a retry, instead of a full-page error.
+    if (e && e.busy) {
+      const app = $("#app");
+      app.innerHTML = "";
+      app.appendChild(busyNotice(() => dispatch()));
+      return;
+    }
+    throw e;
+  }
   setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}`);
 
   const app = $("#app");
@@ -746,16 +780,28 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   const tabPane = h("div", { id: "tabpane" });
   app.appendChild(tabPane);
 
-  switch (tab) {
-    case "status":     await renderStatus(tabPane, caseID); break;
-    case "events":     await renderEvents(tabPane, caseID, detail); break;
-    case "findings":   await renderFindings(tabPane, caseID); break;
-    case "timeline":   await renderTimeline(tabPane, caseID); break;
-    case "iocs":       await renderIOCs(tabPane, caseID); break;
-    case "mitre":      await renderMITRE(tabPane, caseID); break;
-    case "report":     await renderReport(tabPane, caseID); break;
-    case "audit":      await renderAudit(tabPane, caseID); break;
-    default:           tabPane.innerHTML = `<div class="empty">Unknown tab: ${escapeHTML(tab)}</div>`;
+  try {
+    switch (tab) {
+      case "status":     await renderStatus(tabPane, caseID); break;
+      case "events":     await renderEvents(tabPane, caseID, detail); break;
+      case "findings":   await renderFindings(tabPane, caseID); break;
+      case "timeline":   await renderTimeline(tabPane, caseID); break;
+      case "iocs":       await renderIOCs(tabPane, caseID); break;
+      case "mitre":      await renderMITRE(tabPane, caseID); break;
+      case "report":     await renderReport(tabPane, caseID); break;
+      case "audit":      await renderAudit(tabPane, caseID); break;
+      default:           tabPane.innerHTML = `<div class="empty">Unknown tab: ${escapeHTML(tab)}</div>`;
+    }
+  } catch (e) {
+    // A DB-backed tab (e.g. Events) can't read while a job holds the DB. Show
+    // the "processing" notice in the pane — the tab bar and pipeline progress
+    // above it stay live. Findings/Report read from disk and never hit this.
+    if (e && e.busy) {
+      tabPane.innerHTML = "";
+      tabPane.appendChild(busyNotice(() => dispatch()));
+    } else {
+      throw e;
+    }
   }
 });
 
