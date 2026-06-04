@@ -967,7 +967,7 @@ function renderProgressBlock(block, st) {
       block.appendChild(h("div", { class: "progress-meta" },
         "elapsed " + fmtDuration(st.elapsed_seconds)));
     }
-  } else if (st.state === "succeeded") {
+  } else if (st.state === "succeeded" || st.state === "partial") {
     if (st.elapsed_seconds > 0) {
       block.appendChild(h("div", { class: "progress-meta" },
         "took " + fmtDuration(st.elapsed_seconds)));
@@ -992,6 +992,10 @@ function pipelineLabel(st) {
     return (st.progress ? `running · ${st.progress}` : "running");
   }
   if (st.state === "succeeded") return "ok · " + (st.message || "done");
+  // Partial = the step completed and produced usable output, but some
+  // sub-units failed (e.g. some artifacts didn't parse). A warning, not a
+  // red FAIL — the detail rides in st.message.
+  if (st.state === "partial")   return "PARTIAL · " + (st.message || "一部のアーティファクトのパースでエラー");
   if (st.state === "failed")    return "FAIL · " + (st.error || "see logs");
   if (st.state === "canceled")  return "canceled · " + (st.message || "by examiner");
   return st.state;
@@ -1408,6 +1412,10 @@ async function waitForJob(caseID, kind) {
       throw new Error(`${kind} status fetch failed: ${e.message}`);
     }
     if (st.state === "succeeded") return st;
+    // Partial is a terminal success for flow control: usable output exists,
+    // so the chain (e.g. autopilot parse → analyze) proceeds. The warning is
+    // already surfaced in the per-step status block.
+    if (st.state === "partial")  return st;
     if (st.state === "failed")   throw new Error(`${kind} failed: ${st.error || st.message || "(no detail)"}`);
     if (st.state === "canceled") throw new Error(`${kind} canceled by examiner`);
     // idle is fine briefly right after POST; running is the expected hot state.
@@ -2411,6 +2419,7 @@ function mergeSummaryIntoPhaseResults(results, sum) {
 function statusPhaseBadgeClass(state) {
   if (state === "running")   return "badge warn";
   if (state === "succeeded") return "badge ok";
+  if (state === "partial")   return "badge warn";
   if (state === "failed")    return "badge err";
   if (state === "canceled")  return "badge missing";
   return "badge missing";  // idle
@@ -2419,6 +2428,7 @@ function statusPhaseBadgeClass(state) {
 function statusPhaseSymbol(state) {
   if (state === "running")   return "▶";
   if (state === "succeeded") return "✓";
+  if (state === "partial")   return "⚠";
   if (state === "failed")    return "✗";
   if (state === "canceled")  return "⊘";
   return "·";  // idle
