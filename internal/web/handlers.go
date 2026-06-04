@@ -349,6 +349,7 @@ func (s *Server) handleStartParse(w http.ResponseWriter, r *http.Request) {
 		// as Analyze All. Tier 1 (Analyze) only proceeds for evidences
 		// that succeeded here.
 		ok, failed := []string{}, []string{}
+		var partial []string // per-evidence "some artifacts failed but data was ingested" notes
 		var firstErr error
 		total := len(evidences)
 		for i, ev := range evidences {
@@ -356,7 +357,7 @@ func (s *Server) handleStartParse(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("evidence %d/%d: %s", i+1, total, ev.EvidenceID),
 				i, total, 0,
 			)
-			err := s.parseOneEvidence(ctx, rep, caseID, ev.EvidenceID, ev.EvidencePath, dbPath, i+1, total, mode, imgFmt)
+			artSucceeded, artFailed, err := s.parseOneEvidence(ctx, rep, caseID, ev.EvidenceID, ev.EvidencePath, dbPath, i+1, total, mode, imgFmt)
 			if err != nil {
 				failed = append(failed, fmt.Sprintf("%s: %v", ev.EvidenceID, err))
 				if firstErr == nil {
@@ -365,6 +366,13 @@ func (s *Server) handleStartParse(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			ok = append(ok, ev.EvidenceID)
+			// Graceful degradation: the orchestrator exited non-zero because
+			// some artifacts failed, but events were still ingested. Don't
+			// flag the whole job red — note it as a partial result.
+			if artFailed > 0 {
+				partial = append(partial, fmt.Sprintf("%s: %d/%d artifacts failed",
+					ev.EvidenceID, artFailed, artSucceeded+artFailed))
+			}
 		}
 		rep.SetAll(
 			fmt.Sprintf("done %d/%d evidences (%d ok, %d failed)", total, total, len(ok), len(failed)),
@@ -375,6 +383,11 @@ func (s *Server) handleStartParse(w http.ResponseWriter, r *http.Request) {
 		if len(failed) > 0 {
 			return msg, fmt.Errorf("some evidences failed: %s", strings.Join(failed, "; "))
 		}
+		// No hard failures, but some artifacts within otherwise-successful
+		// evidences failed to parse → partial (warning, not FAIL).
+		if len(partial) > 0 {
+			return msg, &partialError{msg: "一部のアーティファクトのパースでエラー — " + strings.Join(partial, "; ")}
+		}
 		return msg, nil
 	})
 	writeJSON(w, 202, st)
@@ -384,38 +397,42 @@ func (s *Server) handleStartParse(w http.ResponseWriter, r *http.Request) {
 // and tails its PROGRESS|<json> stderr stream into the Reporter so the UI
 // shows per-artifact progress within the current evidence.
 //
-// Returns nil on success, or an error with the stderr tail attached.
-// The caller (handleStartParse) accumulates ok/failed lists for graceful
-// degradation across multiple evidences.
+// Returns (artifactSucceeded, artifactFailed, err). A nil err means the
+// evidence is usable: either the orchestrator exited 0, OR it exited
+// non-zero but at least one artifact parsed and its events were ingested
+// (partial success — artifactFailed > 0). A non-nil err is a hard failure
+// (couldn't run, nothing parsed, structural error) and aborts this evidence.
+// The caller (handleStartParse) uses the counts to classify the job as
+// succeeded / partial / failed.
 func (s *Server) parseOneEvidence(
 	ctx context.Context, rep *Reporter,
 	caseID, evID, evPath, dbPath string,
 	evIdx, evTotal int,
 	inputMode, imageFormat string,
-) error {
+) (artifactSucceeded, artifactFailed int, retErr error) {
 	rep.Text(fmt.Sprintf("evidence %d/%d (%s): registering", evIdx, evTotal, evID))
 	abs, err := filepath.Abs(evPath)
 	if err != nil {
-		return fmt.Errorf("resolve path: %w", err)
+		return 0, 0, fmt.Errorf("resolve path: %w", err)
 	}
 	stInfo, err := os.Stat(abs)
 	if err != nil {
-		return fmt.Errorf("evidence path: %w", err)
+		return 0, 0, fmt.Errorf("evidence path: %w", err)
 	}
 	// Issue #23: validate the declared input mode matches the file shape
 	// the operator pointed us at. Auto-detect mode skips this check.
 	if inputMode == "image" && stInfo.IsDir() {
-		return fmt.Errorf("input_mode=image requires a file, got directory: %s", abs)
+		return 0, 0, fmt.Errorf("input_mode=image requires a file, got directory: %s", abs)
 	}
 	if (inputMode == "cdir" || inputMode == "washizukami") && !stInfo.IsDir() {
 		// .zip is permitted because stage_input unpacks it transparently.
 		if !strings.HasSuffix(strings.ToLower(abs), ".zip") {
-			return fmt.Errorf("input_mode=%s requires a directory or .zip, got file: %s", inputMode, abs)
+			return 0, 0, fmt.Errorf("input_mode=%s requires a directory or .zip, got file: %s", inputMode, abs)
 		}
 	}
 	mgr, err := casedb.Open(dbPath, casedb.ReadWrite)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	// Wave 16: surface RegisterEvidence errors instead of dropping them.
 	// Previously the error was swallowed with `_ = ...`, which masked PK
@@ -434,7 +451,7 @@ func (s *Server) parseOneEvidence(
 		RegisteredAt: time.Now().UTC(),
 	}); err != nil {
 		_ = mgr.Close()
-		return fmt.Errorf("register evidence %s under case %s: %w", evID, caseID, err)
+		return 0, 0, fmt.Errorf("register evidence %s under case %s: %w", evID, caseID, err)
 	}
 	_ = mgr.Close()
 
@@ -451,12 +468,23 @@ func (s *Server) parseOneEvidence(
 		}
 		_ = mgr2.Close()
 	}
+	// Capture the orchestrator's JSON report (artifact_succeeded /
+	// artifact_failed) so we can tell a partial parse (some artifacts failed
+	// but events were ingested) from a total failure. Without it we'd only
+	// see the exit code (0 vs 2) and have to call any failure a hard FAIL.
+	reportFile, rfErr := os.CreateTemp("", "tlvb-parse-report-*.json")
+	reportPath := "/dev/null"
+	if rfErr == nil {
+		reportPath = reportFile.Name()
+		_ = reportFile.Close()
+		defer os.Remove(reportPath)
+	}
 	argv := []string{
 		"-m", "parsers.orchestrator",
 		"--case-id", caseID, "--evidence-id", evID,
 		"--input", abs, "--db", dbPath, "--workspace", ws,
 		"--timezone", caseTZ,
-		"--report-json", "/dev/null",
+		"--report-json", reportPath,
 		"--progress",
 	}
 	// Issue #23: when the operator explicitly declares the input shape,
@@ -473,10 +501,10 @@ func (s *Server) parseOneEvidence(
 	cmd.Stdout = &sb
 	stderrPipe, perr := cmd.StderrPipe()
 	if perr != nil {
-		return fmt.Errorf("stderr pipe: %w", perr)
+		return 0, 0, fmt.Errorf("stderr pipe: %w", perr)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start orchestrator: %w", err)
+		return 0, 0, fmt.Errorf("start orchestrator: %w", err)
 	}
 	parseStart := time.Now()
 	var parserDurations time.Duration
@@ -503,14 +531,52 @@ func (s *Server) parseOneEvidence(
 		}
 	}()
 	<-readDone
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+
+	// Best-effort read of the orchestrator's report (post-merge artifact
+	// counts). Available regardless of exit code.
+	succeeded, failed, haveReport := readParseReport(reportPath)
+
+	if waitErr != nil {
 		tail := sb.String()
 		if len(tail) > 2000 {
 			tail = "...[truncated]\n" + tail[len(tail)-2000:]
 		}
-		return fmt.Errorf("orchestrator: %w\n%s", err, tail)
+		// Graceful degradation: the orchestrator exits non-zero whenever any
+		// artifact failed (orchestrator.py returns 2 if artifact_failed > 0).
+		// If at least one artifact still parsed and we could read the report,
+		// treat it as a *partial* success — events were ingested, so the case
+		// is usable. The caller turns this into a "partial" job state (warning)
+		// rather than a hard FAIL. Only a run that produced nothing usable
+		// (no report, or zero successful artifacts) is a hard failure.
+		if haveReport && succeeded > 0 {
+			return succeeded, failed, nil
+		}
+		return succeeded, failed, fmt.Errorf("orchestrator: %w\n%s", waitErr, tail)
 	}
-	return nil
+	return succeeded, failed, nil
+}
+
+// readParseReport reads the orchestrator's --report-json output and returns
+// the post-merge artifact-level counts. ok=false means the report was
+// missing or unparseable (e.g. /dev/null fallback, or the orchestrator
+// crashed before writing it).
+func readParseReport(path string) (succeeded, failed int, ok bool) {
+	if path == "" || path == "/dev/null" {
+		return 0, 0, false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	var rep struct {
+		ArtifactSucceeded int `json:"artifact_succeeded"`
+		ArtifactFailed    int `json:"artifact_failed"`
+	}
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return 0, 0, false
+	}
+	return rep.ArtifactSucceeded, rep.ArtifactFailed, true
 }
 
 func (s *Server) handleParseStatus(w http.ResponseWriter, r *http.Request) {

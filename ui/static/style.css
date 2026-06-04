@@ -216,15 +216,18 @@ h3 { font-size: 13px; color: #c0d0e8; }
 }
 .progress-block.running   .progress-text { color: var(--conf-medium); }
 .progress-block.succeeded .progress-text { color: var(--approved); }
+.progress-block.partial   .progress-text { color: var(--conf-medium); }
 .progress-block.failed    .progress-text { color: var(--conf-high); }
 .progress-block.canceled  .progress-text { color: var(--muted); font-style: italic; }
 .progress-block.canceled  .progress-bar-fill { background: var(--muted); }
+.progress-block.partial   .progress-bar-fill { background: var(--conf-medium); }
 
 /* Issue #2 + 2026-05-16: 「最終状態」(succeeded / failed / canceled) の
    テキストは結果サマリ情報なので途切れさせない。multi-line wrap + 必要な
    ら scroll を許可。running / idle は遷移途中の短文なので ellipsis のまま
    コンパクトにしておく。 */
 .progress-block.succeeded .progress-text,
+.progress-block.partial   .progress-text,
 .progress-block.canceled  .progress-text {
   white-space: normal;
   overflow: auto;

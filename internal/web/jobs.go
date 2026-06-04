@@ -2,9 +2,21 @@ package web
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
+
+// partialError signals a job that completed with partial success — some
+// sub-units failed but usable output was still produced (e.g. 20 of 21
+// artifacts parsed and their events were ingested). The job goroutine maps
+// it to State="partial" (a warning) rather than State="failed" (a hard
+// error), so the UI can distinguish "mostly worked" from "nothing worked".
+// This mirrors the project's graceful-degradation principle: one failed
+// sub-unit must not flip the whole step to a red FAIL.
+type partialError struct{ msg string }
+
+func (e *partialError) Error() string { return e.msg }
 
 // JobKind names a long-running pipeline step. One in-flight job per
 // (caseID, kind) is allowed; trying to start a duplicate returns the
@@ -23,7 +35,7 @@ const (
 type JobStatus struct {
 	CaseID     string    `json:"case_id"`
 	Kind       JobKind   `json:"kind"`
-	State      string    `json:"state"` // idle | running | succeeded | failed
+	State      string    `json:"state"` // idle | running | succeeded | partial | failed | canceled
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 	Message    string    `json:"message,omitempty"`
@@ -209,10 +221,20 @@ func (m *JobsManager) StartWithReporter(
 		// (Issue #8). When the parent ctx is canceled, fn typically
 		// returns ctx.Err() ("context canceled") or wraps it; either
 		// way, ctx.Err() != nil tells us the cancel button was the cause.
+		var pErr *partialError
 		if err != nil && ctx.Err() != nil {
 			entry.status.State = "canceled"
 			entry.status.Error = "" // not a failure, examiner-initiated
 			entry.status.Message = "canceled by examiner"
+		} else if errors.As(err, &pErr) {
+			// Partial success: the step finished and produced usable output,
+			// but some sub-units failed. Surface it as a warning (not red
+			// FAIL) and carry the detail in Message rather than Error.
+			entry.status.State = "partial"
+			entry.status.Message = pErr.msg
+			if entry.status.Total > 0 {
+				entry.status.Current = entry.status.Total
+			}
 		} else if err != nil {
 			entry.status.State = "failed"
 			entry.status.Error = err.Error()
