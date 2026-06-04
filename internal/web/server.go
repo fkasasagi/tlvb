@@ -44,7 +44,7 @@ type Server struct {
 	cfg     Config
 	mux     *http.ServeMux
 	jobs    *JobsManager
-	dbMu    sync.Mutex // serialises every casedb.Open call to avoid file-lock fights with async jobs
+	dbMu    sync.RWMutex // guards casedb.Open: writers (parse, mutations) take Lock; read-only opens take RLock so Events/case-detail stay usable while a read-only job (Analyze/Synthesize) runs
 	rulesMu sync.Mutex // serialises rules.duckdb opens (separate file from cases.duckdb)
 	logger  *slog.Logger
 }
@@ -262,8 +262,16 @@ func decodeJSON(r *http.Request, dst any) error {
 // withDB acquires the global DB mutex, opens a fresh casedb.Manager,
 // invokes fn, and tears down. Any returned error becomes a 500 JSON.
 func (s *Server) withDB(mode casedb.Mode, fn func(m *casedb.Manager) error) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
+	// Read-only opens share the lock so several can run at once (and alongside a
+	// read-only Analyze/Synthesize job); only a writer needs exclusivity. DuckDB
+	// permits concurrent access_mode=read_only connections to the same file.
+	if mode == casedb.ReadOnly {
+		s.dbMu.RLock()
+		defer s.dbMu.RUnlock()
+	} else {
+		s.dbMu.Lock()
+		defer s.dbMu.Unlock()
+	}
 	m, err := casedb.Open(s.cfg.DBPath, mode)
 	if err != nil {
 		return fmt.Errorf("open casedb: %w", err)
