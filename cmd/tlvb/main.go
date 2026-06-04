@@ -114,6 +114,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "status: %v\n", err)
 			os.Exit(1)
 		}
+	case "completeness":
+		// Detection-input gap report (data gap vs detection miss).
+		if err := runCompleteness(args); err != nil {
+			fmt.Fprintf(os.Stderr, "completeness: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -146,6 +152,7 @@ Usage:
   tlvb rules build [--dry-run] [--budget-yen N] [--max-rules N] [--source sigma|hayabusa|stix] [--force]
   tlvb rules list  [--source sigma|hayabusa|stix] [--state pending|built|failed] [--show-sql]
   tlvb status CASE_ID [-v]                                                   # case state inspector
+  tlvb completeness CASE_ID                                                  # detection-input gap report (data gap vs miss)
   tlvb version
 
 Run 'tlvb <subcommand> -h' for subcommand options.
