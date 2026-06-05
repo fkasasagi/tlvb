@@ -104,14 +104,22 @@ func EnrichTimestamps(ctx context.Context, db *sql.DB, caseID string, findings [
 	return findings, nil
 }
 
-// ClusterFindings groups findings whose evidence falls within
+// ClusterFindings groups findings whose representative time falls within
 // `gap` of each other (default 30 min). Findings without any
 // timestamps are bundled into a separate "no-timestamp" cluster at
 // position 0 so the LLM can still discuss them.
 //
-// Strategy: sort by FirstTimestamp, walk and merge when gap to the
-// previous cluster's EndTS is ≤ gap. Inside one cluster, EndTS
-// expands to cover the latest evidence ts.
+// Strategy: sort by FirstTimestamp, walk and merge when the gap to the
+// previous cluster's EndTS is ≤ gap. Each finding contributes exactly
+// one point in time — its FirstTimestamp — to both the membership test
+// and the cluster hull. We deliberately do NOT expand EndTS to a
+// finding's *latest* evidence ts: a single rule whose evidence happens
+// to span months (e.g. an amcache/registry rule matching both a 2024
+// provisioning entry and the 2026 intrusion) would otherwise drag EndTS
+// across that whole gap and chain two unrelated episodes into one giant
+// cluster. The per-cluster timeline sampler (FetchClusterTimeline) still
+// anchors on every evidence ts, so wide-span evidence is not lost — it
+// just no longer bridges clusters.
 func ClusterFindings(findings []Finding, gap time.Duration) []Cluster {
 	if gap <= 0 {
 		gap = 30 * time.Minute
@@ -134,7 +142,6 @@ func ClusterFindings(findings []Finding, gap time.Duration) []Cluster {
 	var cur *Cluster
 	for _, f := range dated {
 		ft := f.FirstTimestamp()
-		lt := lastTimestamp(f)
 		if cur == nil || ft.Sub(cur.EndTS) > gap {
 			if cur != nil {
 				clusters = append(clusters, *cur)
@@ -142,14 +149,14 @@ func ClusterFindings(findings []Finding, gap time.Duration) []Cluster {
 			cur = &Cluster{
 				ID:       len(clusters) + 1,
 				StartTS:  ft,
-				EndTS:    lt,
+				EndTS:    ft,
 				Findings: []Finding{f},
 			}
 			continue
 		}
 		cur.Findings = append(cur.Findings, f)
-		if lt.After(cur.EndTS) {
-			cur.EndTS = lt
+		if ft.After(cur.EndTS) {
+			cur.EndTS = ft
 		}
 	}
 	if cur != nil {
@@ -163,20 +170,4 @@ func ClusterFindings(findings []Finding, gap time.Duration) []Cluster {
 		})
 	}
 	return clusters
-}
-
-func lastTimestamp(f Finding) time.Time {
-	var latest time.Time
-	for _, e := range f.Evidence {
-		if !e.HasTS {
-			continue
-		}
-		if e.TsUTC.After(latest) {
-			latest = e.TsUTC
-		}
-	}
-	if latest.IsZero() {
-		return f.FirstTimestamp()
-	}
-	return latest
 }
