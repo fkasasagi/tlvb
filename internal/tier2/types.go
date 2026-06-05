@@ -167,7 +167,11 @@ type SynthAudit struct {
 	ActiveSearchEnabled      bool    `json:"active_search_enabled,omitempty"`
 	ActiveSQLAttempted       int     `json:"active_sql_attempted,omitempty"`
 	ActiveSQLSucceeded       int     `json:"active_sql_succeeded,omitempty"`
-	SkillSHA256              string  `json:"skill_sha256,omitempty"`
+	// ActiveSQLNullResult counts queries that executed and returned rows but
+	// whose projected columns were all NULL — executed-but-useless (usually a
+	// wrong JSON path). Tracked separately so ActiveSQLSucceeded means "useful".
+	ActiveSQLNullResult int    `json:"active_sql_null_result,omitempty"`
+	SkillSHA256         string `json:"skill_sha256,omitempty"`
 }
 
 // addUsage folds one claudeOutput's token + cost figures into the audit.
