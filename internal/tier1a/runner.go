@@ -11,9 +11,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tlvb/tlvb/internal/auditlog"
 	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 )
+
+// newActionLog returns a unified-execution-log writer for the case, or nil when
+// findingsDir doesn't follow the production .../<case>/findings/by-rule layout
+// (e.g. unit tests with a bare temp dir) — keeping stray actions.jsonl files out
+// of test temp roots. A nil *auditlog.Logger is a safe no-op.
+func newActionLog(findingsDir, caseID string) *auditlog.Logger {
+	parent := filepath.Dir(findingsDir) // .../findings
+	if filepath.Base(parent) != "findings" {
+		return nil
+	}
+	return auditlog.New(filepath.Join(filepath.Dir(parent), "actions.jsonl"), caseID)
+}
 
 // Config drives Run().
 type Config struct {
@@ -98,6 +111,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return nil, fmt.Errorf("list built rules: %w", err)
 	}
 	report.TotalRules = len(rows)
+	al := newActionLog(cfg.FindingsDir, cfg.CaseID)
 
 	for i, r := range rows {
 		if ctx.Err() != nil {
@@ -123,6 +137,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		matched, n, err := executeRule(ctx, cfg, r)
 		if err != nil {
 			report.Errors++
+			al.Append(auditlog.Action{Actor: "tier1a", Kind: "rule_sql",
+				RuleID: r.RuleID, RuleSource: r.RuleSource,
+				Success: auditlog.BoolPtr(false), Error: err.Error()})
 			emit(cfg.ProgressFn, Event{Index: i + 1, Total: len(rows),
 				RuleID: r.RuleID, RuleSource: r.RuleSource,
 				State: "error", Error: err.Error()})
@@ -136,6 +153,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			continue
 		}
 		report.Matched++
+		al.Append(auditlog.Action{Actor: "tier1a", Kind: "rule_sql",
+			RuleID: r.RuleID, RuleSource: r.RuleSource,
+			RowCount: auditlog.IntPtr(n), Success: auditlog.BoolPtr(true)})
 		report.Findings = append(report.Findings, FindingSummary{
 			RuleID:     r.RuleID,
 			RuleSource: r.RuleSource,
@@ -257,7 +277,7 @@ func executeRule(ctx context.Context, cfg Config, r rulesdb.CacheRow) (bool, int
 // fields; anything beyond goes into Extra.
 func scanEvidence(rows *sql.Rows, cols []string, maxEvidence int) ([]EvidenceRef, int, error) {
 	var (
-		out      []EvidenceRef
+		out       []EvidenceRef
 		totalRows int
 	)
 	for rows.Next() {
@@ -355,8 +375,8 @@ func parseRuleMeta(raw string) RuleMeta {
 	}
 }
 
-func extractTitle(raw string) string  { return parseRuleMeta(raw).Title }
-func extractLevel(raw string) string  { return parseRuleMeta(raw).Level }
+func extractTitle(raw string) string { return parseRuleMeta(raw).Title }
+func extractLevel(raw string) string { return parseRuleMeta(raw).Level }
 
 // ----------------------------------------------------------------------------
 // type helpers — DuckDB driver returns interface{} for unknown columns

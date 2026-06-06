@@ -30,6 +30,10 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	timeoutMinutes := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
 	activeSearch := fs.Bool("active-search", false,
 		"enable hypothesis-driven SQL pass per cluster (LLM proposes SQL to answer open_questions, executes against unified_events, then writes an addendum to the narrative)")
+	maxSelfCorrect := fs.Int("max-self-correct", 2,
+		"active-search SQL self-correction rounds when a proposed query fails or returns all-NULL (0 = disable; the agent feeds the failure back to the LLM and re-runs the revised SQL)")
+	demoInjectFault := fs.Bool("demo-inject-sql-fault", false,
+		"DEMO ONLY: deliberately corrupt the first active-search SQL per cluster (references a non-existent column) so the self-correction loop visibly fires; the agent detects the DB error and recovers")
 	dryRun := fs.Bool("dry-run", false, "skip LLM calls")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -42,20 +46,29 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		*outPath = filepath.Join("outputs", "cases", caseID, "synthesis.json")
 	}
 
+	// CLI semantics: 0 (or less) disables self-correction. tier2 treats a zero
+	// value as "use default" and a negative value as "disabled", so map here.
+	msc := *maxSelfCorrect
+	if msc <= 0 {
+		msc = -1
+	}
+
 	cfg := tier2.Config{
-		CaseID:            caseID,
-		FindingsBaseDir:   *findingsBase,
-		OutputPath:        *outPath,
-		DBPath:            *dbPath,
-		SkillsDir:         *skillsDir,
-		SkillName:         *skillName,
-		Model:             *model,
-		ClusterGap:        time.Duration(*gapMinutes) * time.Minute,
-		TimelineWindow:    time.Duration(*windowMinutes) * time.Minute,
-		MaxRowsPerCluster: *maxRowsPerCluster,
-		PerClusterTimeout: time.Duration(*timeoutMinutes) * time.Minute,
-		ActiveSearch:      *activeSearch,
-		DryRun:            *dryRun,
+		CaseID:             caseID,
+		FindingsBaseDir:    *findingsBase,
+		OutputPath:         *outPath,
+		DBPath:             *dbPath,
+		SkillsDir:          *skillsDir,
+		SkillName:          *skillName,
+		Model:              *model,
+		ClusterGap:         time.Duration(*gapMinutes) * time.Minute,
+		TimelineWindow:     time.Duration(*windowMinutes) * time.Minute,
+		MaxRowsPerCluster:  *maxRowsPerCluster,
+		PerClusterTimeout:  time.Duration(*timeoutMinutes) * time.Minute,
+		ActiveSearch:       *activeSearch,
+		MaxSelfCorrect:     msc,
+		DemoInjectSQLFault: *demoInjectFault,
+		DryRun:             *dryRun,
 		ProgressFn: func(ev tier2.Event) {
 			fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)
 		},
@@ -74,6 +87,11 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	fmt.Printf("  llm calls:         %d\n", rep.LLMCalls)
 	fmt.Printf("  tokens:            in %d / cache_read %d / out %d  (cost $%.4f)\n",
 		rep.InputTokens, rep.CacheReadTokens, rep.OutputTokens, rep.TotalCostUSD)
+	if *activeSearch {
+		fmt.Printf("  active-search:     %d attempted / %d ok / %d self-corrected (%d correction rounds)\n",
+			rep.ActiveSQLAttempted, rep.ActiveSQLSucceeded,
+			rep.ActiveSQLSelfCorrected, rep.ActiveSQLCorrectionRounds)
+	}
 	if rep.OutputPath != "" {
 		fmt.Printf("  output:            %s\n", rep.OutputPath)
 	}

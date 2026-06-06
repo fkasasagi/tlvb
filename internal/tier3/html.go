@@ -90,14 +90,16 @@ type clusterView struct {
 }
 
 type findingRow struct {
-	Severity      string
-	Source        string
-	RuleID        string
-	Title         string
-	FirstSeen     time.Time
-	HasTS         bool
-	Artifacts     []string
-	EvidenceCount int
+	Severity        string
+	Source          string
+	RuleID          string
+	Title           string
+	FirstSeen       time.Time
+	HasTS           bool
+	Artifacts       []string
+	EvidenceCount   int
+	Confidence      string // confirmed | inferred (raw → CSS class)
+	ConfidenceLabel string // localized label
 }
 
 func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) reportView {
@@ -130,11 +132,17 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) 
 			ActiveSearch:    c.ActiveSearch,
 		}
 		for _, fr := range c.FindingRefs {
+			conf := fr.Confidence
+			if conf == "" { // synthesis.json predating the provenance field
+				_, conf = tier2.ProvenanceForSource(fr.Source)
+			}
 			row := findingRow{
-				Severity: normSeverity(fr.Severity),
-				Source:   fr.Source,
-				RuleID:   fr.RuleID,
-				Title:    fr.Title,
+				Severity:        normSeverity(fr.Severity),
+				Source:          fr.Source,
+				RuleID:          fr.RuleID,
+				Title:           fr.Title,
+				Confidence:      conf,
+				ConfidenceLabel: d.confLabel(conf),
 			}
 			if det := en.lookupDetail(fr.Source, fr.RuleID, fr.Title); det != nil {
 				row.FirstSeen = det.FirstSeen
@@ -241,6 +249,9 @@ type labelDict struct {
 	FirstSeen             string
 	Artifacts             string
 	EvidenceCountCol      string
+	ConfidenceCol         string
+	ConfirmedLabel        string
+	InferredLabel         string
 	TimelineSection       string
 	TimeCol               string
 	EventTypeCol          string
@@ -329,12 +340,15 @@ var dictJA = labelDict{
 	EventCount:            "イベント数",
 	TotalEvents:           "総イベント数",
 	Methodology:           "5. 解析手法と限界",
-	MethodologyBody:       "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。",
+	MethodologyBody:       "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。各 finding の「確度」列は導出方法を示す: 確認 = Tier 1A の決定的シグネチャが実際の記録イベントに一致したもの (照合自体は事実)、推論 = Tier 1B の LLM が異常と判断したもの。いずれも悪性の確証ではなく、最終判断は解析担当者のレビューを要する。",
 	Limitations:           "限界・前提: (1) タイムスタンプは原則 UTC。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
 	AIDisclaimer:          "AI 利用に関する開示: シナリオ記述・MITRE マッピング・未解決論点は大規模言語モデル (上記「解析モデル」) が生成した。シグネチャ検知部 (Tier 1A) は LLM を実行時に呼び出さず、事前検証済み SQL のみを実行する。最終的な判断は資格を持つ解析担当者によるレビューを前提とする。",
 	FirstSeen:             "初出時刻",
 	Artifacts:             "アーティファクト",
 	EvidenceCountCol:      "証拠数",
+	ConfidenceCol:         "確度",
+	ConfirmedLabel:        "確認",
+	InferredLabel:         "推論",
 	TimelineSection:       "6. イベントタイムライン (主要事象)",
 	TimeCol:               "時刻 (UTC)",
 	EventTypeCol:          "イベント種別",
@@ -422,12 +436,15 @@ var dictEN = labelDict{
 	EventCount:            "Events",
 	TotalEvents:           "Total events",
 	Methodology:           "5. Methodology & Limitations",
-	MethodologyBody:       "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp.",
+	MethodologyBody:       "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp. The \"Confidence\" column records how each finding was derived: Confirmed = a deterministic Tier 1A signature matched real logged events (the match itself is factual); Inferred = a Tier 1B LLM judged the pattern anomalous. Neither asserts malice — final adjudication requires analyst review.",
 	Limitations:           "Limitations & assumptions: (1) Timestamps are UTC; artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
 	AIDisclaimer:          "AI disclosure: narratives, MITRE mappings and open questions were generated by a large language model (see \"Analysis model\"). The signature-detection tier (Tier 1A) invokes no LLM at runtime — it executes only pre-validated SQL. Final determinations are expected to be reviewed by a qualified examiner.",
 	FirstSeen:             "First seen",
 	Artifacts:             "Artifacts",
 	EvidenceCountCol:      "Evidence",
+	ConfidenceCol:         "Confidence",
+	ConfirmedLabel:        "Confirmed",
+	InferredLabel:         "Inferred",
 	TimelineSection:       "6. Event Timeline (key events)",
 	TimeCol:               "Time (UTC)",
 	EventTypeCol:          "Event type",
@@ -513,6 +530,18 @@ func sevLabelEN(s string) string {
 }
 
 // severityClass maps a finding's severity to a CSS class for the badge.
+// confLabel localises a confirmed/inferred confidence value.
+func (d labelDict) confLabel(conf string) string {
+	switch conf {
+	case "confirmed":
+		return d.ConfirmedLabel
+	case "inferred":
+		return d.InferredLabel
+	default:
+		return conf
+	}
+}
+
 func severityClass(s string) string {
 	switch normSeverity(s) {
 	case "critical":
@@ -591,6 +620,8 @@ const htmlTemplate = `<!DOCTYPE html>
   .sev-low      { background: #2da44e; color: #fff; }
   .sev-info     { background: #6e7781; color: #fff; }
   .sev-unknown  { background: #c1c4c8; color: #1f2329; }
+  .conf-confirmed { background: #1a7f37; color: #fff; }
+  .conf-inferred  { background: #9a6700; color: #fff; }
   .sevgrid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.6rem 0 1rem; }
   .sevcard { border: 1px solid #d0d7de; border-radius: 6px; background: #fff;
              padding: 0.5rem 0.9rem; min-width: 5.5rem; text-align: center; }
@@ -810,7 +841,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <h4>{{$.Dict.Findings}}</h4>
     <table>
       <thead>
-        <tr><th>{{$.Dict.Severity}}</th><th>{{$.Dict.Source}}</th><th>{{$.Dict.RuleID}}</th>
+        <tr><th>{{$.Dict.Severity}}</th><th>{{$.Dict.Source}}</th><th>{{$.Dict.ConfidenceCol}}</th><th>{{$.Dict.RuleID}}</th>
             <th>{{$.Dict.Title}}</th><th>{{$.Dict.FirstSeen}}</th>
             <th>{{$.Dict.Artifacts}}</th><th>{{$.Dict.EvidenceCountCol}}</th></tr>
       </thead>
@@ -819,6 +850,7 @@ const htmlTemplate = `<!DOCTYPE html>
         <tr>
           <td><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></td>
           <td>{{.Source}}</td>
+          <td>{{if .Confidence}}<span class="badge conf-{{.Confidence}}">{{.ConfidenceLabel}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
           <td><code>{{.RuleID}}</code></td>
           <td>{{.Title}}</td>
           <td>{{if .HasTS}}{{fmtTS .FirstSeen}}{{else}}<span class="muted">—</span>{{end}}</td>

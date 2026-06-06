@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tlvb/tlvb/internal/auditlog"
+
 	_ "github.com/marcboeker/go-duckdb"
 )
 
@@ -33,8 +35,17 @@ type Config struct {
 	MaxRowsPerCluster int           // default 300
 	PerClusterTimeout time.Duration // default 5 min
 	ActiveSearch      bool          // enable hypothesis-driven SQL pass per cluster
-	DryRun            bool
-	ProgressFn        func(Event)
+	MaxSelfCorrect    int           // active-search SQL self-correction rounds (0 = default 2; <0 disables)
+	// DemoInjectSQLFault corrupts the first active-search SQL per cluster so the
+	// self-correction loop visibly fires. Labelled fault-injection for demos /
+	// the "show self-correction at least once" requirement — never on by default.
+	DemoInjectSQLFault bool
+	DryRun             bool
+	ProgressFn         func(Event)
+
+	// al is the unified execution-log writer (outputs/cases/<id>/actions.jsonl).
+	// Set internally by Run(); nil in unit tests (a nil *Logger is a no-op).
+	al *auditlog.Logger
 }
 
 // Event is the progress hook.
@@ -59,6 +70,12 @@ type Report struct {
 	CacheReadTokens int
 	OutputTokens    int
 	TotalCostUSD    float64
+
+	// Active-search self-correction accounting (only meaningful with --active-search).
+	ActiveSQLAttempted        int
+	ActiveSQLSucceeded        int
+	ActiveSQLSelfCorrected    int
+	ActiveSQLCorrectionRounds int
 }
 
 // Run executes the Tier 2 MVP. Reads Tier 1 findings, clusters them
@@ -98,6 +115,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if cfg.PerClusterTimeout <= 0 {
 		cfg.PerClusterTimeout = 5 * time.Minute
 	}
+	// Append Tier 2 activity to the same actions.jsonl the Tier 0 orchestrator
+	// writes, so the case has one ordered, timestamped execution log.
+	cfg.al = auditlog.New(filepath.Join(filepath.Dir(cfg.OutputPath), "actions.jsonl"), cfg.CaseID)
 
 	start := time.Now()
 	rep := &Report{CaseID: cfg.CaseID}
@@ -206,6 +226,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	rep.CacheReadTokens = audit.CacheReadTokensTotal
 	rep.OutputTokens = audit.OutputTokensTotal
 	rep.TotalCostUSD = audit.TotalCostUSD
+	rep.ActiveSQLAttempted = audit.ActiveSQLAttempted
+	rep.ActiveSQLSucceeded = audit.ActiveSQLSucceeded
+	rep.ActiveSQLSelfCorrected = audit.ActiveSQLSelfCorrected
+	rep.ActiveSQLCorrectionRounds = audit.ActiveSQLCorrectionRounds
 	emit(cfg, Event{Phase: "done",
 		Message: fmt.Sprintf("done in %.1fs (%d clusters, %d LLM calls)",
 			rep.Duration, len(clusters), audit.LLMCallsTotal),
@@ -232,6 +256,7 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	dur := time.Since(startedAt)
 	audit.LLMDurationS += dur.Seconds()
 	audit.LLMCallsTotal++
+	auditLLMCall(cfg, "cluster_analysis", c.ID, dur, out, err)
 	if err != nil {
 		return err
 	}
@@ -275,6 +300,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		audit.LLMDurationS += dur.Seconds()
 		audit.LLMCallsTotal++
 		cancel()
+		auditLLMCall(cfg, "overall_synthesis", 0, dur, out, err)
 		if err == nil {
 			audit.addUsage(out)
 			return strings.TrimSpace(out.Result), nil
@@ -481,6 +507,31 @@ type claudeOutput struct {
 	OutputTokens int `json:"-"`
 }
 
+// auditLLMCall appends one llm_call record to the unified execution log. detail
+// names the sub-kind (e.g. "cluster_analysis"). Logs both success and failure
+// so the audit trail shows attempts that errored, not just the ones that worked.
+func auditLLMCall(cfg Config, detail string, clusterID int, dur time.Duration, out *claudeOutput, callErr error) {
+	a := auditlog.Action{
+		Actor:           "tier2",
+		Kind:            "llm_call",
+		Detail:          detail,
+		ClusterID:       clusterID,
+		Model:           cfg.Model,
+		DurationSeconds: dur.Seconds(),
+	}
+	if callErr != nil {
+		a.Success = auditlog.BoolPtr(false)
+		a.Error = truncate(callErr.Error(), 200)
+	} else if out != nil {
+		a.Success = auditlog.BoolPtr(true)
+		a.InputTokens = out.Usage.InputTokens
+		a.OutputTokens = out.Usage.OutputTokens
+		a.CacheReadTokens = out.Usage.CacheReadInputTokens
+		a.CostUSD = out.TotalCostUSD
+	}
+	cfg.al.Append(a)
+}
+
 func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {
 	args := []string{
 		"-p",
@@ -542,11 +593,14 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			ActiveSearch:    c.ActiveSearch,
 		}
 		for _, f := range c.Findings {
+			prov, conf := ProvenanceForSource(f.Source)
 			sc.FindingRefs = append(sc.FindingRefs, FindingRef{
-				Source:   f.Source,
-				RuleID:   f.RuleID,
-				Title:    f.Title,
-				Severity: f.Severity,
+				Source:     f.Source,
+				RuleID:     f.RuleID,
+				Title:      f.Title,
+				Severity:   f.Severity,
+				Provenance: prov,
+				Confidence: conf,
 			})
 		}
 		cs.Clusters = append(cs.Clusters, sc)

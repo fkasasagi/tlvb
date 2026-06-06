@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/auditlog"
 )
 
 // activeSearchSystemPrompt is the additional instruction Tier 2 sends
@@ -107,8 +109,10 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, db *sql.DB, c *Clu
 	defer cancel()
 	startedAt := time.Now()
 	out, err := callClaudeCLI(subCtx, cfg, activeSearchSystemPrompt, prompt)
+	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
-	audit.LLMDurationS += time.Since(startedAt).Seconds()
+	audit.LLMDurationS += dur.Seconds()
+	auditLLMCall(cfg, "active_search_generate", c.ID, dur, out, err)
 	if err != nil {
 		return nil, fmt.Errorf("active-search LLM: %w", err)
 	}
@@ -573,13 +577,213 @@ Return ONLY the addendum text. No JSON, no markdown.`
 	defer cancel()
 	startedAt := time.Now()
 	out, err := callClaudeCLI(subCtx, cfg, system, string(body))
+	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
-	audit.LLMDurationS += time.Since(startedAt).Seconds()
+	audit.LLMDurationS += dur.Seconds()
+	auditLLMCall(cfg, "active_search_interpret", c.ID, dur, out, err)
 	if err != nil {
 		return "", err
 	}
 	audit.addUsage(out)
 	return strings.TrimSpace(out.Result), nil
+}
+
+// ----------------------------------------------------------------------------
+// Self-correction (runtime error detection → revise → re-execute)
+// ----------------------------------------------------------------------------
+
+// activeSearchCorrectionSystemPrompt drives a focused "fix the SQL you just
+// broke" round. It restates the hard requirements and gives failure-specific
+// guidance so the model repairs the actual error instead of re-guessing.
+const activeSearchCorrectionSystemPrompt = `You are in TLVB Tier 2 ACTIVE-SEARCH SELF-CORRECTION mode.
+
+A DuckDB SELECT you proposed FAILED. You are given the failed SQL, the exact
+failure reason, the attempt number, and the real schema_samples for this
+cluster. Produce ONE corrected SELECT that fixes that specific failure.
+
+Return ONLY a single JSON object (no array, no markdown fences, no prose):
+  {"question":"<unchanged open_question>","rationale":"<what you changed and why>","sql":"<corrected SELECT>"}
+
+Re-apply EVERY hard requirement:
+- starts with SELECT or WITH; no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/ATTACH/PRAGMA; no trailing semicolon
+- the first WHERE predicate is literally: case_id = ?   (exactly ONE ? placeholder)
+- output columns start with: audit_id, ts_utc, artifact_id, event_type
+- end with LIMIT N (N <= 500)
+
+Failure-specific guidance:
+- "null_result" / "all projected columns NULL": your JSON paths matched nothing.
+  For EVTX do NOT use $.TargetUserName-style top-level keys. Use
+  json_extract_string(payload_json,'$.PayloadDataN') (see schema_samples
+  payload_data) or, for an eventdata_fields_via_raw_payload name,
+  regexp_extract(json_extract_string(payload_json,'$.raw.Payload'),
+                 '"@Name":"<name>","#text":"([^"]*)"',1).
+- "execute_error": a DuckDB syntax / function / type error — fix the offending expression.
+- "validation_error": you violated one of the hard requirements above.
+
+If no meaningful correction is possible, return {"sql":""} and we stop.`
+
+// correctActiveSearchSQL asks the LLM to repair one failed query. ss may be nil
+// (the system prompt still carries the EVTX guidance).
+func correctActiveSearchSQL(ctx context.Context, cfg Config, question, failedSQL,
+	failureReason string, attempt int, ss *schemaSamples, audit *SynthAudit) (string, error) {
+
+	type correctionCtx struct {
+		Question      string         `json:"question"`
+		FailedSQL     string         `json:"failed_sql"`
+		FailureReason string         `json:"failure_reason"`
+		Attempt       int            `json:"attempt"`
+		SchemaSamples *schemaSamples `json:"schema_samples,omitempty"`
+	}
+	body, err := json.MarshalIndent(correctionCtx{
+		Question:      question,
+		FailedSQL:     failedSQL,
+		FailureReason: failureReason,
+		Attempt:       attempt,
+		SchemaSamples: ss,
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
+	defer cancel()
+	startedAt := time.Now()
+	out, err := callClaudeCLI(subCtx, cfg, activeSearchCorrectionSystemPrompt, string(body))
+	dur := time.Since(startedAt)
+	audit.LLMCallsTotal++
+	audit.LLMDurationS += dur.Seconds()
+	// Emit with the attempt number so the audit trail pairs each correction
+	// round with the active_sql attempt it was trying to fix.
+	corrAction := auditlog.Action{Actor: "tier2", Kind: "llm_call", Detail: "active_search_correct",
+		Attempt: attempt, Model: cfg.Model, DurationSeconds: dur.Seconds()}
+	if err != nil {
+		corrAction.Success = auditlog.BoolPtr(false)
+		corrAction.Error = truncate(err.Error(), 200)
+	} else if out != nil {
+		corrAction.Success = auditlog.BoolPtr(true)
+		corrAction.InputTokens = out.Usage.InputTokens
+		corrAction.OutputTokens = out.Usage.OutputTokens
+		corrAction.CacheReadTokens = out.Usage.CacheReadInputTokens
+		corrAction.CostUSD = out.TotalCostUSD
+	}
+	cfg.al.Append(corrAction)
+	if err != nil {
+		return "", err
+	}
+	audit.addUsage(out)
+	entry, err := parseActiveSearchCorrection(out.Result)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(entry.SQL), nil
+}
+
+func parseActiveSearchCorrection(text string) (activeSearchSQLEntry, error) {
+	var e activeSearchSQLEntry
+	if err := decodeFirstJSON(text, &e); err != nil {
+		return e, err
+	}
+	return e, nil
+}
+
+// sqlCorrector asks for a revised SQL given the previous SQL and why it failed.
+// The production impl calls the LLM; tests inject a stub. Returning "" (or the
+// same SQL, or an error) signals "give up — finalise as failed".
+type sqlCorrector func(ctx context.Context, prevSQL, failureReason string, attempt int) (string, error)
+
+// runActiveSQLWithSelfCorrection executes one open-question SQL with up to
+// maxCorrect self-correction rounds. Attempt 1 is the LLM's original SQL; on a
+// validation / execution / null-result failure it asks `correct` for a revision
+// and re-executes, recording every attempt on the result. This is TLVB's
+// runtime self-correction: the agent detects its own failed query and fixes it
+// without human intervention. The audit counters distinguish first-try success
+// from corrected success from unrecoverable failure.
+func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
+	question, initialSQL string, maxCorrect int, correct sqlCorrector,
+	audit *SynthAudit, al *auditlog.Logger, clusterID int) ActiveSearchResult {
+
+	res := ActiveSearchResult{Question: question, SQL: initialSQL}
+	sqlText := strings.TrimSpace(initialSQL)
+
+	for attempt := 1; ; attempt++ {
+		at := SQLAttempt{N: attempt, SQL: sqlText}
+		var okEvidence []TimelineEvent
+		if verr := validateActiveSearchSQL(sqlText); verr != nil {
+			at.Outcome, at.Error = "validation_error", verr.Error()
+		} else if n, rows, eerr := execActiveSQL(ctx, db, caseID, sqlText, 50); eerr != nil {
+			at.Outcome, at.Error = "execute_error", eerr.Error()
+		} else if n > 0 && allProjectedColumnsNull(rows) {
+			// Executed but every projected column is NULL — the classic wrong
+			// JSON path. "Executes" yet answers nothing, so treat as a failure
+			// the agent should try to correct.
+			at.Outcome, at.Error, at.Hits = "null_result",
+				"all projected columns NULL — likely wrong JSON path "+
+					"(EVTX EventData fields live under $.raw; see schema_samples)", n
+		} else {
+			at.Outcome, at.Hits, okEvidence = "ok", n, rows
+		}
+		res.Attempts = append(res.Attempts, at)
+		// Stream each attempt to the unified log the moment it happens, so the
+		// audit chronology is true: the correction LLM call lands between a
+		// failed attempt and its successful retry, not before both. (al is
+		// nil-safe — a no-op in unit tests.)
+		hits := at.Hits
+		al.Append(auditlog.Action{
+			Actor: "tier2", Kind: "active_sql", ClusterID: clusterID,
+			Attempt: at.N, Outcome: at.Outcome, Command: at.SQL,
+			RowCount: &hits, Error: at.Error,
+			Success: auditlog.BoolPtr(at.Outcome == "ok"),
+		})
+
+		if at.Outcome == "ok" {
+			res.SQL, res.Hits, res.Evidence, res.Error = sqlText, at.Hits, okEvidence, ""
+			if attempt > 1 {
+				res.Corrected = true
+				audit.ActiveSQLSelfCorrected++
+			}
+			audit.ActiveSQLSucceeded++
+			return res
+		}
+
+		// Failed this attempt. Stop if we have no correction budget left.
+		if attempt > maxCorrect {
+			res.SQL, res.Hits = sqlText, at.Hits
+			res.Error = at.Outcome + ": " + at.Error
+			if at.Outcome == "null_result" {
+				audit.ActiveSQLNullResult++
+			}
+			return res
+		}
+		audit.ActiveSQLCorrectionRounds++
+		corrected, cerr := correct(ctx, sqlText, at.Outcome+": "+at.Error, attempt)
+		corrected = strings.TrimSpace(corrected)
+		if cerr != nil || corrected == "" || corrected == sqlText {
+			res.SQL, res.Hits = sqlText, at.Hits
+			res.Error = at.Outcome + ": " + at.Error + " (self-correction produced no new query)"
+			if at.Outcome == "null_result" {
+				audit.ActiveSQLNullResult++
+			}
+			return res
+		}
+		sqlText = corrected
+	}
+}
+
+// demoInjectSQLFault deliberately corrupts a query so the self-correction loop
+// has something to recover from. Used ONLY when Config.DemoInjectSQLFault is set
+// (a labelled fault-injection switch for demos — never default). It splices in a
+// predicate referencing a non-existent column right after the case_id binding;
+// DuckDB rejects that at execution (execute_error, "column not found" — a very
+// common real LLM SQL mistake), and the correction round removes it and recovers.
+// Returns the SQL unchanged when the canonical "case_id = ?" anchor is absent so
+// the demo degrades gracefully instead of producing un-fixable SQL.
+func demoInjectSQLFault(sqlText string) string {
+	const anchor = "case_id = ?"
+	idx := strings.Index(sqlText, anchor)
+	if idx < 0 {
+		return sqlText
+	}
+	pos := idx + len(anchor)
+	return sqlText[:pos] + " AND __demo_injected_fault__ = 1" + sqlText[pos:]
 }
 
 // ----------------------------------------------------------------------------
@@ -594,6 +798,13 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 	clusters []Cluster, audit *SynthAudit) ([]Cluster, error) {
 
 	audit.ActiveSearchEnabled = true
+	maxCorrect := cfg.MaxSelfCorrect
+	switch {
+	case maxCorrect == 0:
+		maxCorrect = 2 // default: up to 2 self-correction rounds per query
+	case maxCorrect < 0:
+		maxCorrect = 0 // explicitly disabled
+	}
 	for i := range clusters {
 		c := &clusters[i]
 		if len(c.OpenQuestions) == 0 {
@@ -604,40 +815,24 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 			// graceful: skip this cluster, keep going
 			continue
 		}
+		// Real key/value samples for this cluster, gathered once and reused by
+		// every self-correction round (best-effort; nil is fine — the correction
+		// system prompt still carries the EVTX guidance).
+		ss, _ := gatherClusterSchemaSamples(ctx, db, cfg.CaseID, c)
 		var results []ActiveSearchResult
-		for _, e := range entries {
+		for ei, e := range entries {
 			audit.ActiveSQLAttempted++
-			res := ActiveSearchResult{
-				Question: e.Question,
-				SQL:      e.SQL,
+			question := e.Question
+			initialSQL := e.SQL
+			if cfg.DemoInjectSQLFault && ei == 0 {
+				// Demo: break the first query of each cluster so the loop recovers.
+				initialSQL = demoInjectSQLFault(e.SQL)
 			}
-			if err := validateActiveSearchSQL(e.SQL); err != nil {
-				res.Error = "validation: " + err.Error()
-				results = append(results, res)
-				continue
+			correct := func(cctx context.Context, prevSQL, failureReason string, attempt int) (string, error) {
+				return correctActiveSearchSQL(cctx, cfg, question, prevSQL, failureReason, attempt, ss, audit)
 			}
-			n, ev, err := execActiveSQL(ctx, db, cfg.CaseID, e.SQL, 50)
-			if err != nil {
-				res.Error = "execute: " + err.Error()
-				results = append(results, res)
-				continue
-			}
-			res.Hits = n
-			res.Evidence = ev
-			// A query that returns rows but whose every projected (non-envelope)
-			// column is NULL is almost always a wrong JSON path (the classic
-			// EVTX $.TargetUserName mistake) — it "executes" but answers nothing.
-			// Flag it as failed so the count of *useful* queries stays honest and
-			// the interpretation step is told to disregard it.
-			if n > 0 && allProjectedColumnsNull(ev) {
-				res.Error = "all projected columns NULL — likely wrong JSON path " +
-					"(EVTX EventData fields live under $.raw; see schema_samples)"
-				res.Evidence = nil // useless rows — don't spend interpretation tokens on them
-				audit.ActiveSQLNullResult++
-				results = append(results, res)
-				continue
-			}
-			audit.ActiveSQLSucceeded++
+			res := runActiveSQLWithSelfCorrection(ctx, db, cfg.CaseID, question, initialSQL,
+				maxCorrect, correct, audit, cfg.al, c.ID)
 			results = append(results, res)
 		}
 		c.ActiveSearch = results
