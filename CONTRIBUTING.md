@@ -51,7 +51,7 @@ issue first.
    ATT&CK ID, name, and SQL OR-clauses for prefiltering.
 3. Confirm via:
    ```bash
-   findevil analyze CASE_ID --tactic <slug> --dry-run
+   tlvb analyze CASE_ID --tactic <slug> --dry-run
    ```
 
 ## Documentation: avoid local-only paths

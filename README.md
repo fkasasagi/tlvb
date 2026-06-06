@@ -39,21 +39,25 @@ Tier 3   Reporter                                             🟢
 ## 使い方
 
 ```bash
-# 初回セットアップ
-./scripts/setup.sh        # Go / Python 依存 + .venv 作成 + go build
-git submodule update --init --recursive   # Sigma / Hayabusa / mitre-attack 取り込み
+# 初回セットアップ — これだけで Tier 1A まで動く状態になる
+# (依存検証 + .venv 作成 + go build + vendored ルール SQL cache の import を自動実行)
+./scripts/setup.sh
 
-# 1 コマンドで全 Tier 実行
+# 1 コマンドで全 Tier 実行 (証拠の置き場所は任意: zip / ディスクイメージ / triage ディレクトリ)
 ./bin/tlvb run MY-CASE-001 --tier all --evidence /path/to/triage.zip --active-search
 
-# 段階的に走らせる場合
+# 段階的に走らせる場合 (Tier 1A の SQL cache は setup.sh が import 済み)
 ./bin/tlvb case init --case-id MY-CASE-001 --name "Sep IR" --examiner alice
 ./bin/tlvb parse --case-id MY-CASE-001 --evidence-id EV-001 --input triage.zip
-./bin/tlvb rules build --engine claude-code --max-rules 100      # 初回のみ
 ./bin/tlvb analyze MY-CASE-001 --tier 1a
 ./bin/tlvb analyze MY-CASE-001 --tier 1b
 ./bin/tlvb synthesize MY-CASE-001 --tier 2 --active-search
 ./bin/tlvb report MY-CASE-001 --tier 3 --format html,csv,json --language ja
+
+# (任意) ルールを自前で再生成するときだけ submodule + LLM が必要。
+#   setup.sh が vendored の SQL cache を import 済みなので通常は不要。
+git submodule update --init --recursive          # Sigma / Hayabusa / mitre-attack
+./bin/tlvb rules build --engine claude-code --max-rules 100
 
 # Web UI / MCP server
 ./bin/tlvb serve --port 8080     # http://localhost:8080
