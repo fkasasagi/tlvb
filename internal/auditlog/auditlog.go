@@ -41,6 +41,7 @@ type Action struct {
 	CacheReadTokens int     `json:"cache_read_tokens,omitempty"`
 	CostUSD         float64 `json:"cost_usd,omitempty"`
 	RuleID          string  `json:"rule_id,omitempty"`
+	RuleSource      string  `json:"rule_source,omitempty"` // sigma | hayabusa | custom | stix
 	ClusterID       int     `json:"cluster_id,omitempty"`
 	Attempt         int     `json:"attempt,omitempty"`
 	Outcome         string  `json:"outcome,omitempty"` // ok | execute_error | null_result | ...

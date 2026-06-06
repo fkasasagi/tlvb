@@ -2268,6 +2268,7 @@ function redrawAudit(list, entries) {
     if (e.attempt) summary.push("attempt=" + e.attempt);
     if (e.outcome) summary.push("outcome=" + e.outcome);
     if (e.rule_id) summary.push("rule=" + e.rule_id);
+    if (e.rule_source) summary.push("src=" + e.rule_source);
     if (e.row_count != null) summary.push("rows=" + e.row_count);
     if (e.duration_seconds != null) summary.push("dur=" + e.duration_seconds.toFixed(2) + "s");
     if (e.success != null) summary.push("ok=" + e.success);
