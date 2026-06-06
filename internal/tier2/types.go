@@ -89,11 +89,31 @@ type Cluster struct {
 // ActiveSearchResult is one "open question → SQL → answer" round-trip.
 type ActiveSearchResult struct {
 	Question string          // the open_question being investigated
-	SQL      string          // the SELECT the LLM proposed
+	SQL      string          // the SELECT that finally ran (last attempt)
 	Hits     int             // total matching rows (may exceed len(Evidence))
 	Evidence []TimelineEvent // up to MaxEvidenceActive rows from the SQL
 	Answer   string          // LLM's interpretation written after seeing the evidence
 	Error    string          // populated when SQL validation / execution failed
+	// Attempts is the self-correction trail: attempt 1 is the LLM's original
+	// SQL; each later entry is a revision the agent made after feeding the prior
+	// failure back to the LLM. len(Attempts) > 1 means the agent corrected its
+	// own query at runtime — the hackathon "self-correction" requirement made
+	// auditable.
+	Attempts []SQLAttempt `json:"attempts,omitempty"`
+	// Corrected is true when the query failed on attempt 1 but a self-correction
+	// round produced a working query.
+	Corrected bool `json:"corrected,omitempty"`
+}
+
+// SQLAttempt records one execution attempt of an active-search query, including
+// self-correction retries. The ordered sequence makes the agent's error
+// detection and recovery visible (and feeds the per-case execution log).
+type SQLAttempt struct {
+	N       int    `json:"n"`               // 1-based attempt number
+	SQL     string `json:"sql"`             // the SQL executed this attempt
+	Outcome string `json:"outcome"`         // ok | validation_error | execute_error | null_result
+	Error   string `json:"error,omitempty"` // failure detail (empty when ok)
+	Hits    int    `json:"hits"`            // rows returned this attempt
 }
 
 // TimelineEvent is one raw unified_events row used as context for the LLM.
@@ -170,8 +190,15 @@ type SynthAudit struct {
 	// ActiveSQLNullResult counts queries that executed and returned rows but
 	// whose projected columns were all NULL — executed-but-useless (usually a
 	// wrong JSON path). Tracked separately so ActiveSQLSucceeded means "useful".
-	ActiveSQLNullResult int    `json:"active_sql_null_result,omitempty"`
-	SkillSHA256         string `json:"skill_sha256,omitempty"`
+	ActiveSQLNullResult int `json:"active_sql_null_result,omitempty"`
+	// ActiveSQLSelfCorrected counts queries that FAILED on their first attempt
+	// but became useful after >=1 LLM self-correction round — the headline metric
+	// for autonomous runtime error-recovery.
+	ActiveSQLSelfCorrected int `json:"active_sql_self_corrected,omitempty"`
+	// ActiveSQLCorrectionRounds is the total number of self-correction LLM calls
+	// made across all queries (the cost side of self-correction).
+	ActiveSQLCorrectionRounds int    `json:"active_sql_correction_rounds,omitempty"`
+	SkillSHA256               string `json:"skill_sha256,omitempty"`
 }
 
 // addUsage folds one claudeOutput's token + cost figures into the audit.

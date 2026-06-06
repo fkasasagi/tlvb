@@ -53,17 +53,22 @@ type FindingsSummary struct {
 }
 
 type SynthSummary struct {
-	Present             bool   `json:"present"`
-	TotalFindings       int    `json:"total_findings,omitempty"`
-	ClustersCount       int    `json:"clusters_count,omitempty"`
-	TechniquesCount     int    `json:"techniques_count,omitempty"`
-	OpenQuestionsCount  int    `json:"open_questions_count,omitempty"`
-	ActiveSearchEnabled bool   `json:"active_search_enabled,omitempty"`
-	ActiveSQLAttempted  int    `json:"active_sql_attempted,omitempty"`
-	ActiveSQLSucceeded  int    `json:"active_sql_succeeded,omitempty"`
-	LLMCallsTotal       int    `json:"llm_calls_total,omitempty"`
-	GeneratedAt         string `json:"generated_at,omitempty"`
-	ModelID             string `json:"model_id,omitempty"`
+	Present             bool `json:"present"`
+	TotalFindings       int  `json:"total_findings,omitempty"`
+	ClustersCount       int  `json:"clusters_count,omitempty"`
+	TechniquesCount     int  `json:"techniques_count,omitempty"`
+	OpenQuestionsCount  int  `json:"open_questions_count,omitempty"`
+	ActiveSearchEnabled bool `json:"active_search_enabled,omitempty"`
+	ActiveSQLAttempted  int  `json:"active_sql_attempted,omitempty"`
+	ActiveSQLSucceeded  int  `json:"active_sql_succeeded,omitempty"`
+	// ActiveSQLSelfCorrected counts active-search queries that failed on their
+	// first attempt but recovered after the agent fed the error back to the LLM
+	// and re-ran a revised query — surfaced so the Status snapshot shows runtime
+	// self-correction at a glance.
+	ActiveSQLSelfCorrected int    `json:"active_sql_self_corrected,omitempty"`
+	LLMCallsTotal          int    `json:"llm_calls_total,omitempty"`
+	GeneratedAt            string `json:"generated_at,omitempty"`
+	ModelID                string `json:"model_id,omitempty"`
 }
 
 type ReportSummary struct {
@@ -220,10 +225,11 @@ func (s *Server) summariseSynthesis(caseID string) *SynthSummary {
 		MITREMapping  []json.RawMessage `json:"mitre_mapping"`
 		OpenQuestions []string          `json:"open_questions"`
 		Audit         struct {
-			LLMCallsTotal       int  `json:"llm_calls_total"`
-			ActiveSearchEnabled bool `json:"active_search_enabled"`
-			ActiveSQLAttempted  int  `json:"active_sql_attempted"`
-			ActiveSQLSucceeded  int  `json:"active_sql_succeeded"`
+			LLMCallsTotal          int  `json:"llm_calls_total"`
+			ActiveSearchEnabled    bool `json:"active_search_enabled"`
+			ActiveSQLAttempted     int  `json:"active_sql_attempted"`
+			ActiveSQLSucceeded     int  `json:"active_sql_succeeded"`
+			ActiveSQLSelfCorrected int  `json:"active_sql_self_corrected"`
 		} `json:"audit"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -234,17 +240,18 @@ func (s *Server) summariseSynthesis(caseID string) *SynthSummary {
 		clustersCount = len(raw.Clusters)
 	}
 	return &SynthSummary{
-		Present:             true,
-		TotalFindings:       raw.TotalFindings,
-		ClustersCount:       clustersCount,
-		TechniquesCount:     len(raw.MITREMapping),
-		OpenQuestionsCount:  len(raw.OpenQuestions),
-		ActiveSearchEnabled: raw.Audit.ActiveSearchEnabled,
-		ActiveSQLAttempted:  raw.Audit.ActiveSQLAttempted,
-		ActiveSQLSucceeded:  raw.Audit.ActiveSQLSucceeded,
-		LLMCallsTotal:       raw.Audit.LLMCallsTotal,
-		GeneratedAt:         raw.GeneratedAt,
-		ModelID:             raw.ModelID,
+		Present:                true,
+		TotalFindings:          raw.TotalFindings,
+		ClustersCount:          clustersCount,
+		TechniquesCount:        len(raw.MITREMapping),
+		OpenQuestionsCount:     len(raw.OpenQuestions),
+		ActiveSearchEnabled:    raw.Audit.ActiveSearchEnabled,
+		ActiveSQLAttempted:     raw.Audit.ActiveSQLAttempted,
+		ActiveSQLSucceeded:     raw.Audit.ActiveSQLSucceeded,
+		ActiveSQLSelfCorrected: raw.Audit.ActiveSQLSelfCorrected,
+		LLMCallsTotal:          raw.Audit.LLMCallsTotal,
+		GeneratedAt:            raw.GeneratedAt,
+		ModelID:                raw.ModelID,
 	}
 }
 

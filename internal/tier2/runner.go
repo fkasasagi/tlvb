@@ -33,8 +33,13 @@ type Config struct {
 	MaxRowsPerCluster int           // default 300
 	PerClusterTimeout time.Duration // default 5 min
 	ActiveSearch      bool          // enable hypothesis-driven SQL pass per cluster
-	DryRun            bool
-	ProgressFn        func(Event)
+	MaxSelfCorrect    int           // active-search SQL self-correction rounds (0 = default 2; <0 disables)
+	// DemoInjectSQLFault corrupts the first active-search SQL per cluster so the
+	// self-correction loop visibly fires. Labelled fault-injection for demos /
+	// the "show self-correction at least once" requirement — never on by default.
+	DemoInjectSQLFault bool
+	DryRun             bool
+	ProgressFn         func(Event)
 }
 
 // Event is the progress hook.
@@ -59,6 +64,12 @@ type Report struct {
 	CacheReadTokens int
 	OutputTokens    int
 	TotalCostUSD    float64
+
+	// Active-search self-correction accounting (only meaningful with --active-search).
+	ActiveSQLAttempted        int
+	ActiveSQLSucceeded        int
+	ActiveSQLSelfCorrected    int
+	ActiveSQLCorrectionRounds int
 }
 
 // Run executes the Tier 2 MVP. Reads Tier 1 findings, clusters them
@@ -206,6 +217,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	rep.CacheReadTokens = audit.CacheReadTokensTotal
 	rep.OutputTokens = audit.OutputTokensTotal
 	rep.TotalCostUSD = audit.TotalCostUSD
+	rep.ActiveSQLAttempted = audit.ActiveSQLAttempted
+	rep.ActiveSQLSucceeded = audit.ActiveSQLSucceeded
+	rep.ActiveSQLSelfCorrected = audit.ActiveSQLSelfCorrected
+	rep.ActiveSQLCorrectionRounds = audit.ActiveSQLCorrectionRounds
 	emit(cfg, Event{Phase: "done",
 		Message: fmt.Sprintf("done in %.1fs (%d clusters, %d LLM calls)",
 			rep.Duration, len(clusters), audit.LLMCallsTotal),
