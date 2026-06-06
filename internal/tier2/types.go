@@ -159,6 +159,26 @@ type FindingRef struct {
 	RuleID   string `json:"rule_id"`
 	Title    string `json:"title"`
 	Severity string `json:"severity"`
+	// Provenance / Confidence record HOW the finding was derived, so the report
+	// and Review UI can separate machine-confirmed evidence from AI inference.
+	// signature → a deterministic Tier 1A rule matched real events (confirmed);
+	// anomaly-llm → a Tier 1B LLM judged the pattern anomalous (inferred).
+	Provenance string `json:"provenance,omitempty"` // signature | anomaly-llm
+	Confidence string `json:"confidence,omitempty"` // confirmed | inferred
+}
+
+// ProvenanceForSource maps a finding's source engine to its provenance and
+// confidence. Tier 1A signature rules (sigma/hayabusa/stix/custom) matched real
+// logged events deterministically (confirmed); the Tier 1B anomaly_hunter lens
+// is an LLM judgement (inferred). Confidence describes the derivation method,
+// not certainty of malice — both still require Examiner validation.
+func ProvenanceForSource(source string) (provenance, confidence string) {
+	switch source {
+	case "anomaly_hunter", "tier1b":
+		return "anomaly-llm", "inferred"
+	default: // sigma | hayabusa | stix | custom
+		return "signature", "confirmed"
+	}
 }
 
 // MITREEntry is one (tactic, technique, evidence_count) row in the

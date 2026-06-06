@@ -392,6 +392,8 @@ h3 { font-size: 13px; color: #c0d0e8; }
 .badge.sev-info     { background: #2a3556; color: #8aa0c8; }
 .badge.source-tier1a { background: #1e2c44; color: #8ec5ff; }
 .badge.source-tier1b { background: #2c1e44; color: #c08eff; }
+.badge.conf-confirmed { background: #14321f; color: #5fd08a; }
+.badge.conf-inferred  { background: #3a2e14; color: #e0b85f; }
 .badge.state-badge.auto-approved { background: #1f2c2a; color: #6cd0b8; }
 
 .finding-title {

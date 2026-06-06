@@ -7,9 +7,9 @@
 // in place — there is no separate review ledger.
 //
 // Sort order:
-//   1. severity desc (critical, high, medium, low, info)
-//   2. pending before reviewed
-//   3. finding_id (stable tiebreaker)
+//  1. severity desc (critical, high, medium, low, info)
+//  2. pending before reviewed
+//  3. finding_id (stable tiebreaker)
 package web
 
 import (
@@ -30,17 +30,21 @@ import (
 // Both Tier 1A (signature rule hit) and Tier 1B (skill-driven anomaly)
 // flatten into this so the front-end has one render path.
 type ReviewFinding struct {
-	FindingID       string                  `json:"finding_id"`
-	Source          string                  `json:"source"`                 // "tier1a" | "tier1b"
-	RuleSource      string                  `json:"rule_source,omitempty"`  // sigma/hayabusa/stix/custom/skill
-	RuleID          string                  `json:"rule_id,omitempty"`      // rule_id (1A) or skill name (1B)
-	Title           string                  `json:"title"`
-	Description     string                  `json:"description,omitempty"`
-	Severity        string                  `json:"severity"`               // critical|high|medium|low|info
-	MITRETechniques []string                `json:"mitre_techniques,omitempty"`
-	MITRETactics    []string                `json:"mitre_tactics,omitempty"`
-	Lens            string                  `json:"lens,omitempty"`         // 1B only (A1/A2/A4/A5/…)
-	MatchCount      int                     `json:"match_count"`            // 1A rows / 1B audit_id count
+	FindingID       string   `json:"finding_id"`
+	Source          string   `json:"source"`                // "tier1a" | "tier1b"
+	RuleSource      string   `json:"rule_source,omitempty"` // sigma/hayabusa/stix/custom/skill
+	RuleID          string   `json:"rule_id,omitempty"`     // rule_id (1A) or skill name (1B)
+	Title           string   `json:"title"`
+	Description     string   `json:"description,omitempty"`
+	Severity        string   `json:"severity"` // critical|high|medium|low|info
+	MITRETechniques []string `json:"mitre_techniques,omitempty"`
+	MITRETactics    []string `json:"mitre_tactics,omitempty"`
+	Lens            string   `json:"lens,omitempty"` // 1B only (A1/A2/A4/A5/…)
+	// Provenance / Confidence separate machine-confirmed evidence (Tier 1A
+	// signature matched real events) from AI inference (Tier 1B LLM judgement).
+	Provenance      string                  `json:"provenance,omitempty"` // signature | anomaly-llm
+	Confidence      string                  `json:"confidence,omitempty"` // confirmed | inferred
+	MatchCount      int                     `json:"match_count"`          // 1A rows / 1B audit_id count
 	Truncated       bool                    `json:"truncated,omitempty"`
 	EvidencePreview []ReviewEvidencePreview `json:"evidence_preview,omitempty"`
 
@@ -257,6 +261,8 @@ func convertTier1AFinding(f tier1a.Finding) ReviewFinding {
 		Severity:        normaliseSeverity(f.RuleMeta.Level),
 		MITRETechniques: f.RuleMeta.MITRETechniques,
 		MITRETactics:    f.RuleMeta.MITRETactics,
+		Provenance:      "signature",
+		Confidence:      "confirmed",
 		MatchCount:      f.MatchCount,
 		Truncated:       f.Truncated,
 		Approved:        f.Approved,
@@ -296,6 +302,8 @@ func convertTier1BFinding(rep tier1b.AnomalyReport, af tier1b.AnomalyFinding) Re
 		Description:  af.Description,
 		Severity:     normaliseSeverity(af.Severity),
 		Lens:         af.Lens,
+		Provenance:   "anomaly-llm",
+		Confidence:   "inferred",
 		MatchCount:   len(af.AuditIDs),
 		Approved:     af.Approved,
 		Rejected:     af.Rejected,

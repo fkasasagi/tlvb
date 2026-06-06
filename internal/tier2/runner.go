@@ -593,11 +593,14 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			ActiveSearch:    c.ActiveSearch,
 		}
 		for _, f := range c.Findings {
+			prov, conf := ProvenanceForSource(f.Source)
 			sc.FindingRefs = append(sc.FindingRefs, FindingRef{
-				Source:   f.Source,
-				RuleID:   f.RuleID,
-				Title:    f.Title,
-				Severity: f.Severity,
+				Source:     f.Source,
+				RuleID:     f.RuleID,
+				Title:      f.Title,
+				Severity:   f.Severity,
+				Provenance: prov,
+				Confidence: conf,
 			})
 		}
 		cs.Clusters = append(cs.Clusters, sc)

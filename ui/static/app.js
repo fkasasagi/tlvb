@@ -1827,6 +1827,12 @@ function findingRow(caseID, f, pane) {
     }),
     h("span", { class: "badge sev-" + sev }, sev),
     h("span", { class: "badge source-" + f.source, title: f.rule_id || "" }, sourceLabel),
+    ...(f.confidence
+      ? [h("span", {
+          class: "badge conf-" + f.confidence,
+          title: "provenance: " + (f.provenance || ""),
+        }, f.confidence)]
+      : []),
     h("span", { class: "finding-title" }, f.title || f.rule_id || "(untitled)"),
     h("span", { class: "spacer" }),
     ...(f.mitre_techniques || []).slice(0, 3).map((t) =>
