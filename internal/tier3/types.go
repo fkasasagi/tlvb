@@ -15,6 +15,8 @@ package tier3
 
 import (
 	"time"
+
+	"github.com/tlvb/tlvb/internal/completeness"
 )
 
 // Config drives Render.
@@ -52,6 +54,11 @@ type CaseMeta struct {
 	Evidence       []EvidenceItem
 	ArtifactCounts []ArtifactCount
 	TotalEvents    int
+
+	// CollectionGaps is the per-input completeness analysis (detection-relevant
+	// artefacts / EVTX channels present vs missing). Lets the report distinguish
+	// a DATA GAP from a detection MISS. nil → the subsection is omitted.
+	CollectionGaps []completeness.Result
 }
 
 // EvidenceItem is one acquired exhibit (chain-of-custody row).

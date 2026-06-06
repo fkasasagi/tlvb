@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/completeness"
 	"github.com/tlvb/tlvb/internal/tier3"
 )
 
@@ -133,6 +134,12 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string) {
 				meta.TotalEvents += n
 			}
 		}
+	}
+
+	// Detection-input completeness (data gap vs detection miss). Best-effort;
+	// skipped silently if the case has no events.
+	if results, _, err := completeness.EvaluateCase(ctx, mgr.DB(), caseID); err == nil {
+		meta.CollectionGaps = results
 	}
 
 	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {

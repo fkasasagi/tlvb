@@ -216,56 +216,63 @@ type labelDict struct {
 	SkillSHA         string
 
 	// forensic additions
-	DefaultClassification string
-	Examiner              string
-	UnknownExaminer       string
-	Organization          string
-	CaseInformation       string
-	DisplayName           string
-	Status                string
-	AnalysisDate          string
-	ToolVersion           string
-	Notes                 string
-	Scope                 string
-	ScopeBody             string
-	SeveritySummary       string
-	EvidenceChain         string
-	EvidenceID            string
-	SourcePath            string
-	SHA256                string
-	Size                  string
-	CollectedAt           string
-	EvidenceTypeCol       string
-	Host                  string
-	IntegrityNote         string
-	ArtifactCoverage      string
-	ArtifactName          string
-	EventCount            string
-	TotalEvents           string
-	Methodology           string
-	MethodologyBody       string
-	Limitations           string
-	AIDisclaimer          string
-	FirstSeen             string
-	Artifacts             string
-	EvidenceCountCol      string
-	ConfidenceCol         string
-	ConfirmedLabel        string
-	InferredLabel         string
-	TimelineSection       string
-	TimeCol               string
-	EventTypeCol          string
-	IOCSection            string
-	IOCType               string
-	IOCValue              string
-	IOCCount              string
-	NoIOC                 string
-	ActiveSearch          string
-	Question              string
-	AnswerCol             string
-	HitsCol               string
-	CaseOpenQuestions     string
-	None                  string
+	DefaultClassification  string
+	Examiner               string
+	UnknownExaminer        string
+	Organization           string
+	CaseInformation        string
+	DisplayName            string
+	Status                 string
+	AnalysisDate           string
+	ToolVersion            string
+	Notes                  string
+	Scope                  string
+	ScopeBody              string
+	SeveritySummary        string
+	EvidenceChain          string
+	EvidenceID             string
+	SourcePath             string
+	SHA256                 string
+	Size                   string
+	CollectedAt            string
+	EvidenceTypeCol        string
+	Host                   string
+	IntegrityNote          string
+	ArtifactCoverage       string
+	ArtifactName           string
+	EventCount             string
+	TotalEvents            string
+	Methodology            string
+	MethodologyBody        string
+	Limitations            string
+	AIDisclaimer           string
+	CompletenessSec        string
+	CompletenessBody       string
+	CompletenessInput      string
+	CompletenessCapability string
+	CompletenessStatus     string
+	CompletenessPresent    string
+	CompletenessMissing    string
+	FirstSeen              string
+	Artifacts              string
+	EvidenceCountCol       string
+	ConfidenceCol          string
+	ConfirmedLabel         string
+	InferredLabel          string
+	TimelineSection        string
+	TimeCol                string
+	EventTypeCol           string
+	IOCSection             string
+	IOCType                string
+	IOCValue               string
+	IOCCount               string
+	NoIOC                  string
+	ActiveSearch           string
+	Question               string
+	AnswerCol              string
+	HitsCol                string
+	CaseOpenQuestions      string
+	None                   string
 
 	// intrusion path / affected scope / recommendations
 	IntrusionPathSec   string
@@ -313,56 +320,63 @@ var dictJA = labelDict{
 	OutputTokens:     "Output tokens",
 	SkillSHA:         "Skill SHA-256",
 
-	DefaultClassification: "社外秘 / CONFIDENTIAL",
-	Examiner:              "解析担当 (Examiner)",
-	UnknownExaminer:       "(未記入)",
-	Organization:          "所属組織",
-	CaseInformation:       "1. ケース情報",
-	DisplayName:           "ケース名",
-	Status:                "ステータス",
-	AnalysisDate:          "解析実施日時",
-	ToolVersion:           "使用ツール",
-	Notes:                 "備考",
-	Scope:                 "解析スコープ",
-	ScopeBody:             "本レポートは、提供された Windows フォレンジック・アーティファクトに対する自動解析の結果である。対象は下記「証拠インベントリ」に列挙した証拠に限定される。ネットワークログ・メモリダンプ等、収集対象外のデータソースは解析範囲に含まれない。",
-	SeveritySummary:       "重要度サマリ",
-	EvidenceChain:         "4. 証拠インベントリと完全性 (Chain of Custody)",
-	EvidenceID:            "証拠 ID",
-	SourcePath:            "取得元",
-	SHA256:                "SHA-256",
-	Size:                  "サイズ",
-	CollectedAt:           "登録日時",
-	EvidenceTypeCol:       "種別",
-	Host:                  "ホスト",
-	IntegrityNote:         "各証拠は取得時に SHA-256 ハッシュを記録しており、上記値で原本との同一性を検証できる。解析は読み取り専用で行われ、原本は変更されていない。",
-	ArtifactCoverage:      "アーティファクト別イベント数 (Tier 0 解析範囲)",
-	ArtifactName:          "アーティファクト",
-	EventCount:            "イベント数",
-	TotalEvents:           "総イベント数",
-	Methodology:           "5. 解析手法と限界",
-	MethodologyBody:       "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。各 finding の「確度」列は導出方法を示す: 確認 = Tier 1A の決定的シグネチャが実際の記録イベントに一致したもの (照合自体は事実)、推論 = Tier 1B の LLM が異常と判断したもの。いずれも悪性の確証ではなく、最終判断は解析担当者のレビューを要する。",
-	Limitations:           "限界・前提: (1) タイムスタンプは原則 UTC。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
-	AIDisclaimer:          "AI 利用に関する開示: シナリオ記述・MITRE マッピング・未解決論点は大規模言語モデル (上記「解析モデル」) が生成した。シグネチャ検知部 (Tier 1A) は LLM を実行時に呼び出さず、事前検証済み SQL のみを実行する。最終的な判断は資格を持つ解析担当者によるレビューを前提とする。",
-	FirstSeen:             "初出時刻",
-	Artifacts:             "アーティファクト",
-	EvidenceCountCol:      "証拠数",
-	ConfidenceCol:         "確度",
-	ConfirmedLabel:        "確認",
-	InferredLabel:         "推論",
-	TimelineSection:       "6. イベントタイムライン (主要事象)",
-	TimeCol:               "時刻 (UTC)",
-	EventTypeCol:          "イベント種別",
-	IOCSection:            "8. 侵害指標 (Indicators of Compromise)",
-	IOCType:               "種別",
-	IOCValue:              "値",
-	IOCCount:              "出現回数",
-	NoIOC:                 "抽出可能な侵害指標はなかった。",
-	ActiveSearch:          "能動探索 (仮説駆動クエリ)",
-	Question:              "論点 / 仮説",
-	AnswerCol:             "解釈",
-	HitsCol:               "ヒット数",
-	CaseOpenQuestions:     "10. 未解決の論点 (ケース全体)",
-	None:                  "該当なし",
+	DefaultClassification:  "社外秘 / CONFIDENTIAL",
+	Examiner:               "解析担当 (Examiner)",
+	UnknownExaminer:        "(未記入)",
+	Organization:           "所属組織",
+	CaseInformation:        "1. ケース情報",
+	DisplayName:            "ケース名",
+	Status:                 "ステータス",
+	AnalysisDate:           "解析実施日時",
+	ToolVersion:            "使用ツール",
+	Notes:                  "備考",
+	Scope:                  "解析スコープ",
+	ScopeBody:              "本レポートは、提供された Windows フォレンジック・アーティファクトに対する自動解析の結果である。対象は下記「証拠インベントリ」に列挙した証拠に限定される。ネットワークログ・メモリダンプ等、収集対象外のデータソースは解析範囲に含まれない。",
+	SeveritySummary:        "重要度サマリ",
+	EvidenceChain:          "4. 証拠インベントリと完全性 (Chain of Custody)",
+	EvidenceID:             "証拠 ID",
+	SourcePath:             "取得元",
+	SHA256:                 "SHA-256",
+	Size:                   "サイズ",
+	CollectedAt:            "登録日時",
+	EvidenceTypeCol:        "種別",
+	Host:                   "ホスト",
+	IntegrityNote:          "各証拠は取得時に SHA-256 ハッシュを記録しており、上記値で原本との同一性を検証できる。解析は読み取り専用で行われ、原本は変更されていない。",
+	ArtifactCoverage:       "アーティファクト別イベント数 (Tier 0 解析範囲)",
+	ArtifactName:           "アーティファクト",
+	EventCount:             "イベント数",
+	TotalEvents:            "総イベント数",
+	Methodology:            "5. 解析手法と限界",
+	MethodologyBody:        "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。各 finding の「確度」列は導出方法を示す: 確認 = Tier 1A の決定的シグネチャが実際の記録イベントに一致したもの (照合自体は事実)、推論 = Tier 1B の LLM が異常と判断したもの。いずれも悪性の確証ではなく、最終判断は解析担当者のレビューを要する。",
+	Limitations:            "限界・前提: (1) タイムスタンプは原則 UTC。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
+	AIDisclaimer:           "AI 利用に関する開示: シナリオ記述・MITRE マッピング・未解決論点は大規模言語モデル (上記「解析モデル」) が生成した。シグネチャ検知部 (Tier 1A) は LLM を実行時に呼び出さず、事前検証済み SQL のみを実行する。最終的な判断は資格を持つ解析担当者によるレビューを前提とする。",
+	CompletenessSec:        "5.1 収集完全性 — データ欠落と検知失敗の区別",
+	CompletenessBody:       "以下は検知に関連する収集入力 (EVTX チャネル / Tier 0 アーティファクト) の在否である。「未収集」の項目は検知が失敗したのではなく、調査対象がそもそも収集されていなかったことを意味する (沈黙の不在を「調べて何も無かった」と誤読しないための明示)。",
+	CompletenessInput:      "検知入力",
+	CompletenessCapability: "解禁される検知",
+	CompletenessStatus:     "状態",
+	CompletenessPresent:    "収集済",
+	CompletenessMissing:    "未収集",
+	FirstSeen:              "初出時刻",
+	Artifacts:              "アーティファクト",
+	EvidenceCountCol:       "証拠数",
+	ConfidenceCol:          "確度",
+	ConfirmedLabel:         "確認",
+	InferredLabel:          "推論",
+	TimelineSection:        "6. イベントタイムライン (主要事象)",
+	TimeCol:                "時刻 (UTC)",
+	EventTypeCol:           "イベント種別",
+	IOCSection:             "8. 侵害指標 (Indicators of Compromise)",
+	IOCType:                "種別",
+	IOCValue:               "値",
+	IOCCount:               "出現回数",
+	NoIOC:                  "抽出可能な侵害指標はなかった。",
+	ActiveSearch:           "能動探索 (仮説駆動クエリ)",
+	Question:               "論点 / 仮説",
+	AnswerCol:              "解釈",
+	HitsCol:                "ヒット数",
+	CaseOpenQuestions:      "10. 未解決の論点 (ケース全体)",
+	None:                   "該当なし",
 
 	IntrusionPathSec:   "2. 侵入経路 (Intrusion Path)",
 	AffectedScopeSec:   "3. 影響範囲 (Affected Scope)",
@@ -409,56 +423,63 @@ var dictEN = labelDict{
 	OutputTokens:     "Output tokens",
 	SkillSHA:         "Skill SHA-256",
 
-	DefaultClassification: "CONFIDENTIAL",
-	Examiner:              "Examiner",
-	UnknownExaminer:       "(not recorded)",
-	Organization:          "Organization",
-	CaseInformation:       "1. Case Information",
-	DisplayName:           "Case name",
-	Status:                "Status",
-	AnalysisDate:          "Analysis date",
-	ToolVersion:           "Tooling",
-	Notes:                 "Notes",
-	Scope:                 "Scope",
-	ScopeBody:             "This report presents the result of automated analysis of the provided Windows forensic artifacts. Its scope is limited to the evidence listed under \"Evidence Inventory\" below. Data sources that were not collected (e.g. network logs, memory dumps) are out of scope.",
-	SeveritySummary:       "Severity Summary",
-	EvidenceChain:         "4. Evidence Inventory & Integrity (Chain of Custody)",
-	EvidenceID:            "Evidence ID",
-	SourcePath:            "Source",
-	SHA256:                "SHA-256",
-	Size:                  "Size",
-	CollectedAt:           "Registered at",
-	EvidenceTypeCol:       "Type",
-	Host:                  "Host",
-	IntegrityNote:         "A SHA-256 hash was recorded for each exhibit at acquisition; the values above let an examiner verify integrity against the original. Analysis was read-only and the originals were not modified.",
-	ArtifactCoverage:      "Events per Artifact (Tier 0 coverage)",
-	ArtifactName:          "Artifact",
-	EventCount:            "Events",
-	TotalEvents:           "Total events",
-	Methodology:           "5. Methodology & Limitations",
-	MethodologyBody:       "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp. The \"Confidence\" column records how each finding was derived: Confirmed = a deterministic Tier 1A signature matched real logged events (the match itself is factual); Inferred = a Tier 1B LLM judged the pattern anomalous. Neither asserts malice — final adjudication requires analyst review.",
-	Limitations:           "Limitations & assumptions: (1) Timestamps are UTC; artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
-	AIDisclaimer:          "AI disclosure: narratives, MITRE mappings and open questions were generated by a large language model (see \"Analysis model\"). The signature-detection tier (Tier 1A) invokes no LLM at runtime — it executes only pre-validated SQL. Final determinations are expected to be reviewed by a qualified examiner.",
-	FirstSeen:             "First seen",
-	Artifacts:             "Artifacts",
-	EvidenceCountCol:      "Evidence",
-	ConfidenceCol:         "Confidence",
-	ConfirmedLabel:        "Confirmed",
-	InferredLabel:         "Inferred",
-	TimelineSection:       "6. Event Timeline (key events)",
-	TimeCol:               "Time (UTC)",
-	EventTypeCol:          "Event type",
-	IOCSection:            "8. Indicators of Compromise",
-	IOCType:               "Type",
-	IOCValue:              "Value",
-	IOCCount:              "Occurrences",
-	NoIOC:                 "No indicators of compromise could be extracted.",
-	ActiveSearch:          "Active search (hypothesis-driven queries)",
-	Question:              "Question / hypothesis",
-	AnswerCol:             "Interpretation",
-	HitsCol:               "Hits",
-	CaseOpenQuestions:     "10. Open Questions (case-wide)",
-	None:                  "None",
+	DefaultClassification:  "CONFIDENTIAL",
+	Examiner:               "Examiner",
+	UnknownExaminer:        "(not recorded)",
+	Organization:           "Organization",
+	CaseInformation:        "1. Case Information",
+	DisplayName:            "Case name",
+	Status:                 "Status",
+	AnalysisDate:           "Analysis date",
+	ToolVersion:            "Tooling",
+	Notes:                  "Notes",
+	Scope:                  "Scope",
+	ScopeBody:              "This report presents the result of automated analysis of the provided Windows forensic artifacts. Its scope is limited to the evidence listed under \"Evidence Inventory\" below. Data sources that were not collected (e.g. network logs, memory dumps) are out of scope.",
+	SeveritySummary:        "Severity Summary",
+	EvidenceChain:          "4. Evidence Inventory & Integrity (Chain of Custody)",
+	EvidenceID:             "Evidence ID",
+	SourcePath:             "Source",
+	SHA256:                 "SHA-256",
+	Size:                   "Size",
+	CollectedAt:            "Registered at",
+	EvidenceTypeCol:        "Type",
+	Host:                   "Host",
+	IntegrityNote:          "A SHA-256 hash was recorded for each exhibit at acquisition; the values above let an examiner verify integrity against the original. Analysis was read-only and the originals were not modified.",
+	ArtifactCoverage:       "Events per Artifact (Tier 0 coverage)",
+	ArtifactName:           "Artifact",
+	EventCount:             "Events",
+	TotalEvents:            "Total events",
+	Methodology:            "5. Methodology & Limitations",
+	MethodologyBody:        "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp. The \"Confidence\" column records how each finding was derived: Confirmed = a deterministic Tier 1A signature matched real logged events (the match itself is factual); Inferred = a Tier 1B LLM judged the pattern anomalous. Neither asserts malice — final adjudication requires analyst review.",
+	Limitations:            "Limitations & assumptions: (1) Timestamps are UTC; artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
+	AIDisclaimer:           "AI disclosure: narratives, MITRE mappings and open questions were generated by a large language model (see \"Analysis model\"). The signature-detection tier (Tier 1A) invokes no LLM at runtime — it executes only pre-validated SQL. Final determinations are expected to be reviewed by a qualified examiner.",
+	CompletenessSec:        "5.1 Collection completeness - data gap vs detection miss",
+	CompletenessBody:       "The table below lists detection-relevant collection inputs (EVTX channels and Tier 0 artefacts) and whether each was present. A NOT-collected row means the input was never acquired, so a related miss is a DATA GAP rather than a detection failure; absence here must not be read as looked-and-found-nothing.",
+	CompletenessInput:      "Detection input",
+	CompletenessCapability: "Detection enabled",
+	CompletenessStatus:     "Status",
+	CompletenessPresent:    "collected",
+	CompletenessMissing:    "NOT collected",
+	FirstSeen:              "First seen",
+	Artifacts:              "Artifacts",
+	EvidenceCountCol:       "Evidence",
+	ConfidenceCol:          "Confidence",
+	ConfirmedLabel:         "Confirmed",
+	InferredLabel:          "Inferred",
+	TimelineSection:        "6. Event Timeline (key events)",
+	TimeCol:                "Time (UTC)",
+	EventTypeCol:           "Event type",
+	IOCSection:             "8. Indicators of Compromise",
+	IOCType:                "Type",
+	IOCValue:               "Value",
+	IOCCount:               "Occurrences",
+	NoIOC:                  "No indicators of compromise could be extracted.",
+	ActiveSearch:           "Active search (hypothesis-driven queries)",
+	Question:               "Question / hypothesis",
+	AnswerCol:              "Interpretation",
+	HitsCol:                "Hits",
+	CaseOpenQuestions:      "10. Open Questions (case-wide)",
+	None:                   "None",
 
 	IntrusionPathSec:   "2. Intrusion Path",
 	AffectedScopeSec:   "3. Affected Scope",
@@ -789,6 +810,18 @@ const htmlTemplate = `<!DOCTYPE html>
   <h2>{{.Dict.Methodology}}</h2>
   <p>{{.Dict.MethodologyBody}}</p>
   <p>{{.Dict.Limitations}}</p>
+  {{if .Meta}}{{if .Meta.CollectionGaps}}
+  <h3>{{.Dict.CompletenessSec}}</h3>
+  <p>{{.Dict.CompletenessBody}}</p>
+  <table>
+    <thead><tr><th>{{.Dict.CompletenessInput}}</th><th>{{.Dict.CompletenessCapability}}</th><th>{{.Dict.CompletenessStatus}}</th></tr></thead>
+    <tbody>
+      {{range .Meta.CollectionGaps}}
+      <tr><td>{{.Label}}</td><td>{{.Capability}}</td><td>{{if .Present}}{{$.Dict.CompletenessPresent}}{{else}}{{$.Dict.CompletenessMissing}} ({{.Importance}}){{end}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}{{end}}
   <div class="disclaimer">{{.Dict.AIDisclaimer}}</div>
 </section>
 

@@ -8,6 +8,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -17,16 +18,18 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/completeness"
 )
 
 // CaseSummary is the wire shape returned to the UI.
 type CaseSummary struct {
-	CaseID    string           `json:"case_id"`
-	Parse     *ParseSummary    `json:"parse,omitempty"`
-	Tier1A    *FindingsSummary `json:"tier1a,omitempty"`
-	Tier1B    *FindingsSummary `json:"tier1b,omitempty"`
-	Synthesis *SynthSummary    `json:"synthesis,omitempty"`
-	Report    *ReportSummary   `json:"report,omitempty"`
+	CaseID       string               `json:"case_id"`
+	Parse        *ParseSummary        `json:"parse,omitempty"`
+	Completeness *CompletenessSummary `json:"completeness,omitempty"`
+	Tier1A       *FindingsSummary     `json:"tier1a,omitempty"`
+	Tier1B       *FindingsSummary     `json:"tier1b,omitempty"`
+	Synthesis    *SynthSummary        `json:"synthesis,omitempty"`
+	Report       *ReportSummary       `json:"report,omitempty"`
 }
 
 type ParseSummary struct {
@@ -76,11 +79,22 @@ type ReportSummary struct {
 	GeneratedAt string   `json:"generated_at,omitempty"`
 }
 
+// CompletenessSummary surfaces the detection-input gap analysis (which
+// detection-relevant artefacts / EVTX channels were collected vs missing) so
+// the UI can distinguish a DATA GAP from a detection MISS.
+type CompletenessSummary struct {
+	EVTXChannels    []string              `json:"evtx_channels_collected,omitempty"`
+	Inputs          []completeness.Result `json:"inputs"`
+	MissingCount    int                   `json:"missing_count"`
+	MissingCritical int                   `json:"missing_critical"`
+}
+
 func (s *Server) handleGetCaseSummary(w http.ResponseWriter, r *http.Request) {
 	caseID := r.PathValue("id")
 	sum := CaseSummary{CaseID: caseID}
 
 	sum.Parse = s.summariseParse(caseID)
+	sum.Completeness = s.summariseCompleteness(caseID)
 	sum.Tier1A, sum.Tier1B = s.summariseFindings(caseID)
 	sum.Synthesis = s.summariseSynthesis(caseID)
 	sum.Report = s.summariseReport(caseID)
@@ -143,6 +157,29 @@ func (s *Server) summariseParse(caseID string) *ParseSummary {
 		return nil
 	}
 	return &ps
+}
+
+// ----------------------------------------------------------------------------
+// Completeness: which detection-relevant inputs were collected vs missing.
+// ----------------------------------------------------------------------------
+
+func (s *Server) summariseCompleteness(caseID string) *CompletenessSummary {
+	var cs CompletenessSummary
+	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
+		results, channels, err := completeness.EvaluateCase(context.Background(), m.DB(), caseID)
+		if err != nil {
+			return err
+		}
+		cs.Inputs = results
+		cs.EVTXChannels = channels
+		cs.MissingCount, cs.MissingCritical = completeness.CountMissing(results)
+		return nil
+	})
+	if err != nil {
+		// No parse data yet (or DB busy) — omit the section.
+		return nil
+	}
+	return &cs
 }
 
 // ----------------------------------------------------------------------------

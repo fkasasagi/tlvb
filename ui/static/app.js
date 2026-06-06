@@ -2572,6 +2572,24 @@ async function paintCaseSnapshot(host, caseID) {
       [h("span", { class: "muted" }, "no parsed events yet")], null));
   }
 
+  // Collection completeness — distinguishes a DATA GAP from a detection MISS.
+  if (sum.completeness) {
+    const c = sum.completeness;
+    const inputs = c.inputs || [];
+    const present = inputs.filter((i) => i.present).length;
+    const missing = inputs.filter((i) => !i.present);
+    const rows = [
+      kv("Inputs present", `${present}/${inputs.length}`),
+      kv("Data gaps", c.missing_count +
+        (c.missing_critical ? ` · ${c.missing_critical} critical` : "")),
+    ];
+    const footer = missing.length === 0
+      ? "All catalogued detection inputs present."
+      : "Not collected (absence ≠ detection failure): " +
+        missing.map((i) => i.label).join(" · ");
+    body.appendChild(snapshotTile("Collection completeness", rows, footer));
+  }
+
   // Tier 1A
   body.appendChild(findingsTile("Tier 1A · Signature rules", sum.tier1a));
   // Tier 1B
