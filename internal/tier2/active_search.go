@@ -428,8 +428,13 @@ func validateActiveSearchSQL(s string) error {
 	if strings.Count(s, "?") != 1 {
 		return fmt.Errorf("expected exactly one ? placeholder, got %d", strings.Count(s, "?"))
 	}
-	if strings.HasSuffix(s, ";") {
-		return fmt.Errorf("SQL must not end with semicolon")
+	// Reject ANY bare semicolon (outside string literals), not just a trailing
+	// one. A mid-statement ';' (e.g. "... WHERE case_id = ? ; SELECT 2") would
+	// smuggle a second, stacked statement past the single-statement contract.
+	// `stripped` already has string literals blanked, so a ';' inside a quoted
+	// value is exempt.
+	if strings.Contains(stripped, ";") {
+		return fmt.Errorf("SQL must not contain a semicolon (single-statement SELECT only)")
 	}
 	return nil
 }
