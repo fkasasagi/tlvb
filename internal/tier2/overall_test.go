@@ -19,7 +19,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		},
 	}
 	// Without compaction: narrative preserved as-is.
-	full, err := buildOverallUserMessage(clusters, false)
+	full, err := buildOverallUserMessage(clusters, false, "ja")
 	if err != nil {
 		t.Fatalf("full: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		t.Error("non-compact build should preserve full narrative")
 	}
 	// With compaction: narrative truncated to 1500 + marker.
-	compact, err := buildOverallUserMessage(clusters, true)
+	compact, err := buildOverallUserMessage(clusters, true, "ja")
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -56,18 +56,21 @@ func TestFallbackOverallStory(t *testing.T) {
 			Narrative:   "cluster 2 narrative",
 		},
 	}
-	got := fallbackOverallStory(clusters)
-	if !strings.Contains(got, "LLM overall synthesis unavailable") {
-		t.Error("fallback should self-identify")
+	got := fallbackOverallStory(clusters, "ja")
+	// The fallback now concatenates raw cluster narratives only — no
+	// "(LLM overall synthesis unavailable...)" banner (P1) and no
+	// "Cluster #N"/phase/timestamp scaffolding leaking into the prose.
+	if strings.Contains(got, "LLM overall synthesis unavailable") {
+		t.Error("fallback must NOT expose the system error banner")
 	}
-	for _, want := range []string{
-		"Cluster #1", "Cluster #2",
-		"execution", "lateral-movement",
-		"cluster 1 narrative", "cluster 2 narrative",
-		"2026-05-19T13:50:00Z",
-	} {
+	for _, unwanted := range []string{"Cluster #1", "Cluster #2", "2026-05-19T13:50:00Z"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("fallback should not embed scaffolding %q", unwanted)
+		}
+	}
+	for _, want := range []string{"cluster 1 narrative", "cluster 2 narrative"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("fallback missing %q", want)
+			t.Errorf("fallback missing narrative %q", want)
 		}
 	}
 }
@@ -75,9 +78,14 @@ func TestFallbackOverallStory(t *testing.T) {
 func TestFallbackOverallStoryEmptyNarrative(t *testing.T) {
 	got := fallbackOverallStory([]Cluster{
 		{ID: 1, AttackPhase: "execution", Narrative: ""},
-	})
-	if !strings.Contains(got, "(no narrative)") {
-		t.Error("empty narrative should render placeholder")
+	}, "ja")
+	// An empty narrative contributes nothing — no "(no narrative)" placeholder
+	// leaking into the executive summary.
+	if strings.Contains(got, "(no narrative)") {
+		t.Error("empty narrative must not render a placeholder")
+	}
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("expected empty output for all-empty narratives, got %q", got)
 	}
 }
 
@@ -87,7 +95,7 @@ func TestBuildOverallUserMessageValidJSON(t *testing.T) {
 		{ID: 1, AttackPhase: "execution", Narrative: "a"},
 		{ID: 2, AttackPhase: "impact", Narrative: "b"},
 	}
-	msg, err := buildOverallUserMessage(clusters, false)
+	msg, err := buildOverallUserMessage(clusters, false, "ja")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -279,6 +279,9 @@ its own.
 
 - **Every observation must cite ≥1 `audit_id`** from the input.
   Phantom IDs will fail validation.
+- **audit_ids must appear in `evidence_audit_ids` arrays, NOT in prose fields.**
+  The `narrative`, `summary`, `reasoning`, `next_step` fields are for human
+  readers — write those in plain language without embedding IDs.
 - **Do not invent technique IDs**. If you see a behaviour, refer to
   it by the closest Tier 1 finding_id rather than inventing
   `T1234.567`.
@@ -305,7 +308,7 @@ prose, no markdown fences. The Synthesizer parses your reply with
   "case_id": "<from input>",
   "evidence_ids": ["<from input>"],
   "language": "ja | en",
-  "narrative": "<4–8 sentence chronological storyline anchored on real audit_ids>",
+  "narrative": "<4–8 sentence chronological storyline for a human reader. Write in the language specified by the `language` field. Do NOT embed audit_ids, rule_ids, or UUIDs in the prose — cite them in evidence_audit_ids arrays only. Mention tools and techniques by descriptive name.>",
   "observations": [
     {
       "observation_id": "TR-001",

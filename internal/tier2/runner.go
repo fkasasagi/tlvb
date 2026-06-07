@@ -30,6 +30,7 @@ type Config struct {
 	SkillName         string        // default "timeline_review" (skills/<name>.md)
 	ClaudeBinary      string        // default "claude"
 	Model             string        // empty = CLI default
+	Language          string        // "ja" | "en"  (default: "ja")
 	ClusterGap        time.Duration // default 30 min
 	TimelineWindow    time.Duration // default 5 min
 	MaxRowsPerCluster int           // default 300
@@ -114,6 +115,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	if cfg.PerClusterTimeout <= 0 {
 		cfg.PerClusterTimeout = 5 * time.Minute
+	}
+	if cfg.Language == "" {
+		cfg.Language = "ja"
 	}
 	// Append Tier 2 activity to the same actions.jsonl the Tier 0 orchestrator
 	// writes, so the case has one ordered, timestamped execution log.
@@ -202,15 +206,21 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		clusters, _ = RunActiveSearch(ctx, cfg, db, clusters, &audit)
 	}
 
-	// Overall synthesis call: feed the per-cluster narratives back to LLM
-	// for one case-wide story. Keep prompt small (cluster summaries only).
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skillBytes), &audit)
+	// Overall synthesis call: uses a dedicated system prompt
+	// (skills/overall_synthesis.md, NOT the cluster-analysis
+	// timeline_review.md) to write one case-wide story.
+	overallSkillPath := filepath.Join(cfg.SkillsDir, "overall_synthesis.md")
+	overallSkillBytes, err2 := os.ReadFile(overallSkillPath)
+	if err2 != nil {
+		overallSkillBytes = skillBytes // fall back to the cluster skill if absent
+	}
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit)
 	if err != nil {
 		// Fall back to a deterministic per-cluster stitch so the report
 		// still has SOMETHING in the Executive Summary slot.
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
-		overall = fallbackOverallStory(clusters)
+		overall = fallbackOverallStory(clusters, cfg.Language)
 	}
 
 	emit(cfg, Event{Phase: "writing",
@@ -244,7 +254,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt string,
 	audit *SynthAudit) error {
 
-	userMsg, err := buildClusterUserMessage(c)
+	userMsg, err := buildClusterUserMessage(c, cfg.Language)
 	if err != nil {
 		return err
 	}
@@ -289,7 +299,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// token counters.
 	for attempt := 1; attempt <= 2; attempt++ {
 		compacted := attempt == 2
-		userMsg, err := buildOverallUserMessage(clusters, compacted)
+		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language)
 		if err != nil {
 			return "", err
 		}
@@ -326,27 +336,15 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 // together each cluster's narrative. Called when the LLM-based overall
 // pass fails — the operator still gets a coherent case-level summary
 // instead of an empty section in the report.
-func fallbackOverallStory(clusters []Cluster) string {
+func fallbackOverallStory(clusters []Cluster, lang string) string {
+	_ = lang // reserved for future language-specific separators
 	var sb strings.Builder
-	sb.WriteString("(LLM overall synthesis unavailable; auto-stitched per-cluster narratives follow.)\n\n")
 	for i, c := range clusters {
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
-		fmt.Fprintf(&sb, "Cluster #%d", c.ID)
-		if !c.StartTS.IsZero() && !c.EndTS.IsZero() {
-			fmt.Fprintf(&sb, " (%s ~ %s)",
-				c.StartTS.UTC().Format(time.RFC3339),
-				c.EndTS.UTC().Format(time.RFC3339))
-		}
-		if c.AttackPhase != "" {
-			fmt.Fprintf(&sb, " — %s", c.AttackPhase)
-		}
-		sb.WriteString(":\n")
 		if c.Narrative != "" {
 			sb.WriteString(c.Narrative)
-		} else {
-			sb.WriteString("(no narrative)")
 		}
 	}
 	return sb.String()
@@ -367,7 +365,7 @@ func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
 	return &out, nil
 }
 
-func buildClusterUserMessage(c *Cluster) (string, error) {
+func buildClusterUserMessage(c *Cluster, lang string) (string, error) {
 	type fLite struct {
 		Source          string   `json:"source"`
 		RuleID          string   `json:"rule_id"`
@@ -418,19 +416,25 @@ func buildClusterUserMessage(c *Cluster) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	langInst := "Output language: Japanese (日本語). Write ALL prose fields (narrative, open_questions) in Japanese."
+	if strings.ToLower(lang) == "en" {
+		langInst = "Output language: English. Write ALL prose fields in English."
+	}
 	prelude := `Below is one TEMPORAL CLUSTER of Tier 1 findings from a Windows
 forensic case, plus the raw timeline events from unified_events that fall
 in the same ±5 min window. Reconstruct the attack-chain story for this
 cluster.
 
+` + langInst + `
+
 Return ONLY a single JSON object:
 
   {
-    "narrative":   "(1-3 paragraphs reconstructing what happened in this cluster, citing the finding rule_ids you used)",
+    "narrative": "(1-3 paragraphs for a human reader. Do NOT embed rule_ids, audit_ids, or UUIDs in the prose — those belong in the evidence arrays only. Mention tools, accounts, and techniques by descriptive name.)",
     "attack_phase": "(one of: initial-access | execution | persistence | privilege-escalation | defense-evasion | credential-access | discovery | lateral-movement | collection | command-and-control | exfiltration | impact | reconnaissance | unknown)",
-    "mitre_techniques": ["T1059", "T1003.001", ...],
+    "mitre_techniques": ["T1059", "T1003.001"],
     "open_questions": [
-      "(any specific evidence missing / unresolved within this cluster)",
+      "(specific evidence gap or unresolved question — same language as narrative)",
       ...
     ]
   }
@@ -442,7 +446,7 @@ ClusterContext:
 	return prelude + string(body), nil
 }
 
-func buildOverallUserMessage(clusters []Cluster, compactNarratives bool) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string) (string, error) {
 	type clite struct {
 		ID              int      `json:"cluster_id"`
 		AttackPhase     string   `json:"attack_phase,omitempty"`
@@ -478,10 +482,17 @@ func buildOverallUserMessage(clusters []Cluster, compactNarratives bool) (string
 	if err != nil {
 		return "", err
 	}
-	return `Below are the per-cluster narratives you produced for a Windows
-forensic case. Write a single 2-4 paragraph case-level story that connects
-them into one attack timeline. Mention concrete techniques and dwell time
-where you can; be honest about gaps. Return plain text, no markdown.
+	langInst := "出力言語: 日本語。本文はすべて日本語で記述してください。"
+	if strings.ToLower(lang) == "en" {
+		langInst = "Output language: English."
+	}
+	return langInst + `
+
+Below are the per-cluster narratives you produced for a Windows
+forensic case. Write a single 4-5 paragraph case-level story that connects
+them into one attack timeline. Mention concrete techniques, host names, and
+accounts by name. Be honest about gaps. Do NOT embed rule_ids, audit_ids,
+or UUIDs in the prose. Return plain text only, no markdown.
 
 ClusterSummaries:
 ` + string(body), nil

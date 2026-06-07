@@ -562,15 +562,21 @@ func interpretActiveSearchResults(ctx context.Context, cfg Config, c *Cluster,
 	if err != nil {
 		return "", err
 	}
+	langInst := "Write in Japanese (日本語)."
+	if strings.ToLower(cfg.Language) == "en" {
+		langInst = "Write in English."
+	}
 	system := `You are now in TLVB Tier 2 ACTIVE-SEARCH INTERPRETATION mode.
 
+` + langInst + `
+
 Your earlier round produced SQL queries and now their results are below.
-Write a brief follow-up addendum to the cluster narrative (2-4 sentences)
-that incorporates concrete findings the SQL revealed. Cite audit_ids when
-relevant. If the SQL returned 0 rows or the evidence is inconclusive,
-note that honestly — do not invent answers. A result carrying an "error"
-field (e.g. "all projected columns NULL") FAILED — do not treat its
-absent/NULL values as evidence; at most note the question remains open.
+Write a brief follow-up addendum (2-4 sentences) that incorporates concrete
+findings the SQL revealed. Do NOT embed audit_ids or UUIDs in prose —
+describe what was found in plain language. If the SQL returned 0 rows or the
+evidence is inconclusive, note that honestly — do not invent answers. A
+result carrying an "error" field FAILED — do not treat absent/NULL values
+as evidence; at most note the question remains open.
 
 Return ONLY the addendum text. No JSON, no markdown.`
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
@@ -841,20 +847,15 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 		if err != nil {
 			continue
 		}
-		// Attach addendum as an extra paragraph to the narrative for
-		// downstream Reporter rendering.
+		// Store the addendum ONLY in ActiveSearch.Answer — do NOT append
+		// to c.Narrative. The HTML renderer shows active_search as a
+		// separate block, keeping narrative prose clean.
 		if addendum != "" {
-			c.Narrative = strings.TrimRight(c.Narrative, "\n") + "\n\nActive-search addendum: " + addendum
-		}
-		// Also stamp the LLM-written answer onto each ActiveSearchResult
-		// so the Answer column survives serialisation. Use a single
-		// addendum split heuristically — for MVP, attach the full
-		// addendum to the FIRST successful search result. v0.2 can ask
-		// the LLM to write per-question answers.
-		for k := range c.ActiveSearch {
-			if c.ActiveSearch[k].Error == "" {
-				c.ActiveSearch[k].Answer = addendum
-				break
+			for k := range c.ActiveSearch {
+				if c.ActiveSearch[k].Error == "" {
+					c.ActiveSearch[k].Answer = addendum
+					break
+				}
 			}
 		}
 	}
