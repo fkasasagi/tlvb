@@ -2575,6 +2575,10 @@ async function paintCaseSnapshot(host, caseID) {
     if (s.active_search_enabled) {
       rows.push(kv("Active SQL",
         `${s.active_sql_succeeded || 0}/${s.active_sql_attempted || 0} ok`));
+      if (s.active_sql_self_corrected) {
+        rows.push(kv("Self-corrected",
+          `${s.active_sql_self_corrected} query(ies) recovered after revision`));
+      }
     }
     body.appendChild(snapshotTile("Tier 2 · Synthesis", rows,
       s.model_id ? "model: " + s.model_id : null));

@@ -10,18 +10,18 @@ import (
 
 // runPipelineTLVB is the v0.1 TLVB one-shot orchestrator:
 //
-//   tlvb run CASE_ID --tier all [--evidence PATH] [--evidence-id EV-001]
-//      [--skip-parse] [--skip-1a] [--skip-1b] [--skip-2] [--skip-report]
-//      [--active-search] [--format html,csv,json] [--language ja|en]
-//      [--include-info-level]
+//	tlvb run CASE_ID --tier all [--evidence PATH] [--evidence-id EV-001]
+//	   [--skip-parse] [--skip-1a] [--skip-1b] [--skip-2] [--skip-report]
+//	   [--active-search] [--max-self-correct N] [--format html,csv,json] [--language ja|en]
+//	   [--include-info-level]
 //
 // It chains the existing TLVB CLI sub-flows in order:
-//   1. case init (idempotent)
-//   2. parse (Tier 0) — unless --skip-parse
-//   3. analyze --tier 1a — cached SQL + Hayabusa pass-through
-//   4. analyze --tier 1b — Skills-driven Anomaly
-//   5. synthesize --tier 2 — Timeline Analysis (optionally with --active-search)
-//   6. report --tier 3 — HTML / CSV / JSON
+//  1. case init (idempotent)
+//  2. parse (Tier 0) — unless --skip-parse
+//  3. analyze --tier 1a — cached SQL + Hayabusa pass-through
+//  4. analyze --tier 1b — Skills-driven Anomaly
+//  5. synthesize --tier 2 — Timeline Analysis (optionally with --active-search)
+//  6. report --tier 3 — HTML / CSV / JSON
 //
 // Failure policy:
 //   - Parse failure aborts (downstream needs data).
@@ -42,6 +42,8 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		skip2            bool
 		skipReport       bool
 		activeSearch     bool
+		maxSelfCorrect   string // forwarded verbatim to synthesize; "" = synthesize default
+		demoInjectFault  bool
 		includeInfoLevel bool
 		format           = "html,csv,json"
 		language         = "ja"
@@ -125,6 +127,14 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 			skipReport = true
 		case a == "--active-search":
 			activeSearch = true
+		case a == "--max-self-correct":
+			if v, ok := next(); ok {
+				maxSelfCorrect = v
+			}
+		case strings.HasPrefix(a, "--max-self-correct="):
+			maxSelfCorrect = strings.TrimPrefix(a, "--max-self-correct=")
+		case a == "--demo-inject-sql-fault":
+			demoInjectFault = true
 		case a == "--include-info-level":
 			includeInfoLevel = true
 		default:
@@ -209,6 +219,12 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		args2 := []string{caseID, "--tier", "2", "--db", dbPath}
 		if activeSearch {
 			args2 = append(args2, "--active-search")
+		}
+		if maxSelfCorrect != "" {
+			args2 = append(args2, "--max-self-correct", maxSelfCorrect)
+		}
+		if demoInjectFault {
+			args2 = append(args2, "--demo-inject-sql-fault")
 		}
 		if model != "" {
 			args2 = append(args2, "--model", model)
