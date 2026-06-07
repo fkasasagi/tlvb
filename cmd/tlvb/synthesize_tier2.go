@@ -22,6 +22,7 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		"skill markdown basename under skills/")
 	skillsDir := fs.String("skills-dir", "skills", "skill markdown root")
 	model := fs.String("model", "", "model id (empty = let claude CLI default)")
+	language := fs.String("language", "ja", "output language for narratives / summary: ja | en")
 	gapMinutes := fs.Int("cluster-gap-minutes", 30, "cluster gap threshold")
 	windowMinutes := fs.Int("timeline-window-minutes", 5,
 		"±N min raw timeline window around each cluster")
@@ -61,6 +62,7 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		SkillsDir:          *skillsDir,
 		SkillName:          *skillName,
 		Model:              *model,
+		Language:           *language,
 		ClusterGap:         time.Duration(*gapMinutes) * time.Minute,
 		TimelineWindow:     time.Duration(*windowMinutes) * time.Minute,
 		MaxRowsPerCluster:  *maxRowsPerCluster,

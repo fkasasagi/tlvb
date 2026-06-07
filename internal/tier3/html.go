@@ -520,7 +520,7 @@ func phaseLabelJA(p string) string {
 		"reconnaissance":       "偵察",
 	}
 	if v, ok := m[p]; ok {
-		return v + " (" + p + ")"
+		return v
 	}
 	return p
 }
