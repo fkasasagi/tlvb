@@ -3,9 +3,14 @@ package tier2
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tlvb/tlvb/internal/auditlog"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -63,7 +68,7 @@ func TestSelfCorrectionRecoversNullResult(t *testing.T) {
 	}
 
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"who logged on?", badNullSQL, 2, correct, &audit)
+		"who logged on?", badNullSQL, 2, correct, &audit, nil, 0)
 
 	if !res.Corrected {
 		t.Errorf("Corrected = false, want true")
@@ -98,7 +103,7 @@ func TestSelfCorrectionFirstTryOK(t *testing.T) {
 		return "", nil
 	}
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"q", goodSQL, 2, correct, &audit)
+		"q", goodSQL, 2, correct, &audit, nil, 0)
 
 	if res.Corrected || res.Error != "" {
 		t.Errorf("Corrected=%v Error=%q", res.Corrected, res.Error)
@@ -121,7 +126,7 @@ func TestSelfCorrectionGivesUp(t *testing.T) {
 		return "", nil
 	}
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"q", badNullSQL, 2, correct, &audit)
+		"q", badNullSQL, 2, correct, &audit, nil, 0)
 
 	if res.Corrected {
 		t.Errorf("Corrected = true, want false")
@@ -149,7 +154,7 @@ func TestSelfCorrectionRecoversExecError(t *testing.T) {
 		return goodSQL, nil
 	}
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"q", execErrSQL, 2, correct, &audit)
+		"q", execErrSQL, 2, correct, &audit, nil, 0)
 
 	if !res.Corrected || res.Error != "" {
 		t.Errorf("Corrected=%v Error=%q", res.Corrected, res.Error)
@@ -172,7 +177,7 @@ func TestSelfCorrectionDisabled(t *testing.T) {
 	}
 	// maxCorrect=0 → attempt 1 fails and we stop immediately (old behaviour).
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"q", badNullSQL, 0, correct, &audit)
+		"q", badNullSQL, 0, correct, &audit, nil, 0)
 
 	if res.Corrected || len(res.Attempts) != 1 {
 		t.Errorf("Corrected=%v Attempts=%d", res.Corrected, len(res.Attempts))
@@ -214,7 +219,7 @@ func TestDemoFaultRecoversViaSelfCorrection(t *testing.T) {
 		return goodSQL, nil // the LLM drops the bogus predicate and recovers
 	}
 	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1",
-		"q", injected, 2, correct, &audit)
+		"q", injected, 2, correct, &audit, nil, 0)
 
 	if !res.Corrected || res.Error != "" {
 		t.Errorf("Corrected=%v Error=%q", res.Corrected, res.Error)
@@ -225,6 +230,66 @@ func TestDemoFaultRecoversViaSelfCorrection(t *testing.T) {
 	}
 	if audit.ActiveSQLSelfCorrected != 1 {
 		t.Errorf("audit = %+v", audit)
+	}
+}
+
+func readActions(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read actions: %v", err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("bad action line %q: %v", line, err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// TestSelfCorrectionAuditChronology pins the fix that each attempt is logged the
+// moment it happens: the correction LLM call must land BETWEEN the failed
+// attempt and the successful retry, not before both.
+func TestSelfCorrectionAuditChronology(t *testing.T) {
+	db := newSelfCorrectDB(t)
+	var audit SynthAudit
+	path := filepath.Join(t.TempDir(), "actions.jsonl")
+	al := auditlog.New(path, "C1")
+
+	// The stub corrector emits its own marker (as the real correctActiveSearchSQL
+	// does) so we can assert ordering deterministically without an LLM.
+	correct := func(_ context.Context, _, _ string, attempt int) (string, error) {
+		al.Append(auditlog.Action{Actor: "tier2", Kind: "llm_call",
+			Detail: "active_search_correct", Attempt: attempt})
+		return goodSQL, nil
+	}
+	res := runActiveSQLWithSelfCorrection(context.Background(), db, "C1", "q",
+		demoInjectSQLFault(goodSQL), 2, correct, &audit, al, 7)
+	if !res.Corrected {
+		t.Fatalf("expected corrected, got %+v", res)
+	}
+
+	var seq []string
+	for _, r := range readActions(t, path) {
+		switch r["kind"] {
+		case "active_sql":
+			seq = append(seq, fmt.Sprintf("active_sql/att%v/%v", r["attempt"], r["outcome"]))
+			if r["cluster_id"] != float64(7) {
+				t.Errorf("cluster_id = %v, want 7", r["cluster_id"])
+			}
+		case "llm_call":
+			seq = append(seq, fmt.Sprintf("%v/att%v", r["detail"], r["attempt"]))
+		}
+	}
+	want := []string{"active_sql/att1/execute_error", "active_search_correct/att1", "active_sql/att2/ok"}
+	if strings.Join(seq, " -> ") != strings.Join(want, " -> ") {
+		t.Errorf("audit chronology = %v\n            want %v", seq, want)
 	}
 }
 

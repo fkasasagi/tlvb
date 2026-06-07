@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tlvb/tlvb/internal/auditlog"
+
 	_ "github.com/marcboeker/go-duckdb"
 )
 
@@ -40,6 +42,10 @@ type Config struct {
 	DemoInjectSQLFault bool
 	DryRun             bool
 	ProgressFn         func(Event)
+
+	// al is the unified execution-log writer (outputs/cases/<id>/actions.jsonl).
+	// Set internally by Run(); nil in unit tests (a nil *Logger is a no-op).
+	al *auditlog.Logger
 }
 
 // Event is the progress hook.
@@ -109,6 +115,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if cfg.PerClusterTimeout <= 0 {
 		cfg.PerClusterTimeout = 5 * time.Minute
 	}
+	// Append Tier 2 activity to the same actions.jsonl the Tier 0 orchestrator
+	// writes, so the case has one ordered, timestamped execution log.
+	cfg.al = auditlog.New(filepath.Join(filepath.Dir(cfg.OutputPath), "actions.jsonl"), cfg.CaseID)
 
 	start := time.Now()
 	rep := &Report{CaseID: cfg.CaseID}
@@ -247,6 +256,7 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	dur := time.Since(startedAt)
 	audit.LLMDurationS += dur.Seconds()
 	audit.LLMCallsTotal++
+	auditLLMCall(cfg, "cluster_analysis", c.ID, dur, out, err)
 	if err != nil {
 		return err
 	}
@@ -290,6 +300,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		audit.LLMDurationS += dur.Seconds()
 		audit.LLMCallsTotal++
 		cancel()
+		auditLLMCall(cfg, "overall_synthesis", 0, dur, out, err)
 		if err == nil {
 			audit.addUsage(out)
 			return strings.TrimSpace(out.Result), nil
@@ -496,6 +507,31 @@ type claudeOutput struct {
 	OutputTokens int `json:"-"`
 }
 
+// auditLLMCall appends one llm_call record to the unified execution log. detail
+// names the sub-kind (e.g. "cluster_analysis"). Logs both success and failure
+// so the audit trail shows attempts that errored, not just the ones that worked.
+func auditLLMCall(cfg Config, detail string, clusterID int, dur time.Duration, out *claudeOutput, callErr error) {
+	a := auditlog.Action{
+		Actor:           "tier2",
+		Kind:            "llm_call",
+		Detail:          detail,
+		ClusterID:       clusterID,
+		Model:           cfg.Model,
+		DurationSeconds: dur.Seconds(),
+	}
+	if callErr != nil {
+		a.Success = auditlog.BoolPtr(false)
+		a.Error = truncate(callErr.Error(), 200)
+	} else if out != nil {
+		a.Success = auditlog.BoolPtr(true)
+		a.InputTokens = out.Usage.InputTokens
+		a.OutputTokens = out.Usage.OutputTokens
+		a.CacheReadTokens = out.Usage.CacheReadInputTokens
+		a.CostUSD = out.TotalCostUSD
+	}
+	cfg.al.Append(a)
+}
+
 func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {
 	args := []string{
 		"-p",
@@ -557,11 +593,14 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			ActiveSearch:    c.ActiveSearch,
 		}
 		for _, f := range c.Findings {
+			prov, conf := ProvenanceForSource(f.Source)
 			sc.FindingRefs = append(sc.FindingRefs, FindingRef{
-				Source:   f.Source,
-				RuleID:   f.RuleID,
-				Title:    f.Title,
-				Severity: f.Severity,
+				Source:     f.Source,
+				RuleID:     f.RuleID,
+				Title:      f.Title,
+				Severity:   f.Severity,
+				Provenance: prov,
+				Confidence: conf,
 			})
 		}
 		cs.Clusters = append(cs.Clusters, sc)

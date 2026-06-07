@@ -296,3 +296,16 @@ func TestApproveNonexistentReturns404(t *testing.T) {
 		t.Errorf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestConvertFindingProvenance(t *testing.T) {
+	a := convertTier1AFinding(tier1a.Finding{FindingID: "a", RuleSource: "sigma", RuleID: "R1"})
+	if a.Provenance != "signature" || a.Confidence != "confirmed" {
+		t.Errorf("tier1a: provenance=%q confidence=%q, want signature/confirmed", a.Provenance, a.Confidence)
+	}
+	b := convertTier1BFinding(
+		tier1b.AnomalyReport{Skill: "anomaly_hunter"},
+		tier1b.AnomalyFinding{FindingID: "b", Summary: "off-hours burst", Severity: "medium"})
+	if b.Provenance != "anomaly-llm" || b.Confidence != "inferred" {
+		t.Errorf("tier1b: provenance=%q confidence=%q, want anomaly-llm/inferred", b.Provenance, b.Confidence)
+	}
+}

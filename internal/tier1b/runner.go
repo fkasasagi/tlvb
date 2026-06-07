@@ -16,9 +16,19 @@ import (
 
 	"github.com/google/uuid"
 	_ "github.com/marcboeker/go-duckdb"
+	"github.com/tlvb/tlvb/internal/auditlog"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/tier1a"
 )
+
+// newActionLog returns a unified-execution-log writer for the case, or nil when
+// FindingsBaseDir isn't the production .../<case>/findings dir (e.g. unit tests).
+func newActionLog(findingsBaseDir, caseID string) *auditlog.Logger {
+	if filepath.Base(findingsBaseDir) != "findings" {
+		return nil
+	}
+	return auditlog.New(filepath.Join(filepath.Dir(findingsBaseDir), "actions.jsonl"), caseID)
+}
 
 // llmContext is the JSON shape passed to the LLM as the user message.
 // Field names mirror skills/anomaly_hunter.md so the prompt can reference them.
@@ -214,9 +224,13 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 
 	emit(cfg, Event{Phase: "llm", Message: "calling claude CLI"})
+	al := newActionLog(cfg.FindingsBaseDir, cfg.CaseID)
 	llmStart := time.Now()
 	resp, err := callClaudeCLI(ctx, cfg, string(skillBytes), userMsg)
 	if err != nil {
+		al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call", Detail: cfg.Skill,
+			DurationSeconds: time.Since(llmStart).Seconds(),
+			Success:         auditlog.BoolPtr(false), Error: err.Error()})
 		return rep, fmt.Errorf("claude CLI: %w", err)
 	}
 	rep.LLMCallDurationS = time.Since(llmStart).Seconds()
@@ -224,6 +238,11 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	rep.CacheReadTokens = resp.Usage.CacheReadInputTokens
 	rep.OutputTokens = resp.OutputTokens
 	rep.TotalCostUSD = resp.TotalCostUSD
+	al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call", Detail: cfg.Skill,
+		Model: resp.EffectiveModel, DurationSeconds: rep.LLMCallDurationS,
+		InputTokens: resp.InputTokens, OutputTokens: resp.OutputTokens,
+		CacheReadTokens: resp.Usage.CacheReadInputTokens, CostUSD: resp.TotalCostUSD,
+		Success: auditlog.BoolPtr(true)})
 
 	// Always persist the raw response next to the report for triage of
 	// parse failures or unexpected empties.

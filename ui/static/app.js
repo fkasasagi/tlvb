@@ -1827,6 +1827,12 @@ function findingRow(caseID, f, pane) {
     }),
     h("span", { class: "badge sev-" + sev }, sev),
     h("span", { class: "badge source-" + f.source, title: f.rule_id || "" }, sourceLabel),
+    ...(f.confidence
+      ? [h("span", {
+          class: "badge conf-" + f.confidence,
+          title: "provenance: " + (f.provenance || ""),
+        }, f.confidence)]
+      : []),
     h("span", { class: "finding-title" }, f.title || f.rule_id || "(untitled)"),
     h("span", { class: "spacer" }),
     ...(f.mitre_techniques || []).slice(0, 3).map((t) =>
@@ -2262,10 +2268,19 @@ function redrawAudit(list, entries) {
     const failed = e.success === false;
     // Top-line summary (always single-line, truncates via CSS).
     const summary = [];
+    if (e.detail) summary.push(e.detail); // agent sub-kind, e.g. cluster_analysis
     if (e.artifact_id) summary.push("artifact=" + e.artifact_id);
+    if (e.cluster_id != null && e.cluster_id !== 0) summary.push("cluster=" + e.cluster_id);
+    if (e.attempt) summary.push("attempt=" + e.attempt);
+    if (e.outcome) summary.push("outcome=" + e.outcome);
+    if (e.rule_id) summary.push("rule=" + e.rule_id);
+    if (e.rule_source) summary.push("src=" + e.rule_source);
     if (e.row_count != null) summary.push("rows=" + e.row_count);
     if (e.duration_seconds != null) summary.push("dur=" + e.duration_seconds.toFixed(2) + "s");
     if (e.success != null) summary.push("ok=" + e.success);
+    if (e.model) summary.push("model=" + e.model);
+    if (e.input_tokens || e.output_tokens) summary.push("tok=" + (e.input_tokens || 0) + "/" + (e.output_tokens || 0));
+    if (e.cost_usd) summary.push("$" + e.cost_usd.toFixed(4));
     // Detail block: full command + error + any extra fields, wrap & scroll.
     const detailLines = [];
     if (e.command) detailLines.push("$ " + e.command);
@@ -2555,6 +2570,24 @@ async function paintCaseSnapshot(host, caseID) {
   } else {
     body.appendChild(snapshotTile("Tier 0 · Parse",
       [h("span", { class: "muted" }, "no parsed events yet")], null));
+  }
+
+  // Collection completeness — distinguishes a DATA GAP from a detection MISS.
+  if (sum.completeness) {
+    const c = sum.completeness;
+    const inputs = c.inputs || [];
+    const present = inputs.filter((i) => i.present).length;
+    const missing = inputs.filter((i) => !i.present);
+    const rows = [
+      kv("Inputs present", `${present}/${inputs.length}`),
+      kv("Data gaps", c.missing_count +
+        (c.missing_critical ? ` · ${c.missing_critical} critical` : "")),
+    ];
+    const footer = missing.length === 0
+      ? "All catalogued detection inputs present."
+      : "Not collected (absence ≠ detection failure): " +
+        missing.map((i) => i.label).join(" · ");
+    body.appendChild(snapshotTile("Collection completeness", rows, footer));
   }
 
   // Tier 1A

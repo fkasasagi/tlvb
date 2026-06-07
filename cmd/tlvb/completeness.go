@@ -42,26 +42,10 @@ func runCompleteness(args []string) error {
 	defer mgr.Close()
 	ctx := context.Background()
 
-	arts, err := distinctStrings(ctx, mgr,
-		"SELECT DISTINCT artifact_id FROM unified_events WHERE case_id = ?", caseID)
+	results, channels, err := completeness.EvaluateCase(ctx, mgr.DB(), caseID)
 	if err != nil {
-		return fmt.Errorf("query artifacts: %w", err)
+		return err
 	}
-	if len(arts) == 0 {
-		return fmt.Errorf("no unified_events for case %q (parse it first?)", caseID)
-	}
-	presentArts := map[string]bool{}
-	for _, a := range arts {
-		presentArts[a] = true
-	}
-	channels, err := distinctStrings(ctx, mgr,
-		"SELECT DISTINCT json_extract_string(payload_json, '$.Channel') "+
-			"FROM unified_events WHERE case_id = ? AND artifact_id = 'evtx'", caseID)
-	if err != nil {
-		return fmt.Errorf("query evtx channels: %w", err)
-	}
-
-	results := completeness.Evaluate(presentArts, channels)
 	missing := completeness.Missing(results)
 
 	printCompletenessReport(caseID, channels, results, missing)
@@ -71,25 +55,6 @@ func runCompleteness(args []string) error {
 	}
 	fmt.Printf("\nwrote %s\n", *outPath)
 	return nil
-}
-
-func distinctStrings(ctx context.Context, mgr *casedb.Manager, query, caseID string) ([]string, error) {
-	rows, err := mgr.DB().QueryContext(ctx, query, caseID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var s *string
-		if err := rows.Scan(&s); err != nil {
-			return nil, err
-		}
-		if s != nil && *s != "" {
-			out = append(out, *s)
-		}
-	}
-	return out, rows.Err()
 }
 
 func printCompletenessReport(caseID string, channels []string, results, missing []completeness.Result) {
@@ -129,14 +94,7 @@ type gapsReport struct {
 
 func writeGapsJSON(path, caseID string, channels []string, results []completeness.Result) error {
 	rep := gapsReport{CaseID: caseID, EVTXChannels: channels, Inputs: results}
-	for _, r := range results {
-		if !r.Present {
-			rep.MissingCount++
-			if r.Importance == "critical" {
-				rep.MissingCritical++
-			}
-		}
-	}
+	rep.MissingCount, rep.MissingCritical = completeness.CountMissing(results)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

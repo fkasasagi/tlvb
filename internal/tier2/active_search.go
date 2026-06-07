@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/auditlog"
 )
 
 // activeSearchSystemPrompt is the additional instruction Tier 2 sends
@@ -107,8 +109,10 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, db *sql.DB, c *Clu
 	defer cancel()
 	startedAt := time.Now()
 	out, err := callClaudeCLI(subCtx, cfg, activeSearchSystemPrompt, prompt)
+	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
-	audit.LLMDurationS += time.Since(startedAt).Seconds()
+	audit.LLMDurationS += dur.Seconds()
+	auditLLMCall(cfg, "active_search_generate", c.ID, dur, out, err)
 	if err != nil {
 		return nil, fmt.Errorf("active-search LLM: %w", err)
 	}
@@ -573,8 +577,10 @@ Return ONLY the addendum text. No JSON, no markdown.`
 	defer cancel()
 	startedAt := time.Now()
 	out, err := callClaudeCLI(subCtx, cfg, system, string(body))
+	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
-	audit.LLMDurationS += time.Since(startedAt).Seconds()
+	audit.LLMDurationS += dur.Seconds()
+	auditLLMCall(cfg, "active_search_interpret", c.ID, dur, out, err)
 	if err != nil {
 		return "", err
 	}
@@ -642,8 +648,24 @@ func correctActiveSearchSQL(ctx context.Context, cfg Config, question, failedSQL
 	defer cancel()
 	startedAt := time.Now()
 	out, err := callClaudeCLI(subCtx, cfg, activeSearchCorrectionSystemPrompt, string(body))
+	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
-	audit.LLMDurationS += time.Since(startedAt).Seconds()
+	audit.LLMDurationS += dur.Seconds()
+	// Emit with the attempt number so the audit trail pairs each correction
+	// round with the active_sql attempt it was trying to fix.
+	corrAction := auditlog.Action{Actor: "tier2", Kind: "llm_call", Detail: "active_search_correct",
+		Attempt: attempt, Model: cfg.Model, DurationSeconds: dur.Seconds()}
+	if err != nil {
+		corrAction.Success = auditlog.BoolPtr(false)
+		corrAction.Error = truncate(err.Error(), 200)
+	} else if out != nil {
+		corrAction.Success = auditlog.BoolPtr(true)
+		corrAction.InputTokens = out.Usage.InputTokens
+		corrAction.OutputTokens = out.Usage.OutputTokens
+		corrAction.CacheReadTokens = out.Usage.CacheReadInputTokens
+		corrAction.CostUSD = out.TotalCostUSD
+	}
+	cfg.al.Append(corrAction)
 	if err != nil {
 		return "", err
 	}
@@ -677,7 +699,7 @@ type sqlCorrector func(ctx context.Context, prevSQL, failureReason string, attem
 // from corrected success from unrecoverable failure.
 func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 	question, initialSQL string, maxCorrect int, correct sqlCorrector,
-	audit *SynthAudit) ActiveSearchResult {
+	audit *SynthAudit, al *auditlog.Logger, clusterID int) ActiveSearchResult {
 
 	res := ActiveSearchResult{Question: question, SQL: initialSQL}
 	sqlText := strings.TrimSpace(initialSQL)
@@ -700,6 +722,17 @@ func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 			at.Outcome, at.Hits, okEvidence = "ok", n, rows
 		}
 		res.Attempts = append(res.Attempts, at)
+		// Stream each attempt to the unified log the moment it happens, so the
+		// audit chronology is true: the correction LLM call lands between a
+		// failed attempt and its successful retry, not before both. (al is
+		// nil-safe — a no-op in unit tests.)
+		hits := at.Hits
+		al.Append(auditlog.Action{
+			Actor: "tier2", Kind: "active_sql", ClusterID: clusterID,
+			Attempt: at.N, Outcome: at.Outcome, Command: at.SQL,
+			RowCount: &hits, Error: at.Error,
+			Success: auditlog.BoolPtr(at.Outcome == "ok"),
+		})
 
 		if at.Outcome == "ok" {
 			res.SQL, res.Hits, res.Evidence, res.Error = sqlText, at.Hits, okEvidence, ""
@@ -799,7 +832,7 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 				return correctActiveSearchSQL(cctx, cfg, question, prevSQL, failureReason, attempt, ss, audit)
 			}
 			res := runActiveSQLWithSelfCorrection(ctx, db, cfg.CaseID, question, initialSQL,
-				maxCorrect, correct, audit)
+				maxCorrect, correct, audit, cfg.al, c.ID)
 			results = append(results, res)
 		}
 		c.ActiveSearch = results

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tlvb/tlvb/internal/auditlog"
 )
 
 // HayabusaPassthroughOptions controls the pass-through pass.
@@ -43,6 +44,7 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 
 	start := time.Now()
 	report := &Report{CaseID: cfg.CaseID}
+	al := newActionLog(cfg.FindingsDir, cfg.CaseID)
 
 	// Single query yielding rows ordered by rule_id so we can group as we
 	// stream. The level filter is applied here so we don't waste memory on
@@ -75,8 +77,8 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 	// Stream and group.
 	var (
 		curRuleID, curTitle, curLevel string
-		curEvidence                    []EvidenceRef
-		curTotalRows                   int
+		curEvidence                   []EvidenceRef
+		curTotalRows                  int
 	)
 
 	flush := func() error {
@@ -90,6 +92,9 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 			return err
 		}
 		report.Matched++
+		al.Append(auditlog.Action{Actor: "tier1a", Kind: "rule_sql",
+			RuleID: curRuleID, RuleSource: "hayabusa",
+			RowCount: auditlog.IntPtr(curTotalRows), Success: auditlog.BoolPtr(true)})
 		report.Findings = append(report.Findings, FindingSummary{
 			RuleID:     curRuleID,
 			RuleSource: "hayabusa",
@@ -111,7 +116,7 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 		}
 		var (
 			ruleID, title, lvl, auditID, artifactID, eventType string
-			channel, eventID, computer, details, extra        string
+			channel, eventID, computer, details, extra         string
 			ts                                                 sql.NullTime
 		)
 		if err := rows.Scan(&ruleID, &title, &lvl, &auditID, &ts,
@@ -191,8 +196,9 @@ func buildHayabusaFinding(caseID, ruleID, title, level string, evidence []Eviden
 
 // normaliseLevel converts Hayabusa's level naming to Sigma's convention so
 // AutoApproveByLevel and Review Gate logic work uniformly.
-//   Hayabusa: info | low | med | high | critical
-//   Sigma:    informational | low | medium | high | critical
+//
+//	Hayabusa: info | low | med | high | critical
+//	Sigma:    informational | low | medium | high | critical
 func normaliseLevel(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "info":
@@ -203,4 +209,3 @@ func normaliseLevel(s string) string {
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 }
-
