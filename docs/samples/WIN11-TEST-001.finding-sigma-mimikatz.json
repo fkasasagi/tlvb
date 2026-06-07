@@ -1,0 +1,40 @@
+{
+  "finding_id": "4427c020-d170-41ae-a8bb-91a8dfa7424d",
+  "case_id": "WIN11-TEST-001",
+  "rule_id": "06d71506-7beb-4f22-8888-e2e5e2ca7fd8",
+  "rule_source": "sigma",
+  "rule_meta": {
+    "title": "Mimikatz Use",
+    "level": "high",
+    "mitre_techniques": [
+      "T1003.002",
+      "T1003.004",
+      "T1003.001",
+      "T1003.006"
+    ],
+    "mitre_tactics": [
+      "lateral-movement",
+      "credential-access"
+    ],
+    "source_path": "windows/builtin/win_alert_mimikatz_keywords.yml"
+  },
+  "evidence": [
+    {
+      "audit_id": "9adcdc85ed43ebc152bc2f1fcc47a5a8",
+      "ts_utc": "2026-05-19T13:56:27.371701Z",
+      "artifact_id": "evtx",
+      "event_type": "evtx",
+      "extra": {
+        "channel": "Security",
+        "event_id": "4688",
+        "executable_info": "C:\\Users\\Public\\mimi.exe \"C:\\Users\\Public\\mimi.exe\" privilege::debug sekurlsa::logonpasswords",
+        "map_description": "A new process has been created"
+      }
+    }
+  ],
+  "match_count": 1,
+  "approved": false,
+  "reviewed_at": "0001-01-01T00:00:00Z",
+  "generated_at": "2026-06-07T06:23:52.750504626Z",
+  "sql": "SELECT audit_id, ts_utc, artifact_id, event_type, json_extract_string(payload_json, '$.EventId') AS event_id, json_extract_string(payload_json, '$.Channel') AS channel, json_extract_string(payload_json, '$.ExecutableInfo') AS executable_info, json_extract_string(payload_json, '$.MapDescription') AS map_description FROM unified_events WHERE case_id = ? AND artifact_id = 'evtx' AND COALESCE(CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER), -1) != 15 AND (payload_json ILIKE '%dpapi::masterkey%' OR payload_json ILIKE '%eo.oe.kiwi%' OR payload_json ILIKE '%event::clear%' OR payload_json ILIKE '%event::drop%' OR payload_json ILIKE '%gentilkiwi.com%' OR payload_json ILIKE '%kerberos::golden%' OR payload_json ILIKE '%kerberos::ptc%' OR payload_json ILIKE '%kerberos::ptt%' OR payload_json ILIKE '%kerberos::tgt%' OR payload_json ILIKE '%Kiwi Legit Printer%' OR payload_json ILIKE '%lsadump::%' OR payload_json ILIKE '%mimidrv.sys%' OR payload_json ILIKE '%mimilib.dll%' OR payload_json ILIKE '%misc::printnightmare%' OR payload_json ILIKE '%misc::shadowcopies%' OR payload_json ILIKE '%misc::skeleton%' OR payload_json ILIKE '%privilege::backup%' OR payload_json ILIKE '%privilege::debug%' OR payload_json ILIKE '%privilege::driver%' OR payload_json ILIKE '%sekurlsa::%')"
+}
