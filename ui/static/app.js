@@ -2258,6 +2258,91 @@ async function renderAudit(pane, caseID) {
   redrawAudit(list, entries);
 }
 
+// auditWhyEl builds the always-visible "what / why" block for one audit row
+// from the backend-joined `explain` object (rule intent, active-search
+// question/answer, cluster narrative, anomaly findings). Returns a DOM node, or
+// null when the row has no reasoning to show. Kept concise (clamped) here; the
+// full text lives in the expandable detail (auditExplainDetail).
+function auditWhyEl(e) {
+  const x = e.explain;
+  const actor = e.actor || "", detail = e.detail || "";
+  const box = h("div", { class: "audit-why" });
+  const add = (icon, label, text, cls) => {
+    if (!text) return;
+    box.appendChild(h("div", { class: "why-line" }, [
+      h("span", { class: "why-icon" }, icon || ""),
+      label ? h("span", { class: "why-label" }, label) : null,
+      h("span", { class: cls || "why-text" }, text),
+    ].filter(Boolean)));
+  };
+  if (x) {
+    // Tier 1A: which signature fired, what it looks for, MITRE.
+    if (x.rule_title || x.rule_description) {
+      add("🔍", "", x.rule_title || "(signature rule)", "why-text strong");
+      if (x.rule_description) add("", "Looks for:", x.rule_description, "why-text clamp2");
+      if (x.mitre && x.mitre.length) {
+        box.appendChild(h("div", { class: "why-chips" },
+          x.mitre.map((m) => h("span", { class: "mitre-chip" }, m))));
+      }
+    }
+    // Tier 2 active search: the question that motivated the query + answer.
+    if (x.question) {
+      add("❓", "Question:", x.question, "why-text");
+      if (x.answer) add("💬", "Answer:", x.answer, "why-text clamp3");
+    } else if (x.open_questions && x.open_questions.length) {
+      add("❓", "Exploring:", x.open_questions.join("   •   "), "why-text clamp2");
+    }
+    // Tier 2 cluster / overall narrative.
+    if (x.narrative) {
+      const ph = x.attack_phase ? "[" + x.attack_phase + "] " : "";
+      add(detail === "overall_synthesis" ? "📖" : "🧩", "", ph + x.narrative, "why-text clamp3");
+    }
+    // Tier 1B anomaly sweep: how many, over what scope, with a few summaries.
+    if (x.findings && x.findings.length) {
+      let head = "Flagged " + x.findings.length + " anomaly pattern(s)";
+      if (x.events_scanned) head += " from " + x.events_scanned.toLocaleString() + " events";
+      if (x.prior_findings) head += " (with " + x.prior_findings + " prior signature findings as context)";
+      add("🧠", "", head, "why-text strong");
+      x.findings.slice(0, 3).forEach((f) => add("•", "", f.summary || f.description || "", "why-text clamp1"));
+      if (x.findings.length > 3) add("", "", "…and " + (x.findings.length - 3) + " more (expand for detail)", "why-text muted");
+    }
+  }
+  // Self-correction rows carry no explain object, but the intent is clear from
+  // the detail sub-kind — surface it so the row isn't a bare token count.
+  if (!box.childElementCount && actor === "tier2" && detail === "active_search_correct") {
+    add("🔧", "", "Revising the previous failed query — runtime self-correction", "why-text");
+  }
+  return box.childElementCount ? box : null;
+}
+
+// auditExplainDetail returns the full-text reasoning lines for the expandable
+// detail block (the inline auditWhyEl is the clamped gist).
+function auditExplainDetail(e) {
+  const x = e.explain;
+  if (!x) return [];
+  const lines = [];
+  if (x.rule_title) lines.push("RULE: " + x.rule_title);
+  if (x.rule_description) lines.push("WHAT IT LOOKS FOR:\n" + x.rule_description);
+  if (x.mitre && x.mitre.length) lines.push("MITRE: " + x.mitre.join(", "));
+  if (x.source_path) lines.push("RULE SOURCE: " + x.source_path);
+  if (x.sql) lines.push("SQL EXECUTED:\n" + x.sql);
+  if (x.question) lines.push("QUESTION (why this query ran):\n" + x.question);
+  if (x.answer) lines.push("ANSWER (LLM interpretation of the result):\n" + x.answer);
+  if (x.narrative) {
+    lines.push((e.detail === "overall_synthesis" ? "OVERALL STORY:\n" : "CLUSTER NARRATIVE:\n") + x.narrative);
+  }
+  if (x.open_questions && x.open_questions.length) {
+    lines.push("OPEN QUESTIONS:\n• " + x.open_questions.join("\n• "));
+  }
+  if (x.findings && x.findings.length) {
+    lines.push("ANOMALIES FLAGGED:\n" + x.findings.map((f) =>
+      "• [" + (f.severity || "?") + "] " + (f.summary || "") +
+      (f.technique ? " (" + f.technique + ")" : "") +
+      (f.description ? "\n    " + f.description : "")).join("\n"));
+  }
+  return lines;
+}
+
 function redrawAudit(list, entries) {
   list.innerHTML = "";
   if (!entries || entries.length === 0) {
@@ -2300,6 +2385,12 @@ function redrawAudit(list, entries) {
       if (e.result) extra.push("result=" + e.result);
       detailLines.push(extra.join("\n"));
     }
+    // Prepend the agent's reasoning (rule intent / SQL / question+answer /
+    // narrative / anomalies) so the expanded view leads with WHY, then shows
+    // the raw command / output.
+    const explainLines = auditExplainDetail(e);
+    if (explainLines.length) detailLines.unshift(...explainLines);
+    const whyEl = auditWhyEl(e); // always-visible "what / why" gist
     const hasDetail = detailLines.length > 0;
     const detail = hasDetail
       ? h("pre", { class: "audit-detail" }, detailLines.join("\n\n"))
@@ -2308,7 +2399,7 @@ function redrawAudit(list, entries) {
     const toggle = hasDetail
       ? h("button", {
           class: "audit-toggle",
-          title: "Show full command / output",
+          title: "Show full reasoning / command / output",
           onclick: (ev) => {
             ev.preventDefault();
             const row = ev.currentTarget.closest(".audit-item");
@@ -2324,6 +2415,7 @@ function redrawAudit(list, entries) {
       h("span", { class: "kind" }, e.kind || ""),
       summaryEl,
     ]);
+    if (whyEl) row.appendChild(whyEl);
     if (detail) {
       row.appendChild(detail);
     }

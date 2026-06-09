@@ -526,6 +526,33 @@ h3 { font-size: 13px; color: #c0d0e8; }
 }
 .audit-item.expanded .audit-detail { display: block; }
 
+/* Always-visible "what / why" gist for Tier 1/2 agent rows. */
+.audit-why {
+  grid-column: 1 / -1;
+  margin-top: 5px;
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; line-height: 1.45;
+  border-left: 2px solid var(--accent-hi);
+  padding-left: 9px;
+}
+.audit-why .why-line { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.audit-why .why-icon { flex: 0 0 auto; width: 14px; text-align: center; opacity: 0.85; }
+.audit-why .why-label { flex: 0 0 auto; color: var(--accent-hi); font-weight: bold; }
+.audit-why .why-text { color: #cdd6e4; min-width: 0; }
+.audit-why .why-text.strong { color: var(--text); font-weight: bold; }
+.audit-why .why-text.muted { color: var(--muted); font-style: italic; }
+.audit-why .clamp1, .audit-why .clamp2, .audit-why .clamp3 {
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+}
+.audit-why .clamp1 { -webkit-line-clamp: 1; }
+.audit-why .clamp2 { -webkit-line-clamp: 2; }
+.audit-why .clamp3 { -webkit-line-clamp: 3; }
+.audit-why .why-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-left: 20px; }
+.audit-why .mitre-chip {
+  background: rgba(120,160,220,0.15); border: 1px solid var(--border);
+  border-radius: 3px; padding: 0 5px; font-size: 10px; color: #acc6ee;
+}
+
 /* ------- modal ------- */
 .modal-shade {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
