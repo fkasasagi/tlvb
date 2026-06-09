@@ -247,6 +247,100 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	return rep, nil
 }
 
+// OverallRegenReport summarises a RegenerateOverall run.
+type OverallRegenReport struct {
+	OutputPath string
+	Chars      int
+	Paragraphs int
+	Fallback   bool // true when the LLM failed and the deterministic stitch was used
+	LLMCalls   int
+	Duration   float64
+}
+
+// RegenerateOverall re-runs ONLY the case-wide overall synthesis against an
+// existing synthesis.json and writes the new overall_story back in place,
+// leaving every cluster, finding_ref and the MITRE mapping untouched. It is the
+// cheap path for refreshing the executive summary after a prompt or timeout
+// change without paying for a full re-clustering + per-cluster + active-search
+// run. Reads/writes cfg.OutputPath.
+func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, error) {
+	if cfg.OutputPath == "" {
+		return nil, fmt.Errorf("RegenerateOverall: OutputPath is required")
+	}
+	if cfg.ClaudeBinary == "" {
+		cfg.ClaudeBinary = "claude"
+	}
+	if cfg.PerClusterTimeout <= 0 {
+		cfg.PerClusterTimeout = 5 * time.Minute
+	}
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = "skills"
+	}
+
+	body, err := os.ReadFile(cfg.OutputPath)
+	if err != nil {
+		return nil, fmt.Errorf("read synthesis: %w", err)
+	}
+	var cs CaseSynthesis
+	if err := json.Unmarshal(body, &cs); err != nil {
+		return nil, fmt.Errorf("parse synthesis: %w", err)
+	}
+	if len(cs.Clusters) == 0 {
+		return nil, fmt.Errorf("synthesis has no clusters to summarise")
+	}
+
+	// Reconstruct the minimal Cluster shape the overall pass needs. finding_count
+	// is the only thing derived from findings, so a length-only slice suffices.
+	clusters := make([]Cluster, 0, len(cs.Clusters))
+	for _, sc := range cs.Clusters {
+		clusters = append(clusters, Cluster{
+			ID:              sc.ID,
+			StartTS:         sc.StartTS,
+			EndTS:           sc.EndTS,
+			AttackPhase:     sc.AttackPhase,
+			Narrative:       sc.Narrative,
+			MITRETechniques: sc.MITRETechniques,
+			Findings:        make([]Finding, len(sc.FindingRefs)),
+		})
+	}
+
+	overallSkillPath := filepath.Join(cfg.SkillsDir, "overall_synthesis.md")
+	skill, err := os.ReadFile(overallSkillPath)
+	if err != nil {
+		// fall back to the configured cluster skill if the overall one is absent
+		name := cfg.SkillName
+		if name == "" {
+			name = "timeline_review"
+		}
+		skill, err = os.ReadFile(filepath.Join(cfg.SkillsDir, name+".md"))
+		if err != nil {
+			return nil, fmt.Errorf("read overall skill: %w", err)
+		}
+	}
+
+	start := time.Now()
+	var audit SynthAudit
+	rep := &OverallRegenReport{OutputPath: cfg.OutputPath}
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit)
+	if err != nil {
+		emit(cfg, Event{Phase: "llm",
+			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
+		overall = fallbackOverallStory(clusters, cfg.Language)
+		rep.Fallback = true
+	}
+
+	cs.OverallStory = overall
+	if err := writeSynthesis(cfg.OutputPath, cs); err != nil {
+		return nil, err
+	}
+
+	rep.Chars = len(overall)
+	rep.Paragraphs = len(strings.Split(strings.TrimSpace(overall), "\n\n"))
+	rep.LLMCalls = audit.LLMCallsTotal
+	rep.Duration = time.Since(start).Seconds()
+	return rep, nil
+}
+
 // ----------------------------------------------------------------------------
 // LLM per-cluster analysis
 // ----------------------------------------------------------------------------
