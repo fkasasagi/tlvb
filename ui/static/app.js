@@ -2837,13 +2837,75 @@ async function renderExtractsSection(pane, caseID) {
 
   const exSection = h("div", { class: "card extracts-section" });
   exSection.appendChild(h("h2", {}, "Extracts — Review Gate 0 (image)"));
-  const hdr = data.header || {};
-  const c = data.counts || {};
-  exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
-    `image: ${hdr.image_path || "?"} · format: ${hdr.image_format || "?"} · ` +
-    `mount: ${hdr.mount_method || "?"} · ` +
-    `approved=${c.approved||0} · pending=${c.pending||0} · rejected=${c.rejected||0}`));
 
+  const records = data.records || [];
+  const headers = data.headers || (data.header ? [data.header] : []);
+  const headerByEv = {};
+  headers.forEach((hd) => { headerByEv[hd.evidence_id || ""] = hd; });
+
+  // Group records by source evidence (disk image) so a case bundling more
+  // than one image keeps each image's extractions separate.
+  const groups = new Map();
+  records.forEach((r) => {
+    const k = r.evidence_id || "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  });
+
+  const cnt = (rows, st) => rows.filter((x) => (x.state || "pending") === st).length;
+  const headerLine = (hd, rows) => {
+    hd = hd || {};
+    return `image: ${hd.image_path || "?"} · format: ${hd.image_format || "?"} · ` +
+      `mount: ${hd.mount_method || "?"} · ` +
+      `approved=${cnt(rows,"approved")} · pending=${cnt(rows,"pending")} · ` +
+      `rejected=${cnt(rows,"rejected")}`;
+  };
+
+  if (groups.size <= 1) {
+    // Single image — flat layout, visually unchanged from before.
+    const first = [...groups][0];
+    const k = first ? first[0] : "";
+    const rows = first ? first[1] : records;
+    exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
+      headerLine(headerByEv[k], rows)));
+    exSection.appendChild(extractTable(caseID, pane, rows));
+  } else {
+    // Multi-image — one collapsible group per evidence.
+    exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
+      `${groups.size} disk-image evidences — expand each to review its extractions.`));
+    for (const [k, rows] of groups) {
+      const hd = headerByEv[k] || {};
+      const summary = h("summary", { class: "evidence-summary" }, [
+        h("span", { class: "evidence-name" }, k || "(image)"),
+        h("span", { class: "muted", style: "font-size: 11px;" },
+          `${hd.image_format || "?"} · ${hd.mount_method || "?"}`),
+        h("span", { class: "evidence-count" },
+          `${rows.length} files · ✓${cnt(rows,"approved")} · ⏳${cnt(rows,"pending")}`),
+      ]);
+      const detail = h("div", { class: "evidence-detail" }, [
+        h("div", { class: "muted mono",
+          style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" },
+          hd.image_path || ""),
+        extractTable(caseID, pane, rows),
+      ]);
+      exSection.appendChild(h("details", { class: "evidence-item", open: "open" },
+        [summary, detail]));
+    }
+  }
+
+  // Always position the Extracts section above Parse Results — `insertBefore`
+  // with the current first child keeps the layout stable across re-renders
+  // (approve/reject would otherwise append to the bottom).
+  if (pane.firstChild) {
+    pane.insertBefore(exSection, pane.firstChild);
+  } else {
+    pane.appendChild(exSection);
+  }
+}
+
+// extractTable builds the extract-record table for one evidence's rows.
+// Shared by the flat (single-image) and grouped (multi-image) renders.
+function extractTable(caseID, pane, records) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
     h("th", {}, "Target"),
@@ -2856,76 +2918,74 @@ async function renderExtractsSection(pane, caseID) {
     h("th", {}, "Action"),
   ])));
   const body = h("tbody");
-  (data.records || []).forEach((r) => {
-    const stateClass = {
-      approved: "approved", rejected: "rejected", pending: "pending",
-    }[r.state] || "pending";
-    const stateBadge = h("span", { class: "badge " + stateClass,
-      title: r.reason || r.error || "" }, r.state || "pending");
-    const action = h("div", { class: "row", style: "gap: 4px;" });
-    if (r.state === "approved" || r.state === "rejected") {
-      action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
-        (r.reviewed_by || "?") + " · " + fmtTS(r.reviewed_at).slice(0, 16)));
-    } else {
-      action.appendChild(h("button", {
-        onclick: async () => {
-          try {
-            await api("POST",
-              `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(r.target)}/approve`);
-            toast("Approved " + r.target, "success");
-            await renderExtractsSection(pane, caseID);
-          } catch (e) { toast(e.message, "error"); }
-        },
-      }, "Approve"));
-      action.appendChild(h("button", {
-        class: "danger",
-        onclick: () => {
-          const close = modal([
-            h("h3", {}, "Reject extract " + r.target),
-            h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
-              h("input", { id: "ex_reason", placeholder: "why is this extract bad? (optional)" })]),
-            h("div", { class: "actions" }, [
-              h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
-              h("button", { class: "danger", onclick: async () => {
-                try {
-                  await api("POST",
-                    `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(r.target)}/reject`,
-                    { reason: $("#ex_reason").value.trim() });
-                  close(); toast("Rejected " + r.target, "success");
-                  await renderExtractsSection(pane, caseID);
-                } catch (e) { toast(e.message, "error"); }
-              }}, "Reject"),
-            ]),
-          ]);
-        },
-      }, "Reject"));
-    }
-    const statusClass = r.status === "ok" ? "ok"
-                      : r.status === "not_found" ? "pending"
-                      : r.status === "skip" ? "pending"
-                      : "err";
-    body.appendChild(h("tr", {}, [
-      h("td", {}, h("code", {}, r.target)),
-      h("td", {}, h("span", { class: "badge " + statusClass, title: r.error || "" }, r.status)),
-      h("td", {}, r.partition != null ? String(r.partition) : "—"),
-      h("td", { class: "mono" }, r.inum || "—"),
-      h("td", {}, r.bytes != null ? Number(r.bytes).toLocaleString() : "—"),
-      h("td", { class: "mono", style: "font-size: 10px;" },
-        r.sha256 ? r.sha256.slice(0, 16) + "…" : "—"),
-      h("td", {}, stateBadge),
-      h("td", {}, action),
-    ]));
-  });
+  (records || []).forEach((r) => body.appendChild(extractRow(caseID, pane, r)));
   tbl.appendChild(body);
-  exSection.appendChild(tbl);
-  // Always position the Extracts section above Parse Results — `insertBefore`
-  // with the current first child keeps the layout stable across re-renders
-  // (approve/reject would otherwise append to the bottom).
-  if (pane.firstChild) {
-    pane.insertBefore(exSection, pane.firstChild);
+  return tbl;
+}
+
+// extractRow renders one extract record. The approve/reject calls use the
+// server-supplied review_key (evidence-namespaced) so same-named targets on
+// different images don't share review state; r.target is kept for display.
+function extractRow(caseID, pane, r) {
+  const key = r.review_key || r.target;
+  const stateClass = {
+    approved: "approved", rejected: "rejected", pending: "pending",
+  }[r.state] || "pending";
+  const stateBadge = h("span", { class: "badge " + stateClass,
+    title: r.reason || r.error || "" }, r.state || "pending");
+  const action = h("div", { class: "row", style: "gap: 4px;" });
+  if (r.state === "approved" || r.state === "rejected") {
+    action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
+      (r.reviewed_by || "?") + " · " + fmtTS(r.reviewed_at).slice(0, 16)));
   } else {
-    pane.appendChild(exSection);
+    action.appendChild(h("button", {
+      onclick: async () => {
+        try {
+          await api("POST",
+            `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/approve`);
+          toast("Approved " + r.target, "success");
+          await renderExtractsSection(pane, caseID);
+        } catch (e) { toast(e.message, "error"); }
+      },
+    }, "Approve"));
+    action.appendChild(h("button", {
+      class: "danger",
+      onclick: () => {
+        const close = modal([
+          h("h3", {}, "Reject extract " + r.target),
+          h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
+            h("input", { id: "ex_reason", placeholder: "why is this extract bad? (optional)" })]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+            h("button", { class: "danger", onclick: async () => {
+              try {
+                await api("POST",
+                  `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/reject`,
+                  { reason: $("#ex_reason").value.trim() });
+                close(); toast("Rejected " + r.target, "success");
+                await renderExtractsSection(pane, caseID);
+              } catch (e) { toast(e.message, "error"); }
+            }}, "Reject"),
+          ]),
+        ]);
+      },
+    }, "Reject"));
   }
+  const statusClass = r.status === "ok" ? "ok"
+                    : r.status === "not_found" ? "pending"
+                    : r.status === "skip" ? "pending"
+                    : "err";
+  return h("tr", {}, [
+    h("td", {}, h("code", {}, r.target)),
+    h("td", {}, h("span", { class: "badge " + statusClass, title: r.error || "" }, r.status)),
+    h("td", {}, r.partition != null ? String(r.partition) : "—"),
+    h("td", { class: "mono" }, r.inum || "—"),
+    h("td", {}, r.bytes != null ? Number(r.bytes).toLocaleString() : "—"),
+    h("td", { class: "mono", style: "font-size: 10px;" },
+      r.sha256 ? r.sha256.slice(0, 16) + "…" : "—"),
+    h("td", {}, stateBadge),
+    h("td", {}, action),
+  ]);
 }
 
 async function renderEvents(pane, caseID, detail) {
