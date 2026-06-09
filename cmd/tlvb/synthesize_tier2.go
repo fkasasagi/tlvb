@@ -36,6 +36,8 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	demoInjectFault := fs.Bool("demo-inject-sql-fault", false,
 		"DEMO ONLY: deliberately corrupt the first active-search SQL per cluster (references a non-existent column) so the self-correction loop visibly fires; the agent detects the DB error and recovers")
 	dryRun := fs.Bool("dry-run", false, "skip LLM calls")
+	overallOnly := fs.Bool("overall-only", false,
+		"regenerate ONLY the case-wide executive summary (overall_story) in an existing synthesis.json and write it back in place — cheap refresh after a prompt/timeout change, no re-clustering / per-cluster / active-search")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,6 +77,22 @@ func runSynthesizeTier2(caseID string, args []string) error {
 			fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)
 		},
 	}
+	if *overallOnly {
+		fmt.Fprintf(os.Stderr, "tier 2 (overall-only) — case=%s out=%s\n", caseID, *outPath)
+		r, err := tier2.RegenerateOverall(context.Background(), cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\nTier 2 overall regenerated — case=%s\n", caseID)
+		fmt.Printf("  output:            %s\n", r.OutputPath)
+		fmt.Printf("  summary:           %d chars / %d paragraphs\n", r.Chars, r.Paragraphs)
+		fmt.Printf("  llm calls:         %d  (%.1fs)\n", r.LLMCalls, r.Duration)
+		if r.Fallback {
+			fmt.Printf("  ⚠ fallback:        LLM failed; deterministic stitch written (re-run recommended)\n")
+		}
+		return nil
+	}
+
 	fmt.Fprintf(os.Stderr, "tier 2 (Timeline Analysis) — case=%s findings=%s out=%s\n",
 		caseID, *findingsBase, *outPath)
 	rep, err := tier2.Run(context.Background(), cfg)

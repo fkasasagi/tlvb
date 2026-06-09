@@ -1,7 +1,10 @@
 package tier2
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +162,78 @@ func TestTemporalOutlierClusters(t *testing.T) {
 	// Too few clusters for a stable median → nothing flagged.
 	if got := temporalOutlierClusters([]Cluster{mk(2026), mk(2024)}); got[1] {
 		t.Error("with <3 clusters no temporal outlier should be flagged")
+	}
+}
+
+func TestRegenerateOverallFallbackWriteback(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "") // force the CLI path so a missing binary fails fast
+	dir := t.TempDir()
+	skills := filepath.Join(dir, "skills")
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skills, "overall_synthesis.md"), []byte("dummy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t0 := time.Date(2026, 5, 19, 13, 0, 0, 0, time.UTC)
+	cs := CaseSynthesis{
+		CaseID: "T", ClusterCount: 2, TotalFindings: 2,
+		OverallStory: "OLD STORY",
+		Clusters: []SynthCluster{
+			{ID: 1, StartTS: t0, EndTS: t0.Add(time.Hour), AttackPhase: "execution",
+				Narrative: "real attack narrative", FindingRefs: []FindingRef{{Source: "sigma", RuleID: "r1", Title: "t1"}}},
+			{ID: 2, AttackPhase: "", Narrative: "VM first boot likely benign",
+				FindingRefs: []FindingRef{{Source: "sigma", RuleID: "r2", Title: "t2"}}},
+		},
+	}
+	out := filepath.Join(dir, "synthesis.json")
+	if err := writeSynthesis(out, cs); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		OutputPath:        out,
+		SkillsDir:         skills,
+		ClaudeBinary:      filepath.Join(dir, "no-such-claude"),
+		Language:          "ja",
+		PerClusterTimeout: time.Second,
+	}
+	rep, err := RegenerateOverall(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RegenerateOverall returned error instead of falling back: %v", err)
+	}
+	if !rep.Fallback {
+		t.Error("expected Fallback=true when the claude binary is missing")
+	}
+
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got CaseSynthesis
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	// Non-destructive: clusters and finding_refs untouched.
+	if len(got.Clusters) != 2 {
+		t.Fatalf("clusters not preserved: got %d", len(got.Clusters))
+	}
+	if len(got.Clusters[0].FindingRefs) != 1 || got.Clusters[0].FindingRefs[0].RuleID != "r1" {
+		t.Error("finding_refs not preserved")
+	}
+	// overall_story replaced with the fallback (banner + noise dropped).
+	if got.OverallStory == "OLD STORY" {
+		t.Error("overall_story was not regenerated")
+	}
+	if !strings.HasPrefix(got.OverallStory, fallbackOverallStoryPrefixJA) {
+		t.Errorf("expected fallback banner prefix, got %q", got.OverallStory)
+	}
+	if strings.Contains(got.OverallStory, "VM first boot") {
+		t.Error("noise narrative must be dropped from the fallback summary")
+	}
+	if !strings.Contains(got.OverallStory, "real attack narrative") {
+		t.Error("attack narrative should be in the fallback summary")
 	}
 }
 
