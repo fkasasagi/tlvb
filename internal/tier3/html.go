@@ -75,6 +75,11 @@ type reportView struct {
 	IntrusionPath string
 	Scope         *scopeView
 	Reco          *recoView
+
+	// IsExecutiveSummaryFallback is true when the overall_story was produced
+	// by tier2's deterministic fallback (LLM overall synthesis failed) rather
+	// than the LLM. Drives a warning banner in the Executive Summary.
+	IsExecutiveSummaryFallback bool
 }
 
 type clusterView struct {
@@ -87,6 +92,10 @@ type clusterView struct {
 	OpenQuestions   []string
 	ActiveSearch    []tier2.ActiveSearchResult
 	Findings        []findingRow
+	// IsLikelyNoise is true when tier2's heuristic flags this cluster as
+	// pre-existing system activity / false positive rather than attacker
+	// action. Drives a "noise candidate" badge and dimmed styling.
+	IsLikelyNoise bool
 }
 
 type findingRow struct {
@@ -120,6 +129,10 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) 
 		Scope:          deriveAffectedScope(cs, en, cfg.Language),
 		Reco:           deriveRecommendations(cs, cfg.Language),
 	}
+	// Detect a fallback executive summary by the warning prefix tier2 prepends
+	// (kept in sync with tier2's fallbackOverallStory).
+	v.IsExecutiveSummaryFallback = strings.HasPrefix(cs.OverallStory, "[NOTE:") ||
+		strings.HasPrefix(cs.OverallStory, "【注意:")
 	for _, c := range cs.Clusters {
 		cv := clusterView{
 			ID:              c.ID,
@@ -130,6 +143,7 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) 
 			MITRETechniques: c.MITRETechniques,
 			OpenQuestions:   c.OpenQuestions,
 			ActiveSearch:    c.ActiveSearch,
+			IsLikelyNoise:   tier2.IsNoiseCluster(c.AttackPhase, c.Narrative),
 		}
 		for _, fr := range c.FindingRefs {
 			conf := fr.Confidence
@@ -186,34 +200,36 @@ func humanBytes(n int64) string {
 // labelDict holds the UI strings. LLM-generated narrative / open questions
 // stay verbatim — we only translate frame labels.
 type labelDict struct {
-	ReportTitle      string
-	Case             string
-	Generated        string
-	Model            string
-	TotalFindings    string
-	ClusterCount     string
-	ExecutiveSummary string
-	MITREMapping     string
-	Technique        string
-	Tactic           string
-	FindingCount     string
-	ClusterIDs       string
-	Cluster          string
-	Window           string
-	AttackPhase      string
-	Narrative        string
-	Findings         string
-	Source           string
-	RuleID           string
-	Title            string
-	Severity         string
-	OpenQuestions    string
-	Audit            string
-	LLMCalls         string
-	LLMDuration      string
-	InputTokens      string
-	OutputTokens     string
-	SkillSHA         string
+	ReportTitle                string
+	Case                       string
+	Generated                  string
+	Model                      string
+	TotalFindings              string
+	ClusterCount               string
+	ExecutiveSummary           string
+	ExecSummaryFallbackWarning string
+	NoiseBadge                 string
+	MITREMapping               string
+	Technique                  string
+	Tactic                     string
+	FindingCount               string
+	ClusterIDs                 string
+	Cluster                    string
+	Window                     string
+	AttackPhase                string
+	Narrative                  string
+	Findings                   string
+	Source                     string
+	RuleID                     string
+	Title                      string
+	Severity                   string
+	OpenQuestions              string
+	Audit                      string
+	LLMCalls                   string
+	LLMDuration                string
+	InputTokens                string
+	OutputTokens               string
+	SkillSHA                   string
 
 	// forensic additions
 	DefaultClassification  string
@@ -291,34 +307,36 @@ type labelDict struct {
 }
 
 var dictJA = labelDict{
-	ReportTitle:      "TLVB フォレンジック解析レポート",
-	Case:             "ケース ID",
-	Generated:        "生成日時",
-	Model:            "解析モデル",
-	TotalFindings:    "Finding 総数",
-	ClusterCount:     "クラスタ数",
-	ExecutiveSummary: "エグゼクティブサマリ",
-	MITREMapping:     "MITRE ATT&CK マッピング",
-	Technique:        "Technique",
-	Tactic:           "Tactic",
-	FindingCount:     "件数",
-	ClusterIDs:       "クラスタ ID",
-	Cluster:          "Finding 詳細 (攻撃クラスタ別)",
-	Window:           "時刻範囲",
-	AttackPhase:      "攻撃フェーズ",
-	Narrative:        "シナリオ",
-	Findings:         "Finding 一覧",
-	Source:           "ソース",
-	RuleID:           "ルール ID",
-	Title:            "タイトル",
-	Severity:         "重要度",
-	OpenQuestions:    "未解決の論点",
-	Audit:            "付録: 監査・来歴情報",
-	LLMCalls:         "LLM 呼び出し回数",
-	LLMDuration:      "LLM 累計時間 (秒)",
-	InputTokens:      "Input tokens",
-	OutputTokens:     "Output tokens",
-	SkillSHA:         "Skill SHA-256",
+	ReportTitle:                "TLVB フォレンジック解析レポート",
+	Case:                       "ケース ID",
+	Generated:                  "生成日時",
+	Model:                      "解析モデル",
+	TotalFindings:              "Finding 総数",
+	ClusterCount:               "クラスタ数",
+	ExecutiveSummary:           "エグゼクティブサマリ",
+	ExecSummaryFallbackWarning: "⚠️ LLM による全体合成が失敗したため、このサマリは攻撃クラスタ要約の自動連結で代替されています。攻撃チェーンとしての論理構成は行われていません。人手でのレビューおよび Tier 2 の再実行を推奨します。",
+	NoiseBadge:                 "ノイズ候補",
+	MITREMapping:               "MITRE ATT&CK マッピング",
+	Technique:                  "Technique",
+	Tactic:                     "Tactic",
+	FindingCount:               "件数",
+	ClusterIDs:                 "クラスタ ID",
+	Cluster:                    "Finding 詳細 (攻撃クラスタ別)",
+	Window:                     "時刻範囲",
+	AttackPhase:                "攻撃フェーズ",
+	Narrative:                  "シナリオ",
+	Findings:                   "Finding 一覧",
+	Source:                     "ソース",
+	RuleID:                     "ルール ID",
+	Title:                      "タイトル",
+	Severity:                   "重要度",
+	OpenQuestions:              "未解決の論点",
+	Audit:                      "付録: 監査・来歴情報",
+	LLMCalls:                   "LLM 呼び出し回数",
+	LLMDuration:                "LLM 累計時間 (秒)",
+	InputTokens:                "Input tokens",
+	OutputTokens:               "Output tokens",
+	SkillSHA:                   "Skill SHA-256",
 
 	DefaultClassification:  "社外秘 / CONFIDENTIAL",
 	Examiner:               "解析担当 (Examiner)",
@@ -394,34 +412,36 @@ var dictJA = labelDict{
 }
 
 var dictEN = labelDict{
-	ReportTitle:      "TLVB Forensic Analysis Report",
-	Case:             "Case ID",
-	Generated:        "Generated",
-	Model:            "Analysis model",
-	TotalFindings:    "Total findings",
-	ClusterCount:     "Cluster count",
-	ExecutiveSummary: "Executive Summary",
-	MITREMapping:     "MITRE ATT&CK Mapping",
-	Technique:        "Technique",
-	Tactic:           "Tactic",
-	FindingCount:     "Count",
-	ClusterIDs:       "Cluster IDs",
-	Cluster:          "Findings (by attack cluster)",
-	Window:           "Window",
-	AttackPhase:      "Attack phase",
-	Narrative:        "Narrative",
-	Findings:         "Findings",
-	Source:           "Source",
-	RuleID:           "Rule ID",
-	Title:            "Title",
-	Severity:         "Severity",
-	OpenQuestions:    "Open questions",
-	Audit:            "Appendix: Audit & Provenance",
-	LLMCalls:         "LLM calls",
-	LLMDuration:      "LLM duration (s)",
-	InputTokens:      "Input tokens",
-	OutputTokens:     "Output tokens",
-	SkillSHA:         "Skill SHA-256",
+	ReportTitle:                "TLVB Forensic Analysis Report",
+	Case:                       "Case ID",
+	Generated:                  "Generated",
+	Model:                      "Analysis model",
+	TotalFindings:              "Total findings",
+	ClusterCount:               "Cluster count",
+	ExecutiveSummary:           "Executive Summary",
+	ExecSummaryFallbackWarning: "⚠️ The LLM overall synthesis failed, so this summary is an auto-stitch of the attack-cluster narratives — it has NOT been composed into a coherent attack chain. Manual review and a Tier 2 re-run are recommended.",
+	NoiseBadge:                 "Likely noise",
+	MITREMapping:               "MITRE ATT&CK Mapping",
+	Technique:                  "Technique",
+	Tactic:                     "Tactic",
+	FindingCount:               "Count",
+	ClusterIDs:                 "Cluster IDs",
+	Cluster:                    "Findings (by attack cluster)",
+	Window:                     "Window",
+	AttackPhase:                "Attack phase",
+	Narrative:                  "Narrative",
+	Findings:                   "Findings",
+	Source:                     "Source",
+	RuleID:                     "Rule ID",
+	Title:                      "Title",
+	Severity:                   "Severity",
+	OpenQuestions:              "Open questions",
+	Audit:                      "Appendix: Audit & Provenance",
+	LLMCalls:                   "LLM calls",
+	LLMDuration:                "LLM duration (s)",
+	InputTokens:                "Input tokens",
+	OutputTokens:               "Output tokens",
+	SkillSHA:                   "Skill SHA-256",
 
 	DefaultClassification:  "CONFIDENTIAL",
 	Examiner:               "Examiner",
@@ -652,6 +672,8 @@ const htmlTemplate = `<!DOCTYPE html>
                     padding: 1rem 1.3rem; margin: 1rem 0; }
   article.cluster header { display: flex; gap: 1rem; flex-wrap: wrap; align-items: baseline;
                             margin-bottom: 0.5rem; color: #57606a; font-size: 0.9rem; }
+  article.cluster-noise { opacity: 0.75; border-color: #8b949e; }
+  article.cluster-noise h3 { color: #57606a; }
   .narrative p { margin: 0 0 0.7rem; }
   ul.open-q li, ul.reco li { margin-bottom: 0.3rem; }
   dl.scope { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0.6rem 0; }
@@ -720,6 +742,9 @@ const htmlTemplate = `<!DOCTYPE html>
 <!-- Executive Summary -->
 <section>
   <h2>{{.Dict.ExecutiveSummary}}</h2>
+  {{if .IsExecutiveSummaryFallback}}
+  <div class="disclaimer">{{.Dict.ExecSummaryFallbackWarning}}</div>
+  {{end}}
   <div class="narrative">
     {{range para .Case.OverallStory}}<p>{{.}}</p>{{end}}
   </div>
@@ -855,8 +880,10 @@ const htmlTemplate = `<!DOCTYPE html>
   <h2>7. {{.Dict.Cluster}}</h2>
   {{if not .Clusters}}<p class="empty">{{.Dict.None}}</p>{{end}}
   {{range .Clusters}}
-  <article class="cluster" id="cluster-{{.ID}}">
-    <h3>#{{.ID}} — {{phaseLabel .AttackPhase}}</h3>
+  <article class="cluster{{if .IsLikelyNoise}} cluster-noise{{end}}" id="cluster-{{.ID}}">
+    <h3>#{{.ID}} — {{phaseLabel .AttackPhase}}
+      {{if .IsLikelyNoise}}<span class="badge sev-info">{{$.Dict.NoiseBadge}}</span>{{end}}
+    </h3>
     <header>
       <span><strong>{{$.Dict.Window}}:</strong> {{fmtTS .StartTS}} ~ {{fmtTS .EndTS}}</span>
       <span>{{$.Dict.FindingCount}}: {{len .Findings}}</span>
