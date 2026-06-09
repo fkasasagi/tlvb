@@ -117,7 +117,9 @@ _DETECTORS: list[tuple[str, str, str]] = [
     # no map for, generating spurious FAIL rows on every TANAKA case.
     ("yara",            "**/triage-yara",                                         "dir"),   # operator-explicit
     ("volatility3",     "**/*.dmp",                                               "file"),
-    ("w3c_iis",         "**/W3SVC*/u_ex*.log",                                    "file"),  # IIS default layout
+    # NOTE: w3c_iis is intentionally NOT a path-pattern detector — IIS log
+    # output dirs are admin-configurable, so it is content-sniffed in detect()
+    # (every *.log whose first lines look like W3C/IIS-native/NCSA is routed).
     # bulk_extractor accepts the raw image directly; no detect pattern (operator-triggered).
 ]
 
@@ -229,6 +231,7 @@ def detect(root: pathlib.Path) -> list[Detection]:
     usn_files: list[pathlib.Path] = []
     browser_files: list[pathlib.Path] = []
     sqlecmd_files: list[pathlib.Path] = []
+    web_log_candidates: list[pathlib.Path] = []
     for p in root.rglob("*"):
         if not p.is_file():
             continue
@@ -248,6 +251,28 @@ def detect(root: pathlib.Path) -> list[Detection]:
             browser_files.append(p)
         if name in _SQLECMD_MAP_BASENAMES:
             sqlecmd_files.append(p)
+        if name.lower().endswith(".log"):
+            web_log_candidates.append(p)
+
+    # ---- w3c_iis: path-agnostic, content-sniffed ----
+    # IIS / web-server access logs can be written anywhere — applicationHost
+    # .config's <logFile directory> is admin-configurable — so we classify by
+    # CONTENT, not path: any *.log whose first lines look like W3C Extended,
+    # IIS-native, or NCSA is routed to the web-log parser regardless of where
+    # it sits or what it's named. _detect_format returns None for ordinary logs.
+    from parsers.w3c_iis_parser import _detect_format as _sniff_web_log
+    for log in web_log_candidates:
+        key = ("w3c_iis", str(log))
+        if key in seen:
+            continue
+        if _sniff_web_log(log) is not None:
+            seen.add(key)
+            out.append(Detection(
+                artifact_id="w3c_iis",
+                parser_module="parsers.w3c_iis_parser",
+                input_path=log,
+                input_mode="file",
+            ))
 
     for d in sorted(_minimise_dirs(reg_dirs)):
         key = ("registry", str(d))

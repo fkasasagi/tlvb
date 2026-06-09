@@ -111,6 +111,13 @@ _TRIAGE_PATHS: list[tuple[str, str]] = [
     (r"Windows/System32/Tasks",                                  "Windows/System32/Tasks"),
     (r"Windows/System32/sru/SRUDB.dat",                          "Windows/System32/sru/SRUDB.dat"),
     (r"$Recycle.Bin",                                            "$Recycle.Bin"),
+    # IIS / web-server access logs. This is the DEFAULT output dir; an admin can
+    # relocate it via applicationHost.config <logFile directory> — extract()
+    # resolves those custom dirs in a second pass (_iis_log_dirs_from_config).
+    (r"inetpub/logs/LogFiles",                                   "inetpub/logs/LogFiles"),
+    # applicationHost.config drives the custom-log-dir resolution above, and is
+    # itself evidence of IIS-module persistence (e.g. a rogue <add name=... />).
+    (r"Windows/System32/inetsrv/config/applicationHost.config",  "Windows/System32/inetsrv/config/applicationHost.config"),
 ]
 
 # Per-user paths — applied to every Users/<u>/ subdir we discover. The
@@ -184,6 +191,48 @@ def is_image(path: pathlib.Path) -> bool:
     return detect_image(path) is not None
 
 
+def _winpath_to_partrel(p: str) -> str:
+    """Best-effort: Windows path (env vars / drive letter) → partition-relative
+    NTFS path usable by fls.  e.g. '%SystemDrive%\\inetpub\\logs\\LogFiles' →
+    'inetpub/logs/LogFiles';  'D:\\weblogs' → 'weblogs'.  Drive letters are
+    dropped (fls addresses one volume at a time; a custom dir on another volume
+    is retried per-partition and simply not_found where absent)."""
+    s = p.strip().strip('"')
+    for k, v in (("%SystemDrive%", ""), ("%SystemRoot%", "Windows"),
+                 ("%windir%", "Windows")):
+        s = re.sub(re.escape(k), v, s, flags=re.IGNORECASE)
+    s = re.sub(r"^[A-Za-z]:", "", s)          # drop drive letter
+    s = s.replace("\\", "/").lstrip("/")
+    return s
+
+
+def _iis_log_dirs_from_config(cfg_path: pathlib.Path) -> list[str]:
+    """Parse a staged applicationHost.config and return IIS log output
+    directories as partition-relative NTFS paths.  IIS log location is
+    admin-configurable via <logFile directory=...> (siteDefaults + per-site),
+    so we resolve it instead of hard-coding the default LogFiles path.  Returns
+    [] on any parse error — graceful, because the default dir was already
+    pulled by the static triage list."""
+    if not cfg_path.exists():
+        return []
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(cfg_path)
+    except Exception:
+        return []
+    dirs: set[str] = set()
+    for lf in tree.iter("logFile"):
+        d = lf.get("directory")
+        if d:
+            dirs.add(d)
+    out: list[str] = []
+    for d in dirs:
+        rel = _winpath_to_partrel(d)
+        if rel and rel not in (".", "/"):     # guard against volume-root resolves
+            out.append(rel)
+    return out
+
+
 def extract(
     image_path: pathlib.Path,
     workspace: pathlib.Path,
@@ -242,6 +291,19 @@ def extract(
                         full_label, part_idx, timeout_seconds,
                     )
                     records.append(rec)
+            # B-2: IIS log output dir is admin-configurable. The static pass
+            # above already pulled applicationHost.config + the default
+            # LogFiles dir; now parse the config and extract any CUSTOM
+            # <logFile directory> that points elsewhere (any drive/path).
+            cfg_staged = (staging_for_part /
+                          "Windows/System32/inetsrv/config/applicationHost.config")
+            for rel_dir in _iis_log_dirs_from_config(cfg_staged):
+                rec = _extract_one(
+                    raw_device, offset_bytes, rel_dir,
+                    staging_for_part / rel_dir, f"iis-logdir:{rel_dir}",
+                    part_idx, timeout_seconds,
+                )
+                records.append(rec)
     finally:
         mount_cleanup()
 
