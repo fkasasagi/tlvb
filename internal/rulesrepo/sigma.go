@@ -81,12 +81,10 @@ var unsupportedCategories = map[string]bool{
 	"file_access": true,
 }
 
-// unsupportedProducts skips rules whose product is a web/app server that
-// runs on Windows but whose logs Tier 0 doesn't ingest.
+// unsupportedProducts skips rules whose product targets logs Tier 0 doesn't
+// ingest. apache/nginx/tomcat were removed on 2026-06-10: their access logs
+// (NCSA → w3c_iis) and error/diagnostic logs (→ web_error) are now ingested.
 var unsupportedProducts = map[string]bool{
-	"apache":  true,
-	"nginx":   true,
-	"tomcat":  true,
 	"haproxy": true,
 }
 
@@ -95,9 +93,8 @@ var unsupportedProducts = map[string]bool{
 // only `service: apache`) — the product/category gates above miss them
 // but they target the same out-of-scope logs.
 var unsupportedServices = map[string]bool{
-	"apache":  true,
-	"nginx":   true,
-	"tomcat":  true,
+	// apache/nginx/tomcat removed 2026-06-10 — their error logs are now
+	// ingested as web_error (access logs as w3c_iis).
 	"haproxy": true,
 	"sshd":    true,
 	"syslog":  true,

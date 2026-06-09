@@ -57,7 +57,7 @@ func SchemaDoc() string {
                             "jumplists" | "lnk" | "recyclebin" |
                             "win10timeline" | "usn_journal" | "hayabusa" |
                             "srum" | "browser_history" | "washizukami_audit" |
-                            "w3c_iis"
+                            "w3c_iis" | "web_error"
   audit_id      VARCHAR  — SHA-256 prefix of canonical payload, unique per case
   ts_utc        TIMESTAMP — event time in UTC; NULL for artifacts without
                             per-event timestamps (e.g. shimcache)
@@ -175,6 +175,30 @@ Recommended webserver SQL patterns (Sigma category:webserver rules target these)
       WHERE artifact_id='w3c_iis'
         AND json_extract_string(payload_json, '$."cs-uri-stem"') ILIKE '%.aspx'
         AND CAST(json_extract_string(payload_json, '$."sc-status"') AS INTEGER) = 200
+
+===== artifact_id='web_error' (Apache / nginx / Tomcat error & diagnostic logs) =====
+
+Non-NCSA diagnostic logs (Apache error_log, nginx error.log, Tomcat
+catalina.out). Access logs are 'w3c_iis'; THIS artifact is the error/diagnostic
+side. One row per log line. Payload fields (plain keys — no hyphens):
+  "server_type"  VARCHAR — "apache" | "nginx" | "tomcat"
+  "severity"     VARCHAR — normalised lowercase: "error" | "warn" | "notice" | "severe" | "info" | ...
+  "client_ip"    VARCHAR — source IP when the line carries one ('-' otherwise)
+  "message"      VARCHAR — the log message body
+  "log_format"   VARCHAR — same as server_type
+
+Recommended SQL patterns (Sigma service:apache / service:nginx rules target these):
+  - Apache segfault / child crash (exploitation attempts):
+      WHERE artifact_id='web_error'
+        AND json_extract_string(payload_json, '$.server_type') = 'apache'
+        AND json_extract_string(payload_json, '$.message') ILIKE '%segmentation fault%'
+  - nginx worker crash / core dump:
+      WHERE artifact_id='web_error'
+        AND json_extract_string(payload_json, '$.server_type') = 'nginx'
+        AND json_extract_string(payload_json, '$.message') ILIKE '%(core dumped)%'
+  - All errors from a specific source IP:
+      WHERE artifact_id='web_error'
+        AND json_extract_string(payload_json, '$.client_ip') = '203.0.113.9'
 
 ===== other artifacts =====
 
