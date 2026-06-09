@@ -60,7 +60,7 @@ func TestParseAnomalyOutput_Object(t *testing.T) {
 	    {"intent":"rare service install","rationale":"recurs","sql":"SELECT audit_id, ts_utc, artifact_id FROM unified_events WHERE case_id = ? LIMIT 50"}
 	  ]
 	}` + "\n```"
-	findings, plans, err := parseAnomalyOutput(raw)
+	findings, plans, _, err := parseAnomalyOutput(raw)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestParseAnomalyOutput_Object(t *testing.T) {
 
 func TestParseAnomalyOutput_ArrayBackCompat(t *testing.T) {
 	raw := `[{"lens":"A2","summary":"temp exec","severity":"high","audit_ids":["x1"]}]`
-	findings, plans, err := parseAnomalyOutput(raw)
+	findings, plans, _, err := parseAnomalyOutput(raw)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

@@ -21,7 +21,11 @@
 //   - Cross-evidence correlation across multiple evidences in one case
 package tier2
 
-import "time"
+import (
+	"time"
+
+	"github.com/tlvb/tlvb/internal/evidencex"
+)
 
 // Finding is the unified shape Tier 2 reasons about. Sources:
 //   - Tier 1A "cached SQL hit" — by-rule/<source>/<id>.json (one Finding per file)
@@ -84,6 +88,10 @@ type Cluster struct {
 	// Populated only when --active-search is enabled. Each entry pairs an
 	// open question with the SQL that tried to answer it.
 	ActiveSearch []ActiveSearchResult
+	// EvidenceFetches records files the agent pulled from the disk image while
+	// analysing this cluster (on-demand evidence extraction). Empty unless the
+	// agent requested a file and --evidence-fetch is enabled.
+	EvidenceFetches []evidencex.FetchSummary
 }
 
 // ActiveSearchResult is one "open question → SQL → answer" round-trip.
@@ -151,6 +159,9 @@ type SynthCluster struct {
 	MITRETechniques []string             `json:"mitre_techniques,omitempty"`
 	OpenQuestions   []string             `json:"open_questions,omitempty"`
 	ActiveSearch    []ActiveSearchResult `json:"active_search,omitempty"`
+	// EvidenceFetches surfaces, per cluster, which files the agent read from the
+	// disk image to reach its narrative (audit trail for Review Gate 2 / Web).
+	EvidenceFetches []evidencex.FetchSummary `json:"evidence_fetches,omitempty"`
 }
 
 // FindingRef is a compact reference to a Tier 1 finding inside a cluster.
@@ -219,6 +230,11 @@ type SynthAudit struct {
 	// made across all queries (the cost side of self-correction).
 	ActiveSQLCorrectionRounds int    `json:"active_sql_correction_rounds,omitempty"`
 	SkillSHA256               string `json:"skill_sha256,omitempty"`
+
+	// On-demand evidence extraction accounting (across all clusters).
+	EvidenceRounds       int `json:"evidence_rounds,omitempty"`
+	EvidenceFilesRequest int `json:"evidence_files_requested,omitempty"`
+	EvidenceFilesGot     int `json:"evidence_files_extracted,omitempty"`
 }
 
 // addUsage folds one claudeOutput's token + cost figures into the audit.
