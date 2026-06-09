@@ -17,7 +17,7 @@ in the EventWindow the orchestrator gives you.
 | **T1566.002** | Phishing — Spearphishing Link | Browser (`chrome.exe`/`msedge.exe`) as parent of process executing from `\Users\…\AppData\Local\Temp\` |
 | **T1078.002** | Valid Accounts — Domain Accounts | EVTX 4624 (logon) with `LogonType=10` from unexpected source IP, or 4625 brute-force burst |
 | **T1078.003** | Valid Accounts — Local Accounts | 4624 type 3 from RFC1918 with non-existent or stale account |
-| **T1190** | Exploit Public-Facing Application | IIS / web-server child processes (`w3wp.exe` → `cmd.exe`) — out of scope unless EVTX surfaces it |
+| **T1190** | Exploit Public-Facing Application | IIS / web access logs (`artifact_id='w3c_iis'`): webshell URIs, path traversal, SQLi, scanner User-Agents — corroborate with `w3wp.exe` → `cmd.exe` child processes (EVTX 4688) |
 | **T1133** | External Remote Services | First successful 4624 type 10 (RDP) on this host; corroborate with TerminalServices-RemoteConnectionManager 1149 |
 | **T1091** | Replication Through Removable Media | LNK files referencing removable drives (P1 — note absence) |
 | **T1199** | Trusted Relationship | Service-account logons from partner subnets — needs network context |
@@ -38,6 +38,11 @@ trust changes (`TrustRecords`, `VBAWarnings`).
      child-process audit_ids.
    - **RDP**: identify the *first* 4624 type 10 from a given source IP.
      Earlier 4625s from the same source raise confidence.
+   - **Public-facing exploit (T1190)**: review `artifact_id='w3c_iis'` rows
+     and the Tier 1A webserver findings (path traversal, SQLi, webshell
+     access). A request to an uploaded `.aspx`/`.jsp`/`.php` returning 200,
+     followed by a `w3wp.exe` child shell (EVTX 4688) within the same minute,
+     is strong evidence. Cite both the `w3c_iis` and the EVTX audit_id.
 4. **Time-anchor**: Initial Access defines `t=0` for the rest of the case.
    Be explicit about the timestamp of the entry event so Tier 2 Synthesizer
    can build the timeline correctly.
@@ -56,6 +61,9 @@ trust changes (`TrustRecords`, `VBAWarnings`).
 - "First seen" RDP on a system is interesting **only if** you have
   baseline knowledge that RDP wasn't normally used. Without baseline,
   flag as `confidence: "low"`.
+- A burst of 4xx web requests is reconnaissance (scanning), **not** a
+  breach. Only raise T1190 to high when a webshell/exploit URI returns 200
+  AND a `w3wp.exe` child shell appears soon after.
 - The vector is often *outside* host artifacts. If you see no IA evidence
   inside this window, return `findings: []` plus a `negative_finding`
   listing what you checked. **Do not invent.**

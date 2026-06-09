@@ -1,27 +1,38 @@
-"""W3C / IIS log parser (Wave 37) — web server access logs.
+"""W3C / IIS / NCSA web-server access-log parser — web-facing attack recon.
 
-Status: skeleton — parses W3C Extended Log File Format (the IIS / Apache
-common log format ancestor) directly in Python, no external tool needed.
-The format is text with #Fields directive defining columns.
+Status: implemented (pure Python, no external tool). Supersedes the 0.1.0
+skeleton which only read the W3C #Fields layout and dumped raw columns.
 
-Useful for web-facing attack reconstruction: identify suspicious User-Agent
-strings, paths probing for admin pages, source IPs hitting login endpoints,
-etc. Tier 1 initial_access agent can correlate these with credential-access
-events.
+IIS can emit access logs in three on-disk shapes; this parser detects and
+normalises all three:
 
-Input: a single .log file (W3C format) or a directory of them.
+  * **W3C Extended Log File Format** — ``#Fields:``-driven, space-delimited,
+    UTC. The IIS default.
+  * **IIS native (Microsoft IIS Log File Format)** — fixed comma-delimited
+    column order, no header, local time.
+  * **NCSA Common / Combined** — Apache-style, ``"METHOD URI PROTO"`` quoted
+    request, offset-stamped time.
 
-Reference format:
-    #Software: Microsoft Internet Information Services 10.0
-    #Version: 1.0
-    #Date: 2026-05-21 00:00:00
-    #Fields: date time c-ip cs-username s-ip s-port cs-method cs-uri-stem cs-uri-query sc-status sc-substatus sc-win32-status sc-bytes cs-bytes time-taken
-    2026-05-21 12:34:56 192.0.2.4 - 10.0.0.5 443 GET /login - 200 0 0 1234 567 89
+All three are normalised to the SAME payload keys — the canonical **W3C field
+names** (``cs-uri-stem``, ``cs-uri-query``, ``c-ip``, ``cs-method``,
+``sc-status``, ``cs-User-Agent`` …). This matters because the Sigma
+``category: webserver`` rule corpus is written against W3C names, so emitting
+W3C names regardless of source format lets one rule match every layout.
+
+Useful for web-facing attack reconstruction: suspicious User-Agent strings,
+path-traversal / SQLi / webshell URIs, source IPs probing admin endpoints.
+Tier 1A signature rules hit these directly; Tier 1B initial_access correlates
+them with credential-access events (w3wp.exe → cmd.exe child processes).
+
+Input: a single ``.log`` file or a directory of them (recursively).
 """
 
 from __future__ import annotations
 
+import datetime
 import pathlib
+import re
+from typing import Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -34,39 +45,187 @@ from parsers.base import (
 )
 
 ARTIFACT_ID = "w3c_iis"
-PARSER_VERSION = "w3c_iis_parser/0.1.0-skeleton"
+PARSER_VERSION = "w3c_iis_parser/0.2.0"
+
+# IIS native (Microsoft IIS Log File Format) has no header; columns are fixed.
+# Order per Microsoft docs (IIS native uses ", " as the field separator).
+_IIS_NATIVE_FIELDS = [
+    "c-ip", "cs-username", "date", "time", "s-sitename", "s-computername",
+    "s-ip", "time-taken", "cs-bytes", "sc-bytes", "sc-status",
+    "sc-win32-status", "cs-method", "cs-uri-stem", "cs-uri-query",
+]
+
+# NCSA Common: host ident authuser [date] "request" status bytes
+# NCSA Combined: ... status bytes "referer" "user-agent"
+_NCSA_RE = re.compile(
+    r'^(?P<cip>\S+)\s+\S+\s+(?P<user>\S+)\s+'
+    r'\[(?P<dt>[^\]]+)\]\s+'
+    r'"(?P<req>[^"]*)"\s+'
+    r'(?P<status>\d{3}|-)\s+(?P<bytes>\d+|-)'
+    r'(?:\s+"(?P<referer>[^"]*)"\s+"(?P<ua>[^"]*)")?'
+)
 
 
-def _iter_w3c_logs(root: pathlib.Path):
-    """Yield (path, fields, row_values) per data line across all .log files."""
-    if root.is_file():
-        targets = [root]
-    else:
-        targets = sorted(root.rglob("*.log"))
-    for path in targets:
-        fields: list[str] = []
+def _detect_format(path: pathlib.Path) -> str | None:
+    """Sniff the first non-empty lines to pick a layout. Returns one of
+    'w3c' | 'iis' | 'ncsa', or None when nothing parseable is seen."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(50):
+                line = fh.readline()
+                if line == "":
+                    break
+                line = line.rstrip("\r\n")
+                if not line:
+                    continue
+                if line.startswith("#Fields:") or line.startswith("#Software:"):
+                    return "w3c"
+                if line.startswith("#"):
+                    continue
+                if _NCSA_RE.match(line):
+                    return "ncsa"
+                # IIS native: fixed 15 comma-separated columns, ", " delimited.
+                if line.count(", ") >= 10 and "," in line:
+                    return "iis"
+                # A bare space-delimited data line without a header is most
+                # likely W3C with the header further up (or rolled). Default w3c.
+                return "w3c"
+    except OSError:
+        return None
+    return None
+
+
+def _split_uri(stem: str) -> tuple[str, str]:
+    """Split a raw request target into (cs-uri-stem, cs-uri-query)."""
+    if "?" in stem:
+        s, q = stem.split("?", 1)
+        return s, q
+    return stem, "-"
+
+
+def _ts_w3c(date: str, t: str) -> str:
+    """W3C date+time (UTC) → ISO-8601 with trailing Z. Sub-second preserved."""
+    if not date or not t:
+        return ""
+    return f"{date}T{t}Z"
+
+
+def _ts_iis_native(date: str, t: str) -> str:
+    """IIS native MM/DD/YY HH:MM:SS (LOCAL time) → naive ISO-8601 (no Z).
+
+    IIS native logs are written in the server's local time with no offset, so
+    we cannot safely stamp UTC. Emitted naive; see the note in ParseResult.
+    """
+    if not date or not t:
+        return ""
+    for fmt in ("%m/%d/%y %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.rstrip("\r\n")
-                    if not line:
-                        continue
-                    if line.startswith("#Fields:"):
-                        fields = line[len("#Fields:"):].strip().split()
-                        continue
-                    if line.startswith("#"):
-                        continue
-                    if not fields:
-                        continue
-                    parts = line.split(" ")
-                    # Pad shorter lines, truncate longer.
-                    if len(parts) < len(fields):
-                        parts += [""] * (len(fields) - len(parts))
-                    elif len(parts) > len(fields):
-                        # Last field absorbs the overflow (often UserAgent
-                        # with spaces).
-                        parts = parts[:len(fields) - 1] + [" ".join(parts[len(fields) - 1:])]
-                    yield path, fields, parts
+            dt = datetime.datetime.strptime(f"{date} {t}", fmt)
+            return dt.isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def _ts_ncsa(raw: str) -> str:
+    """NCSA '10/Oct/2026:13:55:36 +0000' → UTC ISO-8601 with Z."""
+    try:
+        dt = datetime.datetime.strptime(raw, "%d/%b/%Y:%H:%M:%S %z")
+        return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return ""
+
+
+def _iter_w3c(path: pathlib.Path) -> Iterator[dict]:
+    """Yield normalised row dicts from a W3C Extended log. ``#Fields:`` may
+    appear multiple times (config change / log roll); re-bind on each."""
+    fields: list[str] = []
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            if line.startswith("#Fields:"):
+                fields = line[len("#Fields:"):].strip().split()
+                continue
+            if line.startswith("#"):
+                continue
+            if not fields:
+                continue
+            parts = line.split(" ")
+            if len(parts) < len(fields):
+                parts += ["-"] * (len(fields) - len(parts))
+            elif len(parts) > len(fields):
+                # Overflow (rare; UA with spaces is normally %20-encoded in W3C)
+                # folds into the last column.
+                parts = parts[:len(fields) - 1] + [" ".join(parts[len(fields) - 1:])]
+            row = dict(zip(fields, parts))
+            row["__ts__"] = _ts_w3c(row.get("date", ""), row.get("time", ""))
+            yield row
+
+
+def _iter_iis_native(path: pathlib.Path) -> Iterator[dict]:
+    """Yield normalised row dicts from an IIS native log (fixed columns)."""
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\r\n").rstrip(",")
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(", ")]
+            if len(parts) < len(_IIS_NATIVE_FIELDS):
+                parts += ["-"] * (len(_IIS_NATIVE_FIELDS) - len(parts))
+            row = dict(zip(_IIS_NATIVE_FIELDS, parts))
+            row["__ts__"] = _ts_iis_native(row.get("date", ""), row.get("time", ""))
+            yield row
+
+
+def _iter_ncsa(path: pathlib.Path) -> Iterator[dict]:
+    """Yield normalised row dicts from an NCSA Common/Combined log."""
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\r\n")
+            if not line or line.startswith("#"):
+                continue
+            m = _NCSA_RE.match(line)
+            if not m:
+                continue
+            g = m.groupdict()
+            method, stem, version = "-", "-", "-"
+            req = (g.get("req") or "").split()
+            if len(req) >= 1:
+                method = req[0]
+            if len(req) >= 2:
+                stem = req[1]
+            if len(req) >= 3:
+                version = req[2]
+            uri_stem, uri_query = _split_uri(stem)
+            row = {
+                "c-ip": g["cip"],
+                "cs-username": g["user"],
+                "cs-method": method,
+                "cs-uri-stem": uri_stem,
+                "cs-uri-query": uri_query,
+                "cs-version": version,
+                "sc-status": g["status"],
+                "sc-bytes": g["bytes"],
+                "cs(Referer)": g.get("referer") or "-",
+                "cs-User-Agent": g.get("ua") or "-",
+                "__ts__": _ts_ncsa(g["dt"]),
+            }
+            yield row
+
+
+def _iter_logs(root: pathlib.Path) -> Iterator[tuple[pathlib.Path, str, dict]]:
+    """Yield (path, log_format, normalised_row) across all .log files."""
+    targets = [root] if root.is_file() else sorted(root.rglob("*.log"))
+    iterators = {"w3c": _iter_w3c, "iis": _iter_iis_native, "ncsa": _iter_ncsa}
+    for path in targets:
+        fmt = _detect_format(path)
+        if fmt is None:
+            continue
+        try:
+            for row in iterators[fmt](path):
+                yield path, fmt, row
         except OSError:
             continue
 
@@ -82,16 +241,18 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    def _iter() -> "Iterator[dict]":
+    saw_native = [False]
+
+    def _iter() -> Iterator[dict]:
         idx = 0
-        for path, fields, parts in _iter_w3c_logs(req.input_path):
-            row = dict(zip(fields, parts))
-            # W3C date + time → ISO-8601 (UTC, IIS default).
-            ts_utc = ""
-            d = row.get("date") or row.get("Date")
-            t = row.get("time") or row.get("Time")
-            if d and t:
-                ts_utc = f"{d}T{t}Z"
+        for path, fmt, row in _iter_logs(req.input_path):
+            if fmt == "iis":
+                saw_native[0] = True
+            ts_utc = row.pop("__ts__", "")
+            computer = row.get("s-computername") or row.get("s-ip") or ""
+            payload = {k: v for k, v in row.items()}
+            payload["log_path"] = str(path)
+            payload["log_format"] = fmt
             yield make_unified_event(
                 case_id=req.case_id,
                 evidence_id=req.evidence_id,
@@ -100,40 +261,48 @@ def parse(req: ParseRequest) -> ParseResult:
                                f"{path.name}|{idx}|{ts_utc}"),
                 ts_utc=ts_utc,
                 event_type="w3c_iis_request",
-                payload={**row, "log_path": str(path)},
+                computer=computer,
+                payload=payload,
                 parser_version=PARSER_VERSION,
             )
             idx += 1
 
     jsonl_path = req.output_dir / "w3c_iis.jsonl"
     try:
-        from typing import Iterator  # noqa: F401
         row_count = write_unified_events(jsonl_path, _iter())
     except Exception as exc:
         return fail(
             artifact_id=ARTIFACT_ID, command="(in-process parse)",
             started=started,
-            error=f"convert W3C logs→JSONL: {exc}",
+            error=f"convert web logs→JSONL: {exc}",
             parser_version=PARSER_VERSION,
         )
     if row_count == 0:
         return fail(
             artifact_id=ARTIFACT_ID, command="(in-process parse)",
             started=started,
-            error="no W3C log records parsed — files missing #Fields header?",
+            error="no web-server log records parsed — unrecognised format or "
+                  "missing #Fields header?",
             parser_version=PARSER_VERSION,
         )
+
+    notes = [
+        "Parsed in-process (no external tool): W3C Extended / IIS native / "
+        "NCSA all normalised to canonical W3C field names.",
+        "Sigma category:webserver rules match payload keys cs-uri-stem, "
+        "cs-uri-query, cs-method, sc-status, cs-User-Agent verbatim.",
+    ]
+    if saw_native[0]:
+        notes.append(
+            "IIS native records carry LOCAL time (no offset) — their timestamps "
+            "are emitted naive (no Z). Treat cross-artifact correlation with care.")
     return ParseResult(
         artifact_id=ARTIFACT_ID, success=True,
-        command="(in-process W3C parser)", exit_code=0,
+        command="(in-process web-log parser)", exit_code=0,
         started_at=started, finished_at=now_iso(),
         duration_seconds=0.0,
         output_jsonl=str(jsonl_path),
         row_count=row_count,
         parser_version=PARSER_VERSION,
-        notes=[
-            "W3C Extended Log Format parsed in-process (no external tool).",
-            "If input contains IIS-specific extensions (cs-uri-stem, etc.) "
-            "they're preserved verbatim in payload.",
-        ],
+        notes=notes,
     )

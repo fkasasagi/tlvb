@@ -56,7 +56,8 @@ func SchemaDoc() string {
                             "prefetch" | "shimcache" | "mft" | "shellbags" |
                             "jumplists" | "lnk" | "recyclebin" |
                             "win10timeline" | "usn_journal" | "hayabusa" |
-                            "srum" | "browser_history" | "washizukami_audit"
+                            "srum" | "browser_history" | "washizukami_audit" |
+                            "w3c_iis"
   audit_id      VARCHAR  — SHA-256 prefix of canonical payload, unique per case
   ts_utc        TIMESTAMP — event time in UTC; NULL for artifacts without
                             per-event timestamps (e.g. shimcache)
@@ -136,6 +137,44 @@ Payload fields:
   Channel         VARCHAR — same as evtx
   EventID         VARCHAR — original Windows EventId
   Details         VARCHAR — combined detail line (often contains command line)
+
+===== artifact_id='w3c_iis' (IIS / web-server access log) =====
+
+Web-facing HTTP request logs. IIS W3C Extended, IIS native, and NCSA
+Common/Combined are ALL normalised to the canonical W3C field names below, so
+one rule matches regardless of the on-disk format. One row per request.
+
+IMPORTANT: these payload keys contain hyphens, so the JSON path MUST be
+double-quoted, e.g. json_extract_string(payload_json, '$."cs-uri-stem"').
+A bare '$.cs-uri-stem' will NOT work.
+
+  "c-ip"           VARCHAR — client (source) IP
+  "cs-method"      VARCHAR — HTTP method: GET | POST | HEAD | PUT | ...
+  "cs-uri-stem"    VARCHAR — requested path WITHOUT the query string (e.g. /admin/x.aspx)
+  "cs-uri-query"   VARCHAR — query string only ('-' when none)
+  "sc-status"      VARCHAR — HTTP status as STRING ("200","404","500"); CAST to INTEGER to compare
+  "cs-User-Agent"  VARCHAR — client User-Agent ('-' when absent)
+  "cs(Referer)"    VARCHAR — referer (NCSA Combined only)
+  "cs-username"    VARCHAR — authenticated user ('-' when anonymous)
+  "s-ip"           VARCHAR — server IP
+  "s-computername" VARCHAR — server hostname (IIS native only; mirrored in the computer column)
+  "time-taken"     VARCHAR — request duration in ms (W3C / IIS native)
+  "log_format"     VARCHAR — "w3c" | "iis" | "ncsa"
+
+Recommended webserver SQL patterns (Sigma category:webserver rules target these):
+  - Path traversal in the URI:
+      WHERE artifact_id='w3c_iis'
+        AND json_extract_string(payload_json, '$."cs-uri-stem"') ILIKE '%../%'
+  - SQL injection / suspicious query string:
+      WHERE artifact_id='w3c_iis'
+        AND json_extract_string(payload_json, '$."cs-uri-query"') ILIKE '%union%select%'
+  - Suspicious User-Agent (scanners / exploit tools):
+      WHERE artifact_id='w3c_iis'
+        AND json_extract_string(payload_json, '$."cs-User-Agent"') ILIKE '%sqlmap%'
+  - Webshell access (uploaded script returning 200):
+      WHERE artifact_id='w3c_iis'
+        AND json_extract_string(payload_json, '$."cs-uri-stem"') ILIKE '%.aspx'
+        AND CAST(json_extract_string(payload_json, '$."sc-status"') AS INTEGER) = 200
 
 ===== other artifacts =====
 
