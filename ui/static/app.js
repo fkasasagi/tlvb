@@ -2559,14 +2559,26 @@ async function paintCaseSnapshot(host, caseID) {
       .join(" · ");
     const more = (p.artifacts || []).length > 6
       ? ` · +${p.artifacts.length - 6} more` : "";
-    body.appendChild(snapshotTile("Tier 0 · Parse",
+    const parseTile = snapshotTile("Tier 0 · Parse",
       [
         kv("Evidence", p.evidence_count),
         kv("Events", p.events_total.toLocaleString()),
         kv("Last", fmtTS(p.last_parsed_at) || "—"),
       ],
       artifacts ? "Artifacts: " + artifacts + more : null
-    ));
+    );
+    // Per-evidence breakdown — only when the case bundles >1 evidence, so
+    // single-evidence cases keep the compact view. Each evidence is a
+    // collapsible row that expands to its source host / type / top artifacts,
+    // making it obvious which evidence the parsed events came from.
+    const evs = p.evidence || [];
+    if (evs.length > 1) {
+      parseTile.appendChild(h("div", { class: "evidence-breakdown" }, [
+        h("div", { class: "evidence-breakdown-title" }, "Per evidence"),
+        ...evs.map(evidenceParseDetails),
+      ]));
+    }
+    body.appendChild(parseTile);
   } else {
     body.appendChild(snapshotTile("Tier 0 · Parse",
       [h("span", { class: "muted" }, "no parsed events yet")], null));
@@ -2634,6 +2646,36 @@ async function paintCaseSnapshot(host, caseID) {
 
   card.appendChild(body);
   host.appendChild(card);
+}
+
+// evidenceParseDetails renders one EvidenceParseSummary as a collapsible
+// <details> row: the summary line shows evidence_id + event count (visible
+// while collapsed), and expanding reveals host / type / path / top artifacts.
+function evidenceParseDetails(es) {
+  const summary = h("summary", { class: "evidence-summary" }, [
+    h("span", { class: "evidence-name" }, es.evidence_id || "(unattributed)"),
+    h("span", { class: "evidence-count" }, (es.events_total || 0).toLocaleString() + " ev"),
+  ]);
+  const lines = [];
+  const sub = [es.source_host, es.evidence_type].filter(Boolean).join(" · ");
+  if (sub) lines.push(h("div", { class: "muted", style: "font-size: 11px;" }, sub));
+  if (es.path) {
+    lines.push(h("div", { class: "muted mono",
+      style: "font-size: 10px; word-break: break-all;" }, es.path));
+  }
+  const topArts = (es.artifacts || []).slice(0, 8)
+    .map((a) => `${a.artifact_id}=${a.event_count.toLocaleString()}`).join(" · ");
+  const moreArts = (es.artifacts || []).length > 8
+    ? ` · +${es.artifacts.length - 8} more` : "";
+  if (topArts) {
+    lines.push(h("div", { style: "font-size: 11px; margin-top: 4px;" }, topArts + moreArts));
+  }
+  if (es.last_event_at) {
+    lines.push(h("div", { class: "muted", style: "font-size: 11px; margin-top: 4px;" },
+      "last: " + (fmtTS(es.last_event_at) || "—")));
+  }
+  return h("details", { class: "evidence-item" },
+    [summary, h("div", { class: "evidence-detail" }, lines)]);
 }
 
 function snapshotTile(title, rows, footer) {
@@ -2795,13 +2837,75 @@ async function renderExtractsSection(pane, caseID) {
 
   const exSection = h("div", { class: "card extracts-section" });
   exSection.appendChild(h("h2", {}, "Extracts — Review Gate 0 (image)"));
-  const hdr = data.header || {};
-  const c = data.counts || {};
-  exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
-    `image: ${hdr.image_path || "?"} · format: ${hdr.image_format || "?"} · ` +
-    `mount: ${hdr.mount_method || "?"} · ` +
-    `approved=${c.approved||0} · pending=${c.pending||0} · rejected=${c.rejected||0}`));
 
+  const records = data.records || [];
+  const headers = data.headers || (data.header ? [data.header] : []);
+  const headerByEv = {};
+  headers.forEach((hd) => { headerByEv[hd.evidence_id || ""] = hd; });
+
+  // Group records by source evidence (disk image) so a case bundling more
+  // than one image keeps each image's extractions separate.
+  const groups = new Map();
+  records.forEach((r) => {
+    const k = r.evidence_id || "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  });
+
+  const cnt = (rows, st) => rows.filter((x) => (x.state || "pending") === st).length;
+  const headerLine = (hd, rows) => {
+    hd = hd || {};
+    return `image: ${hd.image_path || "?"} · format: ${hd.image_format || "?"} · ` +
+      `mount: ${hd.mount_method || "?"} · ` +
+      `approved=${cnt(rows,"approved")} · pending=${cnt(rows,"pending")} · ` +
+      `rejected=${cnt(rows,"rejected")}`;
+  };
+
+  if (groups.size <= 1) {
+    // Single image — flat layout, visually unchanged from before.
+    const first = [...groups][0];
+    const k = first ? first[0] : "";
+    const rows = first ? first[1] : records;
+    exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
+      headerLine(headerByEv[k], rows)));
+    exSection.appendChild(extractTable(caseID, pane, rows));
+  } else {
+    // Multi-image — one collapsible group per evidence.
+    exSection.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
+      `${groups.size} disk-image evidences — expand each to review its extractions.`));
+    for (const [k, rows] of groups) {
+      const hd = headerByEv[k] || {};
+      const summary = h("summary", { class: "evidence-summary" }, [
+        h("span", { class: "evidence-name" }, k || "(image)"),
+        h("span", { class: "muted", style: "font-size: 11px;" },
+          `${hd.image_format || "?"} · ${hd.mount_method || "?"}`),
+        h("span", { class: "evidence-count" },
+          `${rows.length} files · ✓${cnt(rows,"approved")} · ⏳${cnt(rows,"pending")}`),
+      ]);
+      const detail = h("div", { class: "evidence-detail" }, [
+        h("div", { class: "muted mono",
+          style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" },
+          hd.image_path || ""),
+        extractTable(caseID, pane, rows),
+      ]);
+      exSection.appendChild(h("details", { class: "evidence-item", open: "open" },
+        [summary, detail]));
+    }
+  }
+
+  // Always position the Extracts section above Parse Results — `insertBefore`
+  // with the current first child keeps the layout stable across re-renders
+  // (approve/reject would otherwise append to the bottom).
+  if (pane.firstChild) {
+    pane.insertBefore(exSection, pane.firstChild);
+  } else {
+    pane.appendChild(exSection);
+  }
+}
+
+// extractTable builds the extract-record table for one evidence's rows.
+// Shared by the flat (single-image) and grouped (multi-image) renders.
+function extractTable(caseID, pane, records) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
     h("th", {}, "Target"),
@@ -2814,76 +2918,74 @@ async function renderExtractsSection(pane, caseID) {
     h("th", {}, "Action"),
   ])));
   const body = h("tbody");
-  (data.records || []).forEach((r) => {
-    const stateClass = {
-      approved: "approved", rejected: "rejected", pending: "pending",
-    }[r.state] || "pending";
-    const stateBadge = h("span", { class: "badge " + stateClass,
-      title: r.reason || r.error || "" }, r.state || "pending");
-    const action = h("div", { class: "row", style: "gap: 4px;" });
-    if (r.state === "approved" || r.state === "rejected") {
-      action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
-        (r.reviewed_by || "?") + " · " + fmtTS(r.reviewed_at).slice(0, 16)));
-    } else {
-      action.appendChild(h("button", {
-        onclick: async () => {
-          try {
-            await api("POST",
-              `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(r.target)}/approve`);
-            toast("Approved " + r.target, "success");
-            await renderExtractsSection(pane, caseID);
-          } catch (e) { toast(e.message, "error"); }
-        },
-      }, "Approve"));
-      action.appendChild(h("button", {
-        class: "danger",
-        onclick: () => {
-          const close = modal([
-            h("h3", {}, "Reject extract " + r.target),
-            h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
-              h("input", { id: "ex_reason", placeholder: "why is this extract bad? (optional)" })]),
-            h("div", { class: "actions" }, [
-              h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
-              h("button", { class: "danger", onclick: async () => {
-                try {
-                  await api("POST",
-                    `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(r.target)}/reject`,
-                    { reason: $("#ex_reason").value.trim() });
-                  close(); toast("Rejected " + r.target, "success");
-                  await renderExtractsSection(pane, caseID);
-                } catch (e) { toast(e.message, "error"); }
-              }}, "Reject"),
-            ]),
-          ]);
-        },
-      }, "Reject"));
-    }
-    const statusClass = r.status === "ok" ? "ok"
-                      : r.status === "not_found" ? "pending"
-                      : r.status === "skip" ? "pending"
-                      : "err";
-    body.appendChild(h("tr", {}, [
-      h("td", {}, h("code", {}, r.target)),
-      h("td", {}, h("span", { class: "badge " + statusClass, title: r.error || "" }, r.status)),
-      h("td", {}, r.partition != null ? String(r.partition) : "—"),
-      h("td", { class: "mono" }, r.inum || "—"),
-      h("td", {}, r.bytes != null ? Number(r.bytes).toLocaleString() : "—"),
-      h("td", { class: "mono", style: "font-size: 10px;" },
-        r.sha256 ? r.sha256.slice(0, 16) + "…" : "—"),
-      h("td", {}, stateBadge),
-      h("td", {}, action),
-    ]));
-  });
+  (records || []).forEach((r) => body.appendChild(extractRow(caseID, pane, r)));
   tbl.appendChild(body);
-  exSection.appendChild(tbl);
-  // Always position the Extracts section above Parse Results — `insertBefore`
-  // with the current first child keeps the layout stable across re-renders
-  // (approve/reject would otherwise append to the bottom).
-  if (pane.firstChild) {
-    pane.insertBefore(exSection, pane.firstChild);
+  return tbl;
+}
+
+// extractRow renders one extract record. The approve/reject calls use the
+// server-supplied review_key (evidence-namespaced) so same-named targets on
+// different images don't share review state; r.target is kept for display.
+function extractRow(caseID, pane, r) {
+  const key = r.review_key || r.target;
+  const stateClass = {
+    approved: "approved", rejected: "rejected", pending: "pending",
+  }[r.state] || "pending";
+  const stateBadge = h("span", { class: "badge " + stateClass,
+    title: r.reason || r.error || "" }, r.state || "pending");
+  const action = h("div", { class: "row", style: "gap: 4px;" });
+  if (r.state === "approved" || r.state === "rejected") {
+    action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
+      (r.reviewed_by || "?") + " · " + fmtTS(r.reviewed_at).slice(0, 16)));
   } else {
-    pane.appendChild(exSection);
+    action.appendChild(h("button", {
+      onclick: async () => {
+        try {
+          await api("POST",
+            `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/approve`);
+          toast("Approved " + r.target, "success");
+          await renderExtractsSection(pane, caseID);
+        } catch (e) { toast(e.message, "error"); }
+      },
+    }, "Approve"));
+    action.appendChild(h("button", {
+      class: "danger",
+      onclick: () => {
+        const close = modal([
+          h("h3", {}, "Reject extract " + r.target),
+          h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
+            h("input", { id: "ex_reason", placeholder: "why is this extract bad? (optional)" })]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+            h("button", { class: "danger", onclick: async () => {
+              try {
+                await api("POST",
+                  `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/reject`,
+                  { reason: $("#ex_reason").value.trim() });
+                close(); toast("Rejected " + r.target, "success");
+                await renderExtractsSection(pane, caseID);
+              } catch (e) { toast(e.message, "error"); }
+            }}, "Reject"),
+          ]),
+        ]);
+      },
+    }, "Reject"));
   }
+  const statusClass = r.status === "ok" ? "ok"
+                    : r.status === "not_found" ? "pending"
+                    : r.status === "skip" ? "pending"
+                    : "err";
+  return h("tr", {}, [
+    h("td", {}, h("code", {}, r.target)),
+    h("td", {}, h("span", { class: "badge " + statusClass, title: r.error || "" }, r.status)),
+    h("td", {}, r.partition != null ? String(r.partition) : "—"),
+    h("td", { class: "mono" }, r.inum || "—"),
+    h("td", {}, r.bytes != null ? Number(r.bytes).toLocaleString() : "—"),
+    h("td", { class: "mono", style: "font-size: 10px;" },
+      r.sha256 ? r.sha256.slice(0, 16) + "…" : "—"),
+    h("td", {}, stateBadge),
+    h("td", {}, action),
+  ]);
 }
 
 async function renderEvents(pane, caseID, detail) {
@@ -3093,9 +3195,27 @@ async function renderEvents(pane, caseID, detail) {
     `Total events parsed: ${detail.case.unified_event_rows.toLocaleString()}. ` +
     "Use the filters below to query the unified_events table."));
 
+  // Evidence metadata for the filter dropdown + per-evidence grouping labels.
+  // Stashed on the card so loadEventsPage (called from Prev/Next without
+  // `detail` in scope) can still resolve evidence_id → host/type.
+  const evidences = (detail && detail.evidence) || [];
+  browserCard._evMeta = evidences;
+
   // Filter form
   const artifactIDs = [...new Set(prs.map((p) => p.artifact_id).filter(Boolean))].sort();
+  // Evidence selector only appears for multi-evidence cases — single-evidence
+  // cases gain nothing from it and the events already all share one source.
+  const evField = evidences.length > 1
+    ? h("div", { class: "f-field" }, [
+        h("label", {}, "Evidence"),
+        h("select", { id: "ev_evidence" },
+          [h("option", { value: "" }, "(all)"),
+           ...evidences.map((e) => h("option", { value: e.evidence_id },
+             e.evidence_id + (e.source_host ? ` (${e.source_host})` : "")))]),
+      ])
+    : null;
   const filterRow = h("div", { class: "filter-row" }, [
+    evField,
     h("div", { class: "f-field" }, [
       h("label", {}, "Artifact"),
       h("select", { id: "ev_artifact" },
@@ -3151,6 +3271,8 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
   resultsBox.innerHTML = `<div class="empty"><span class="spinner"></span>querying…</div>`;
 
   const q = new URLSearchParams();
+  const evSel    = browserCard.querySelector("#ev_evidence");
+  const evidence = evSel ? evSel.value : "";
   const artifact = browserCard.querySelector("#ev_artifact").value;
   const computer = browserCard.querySelector("#ev_computer").value.trim();
   const contains = browserCard.querySelector("#ev_contains").value.trim();
@@ -3162,6 +3284,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     : parseInt(browserCard.querySelector("#ev_offset").value, 10) || 0;
   browserCard.querySelector("#ev_offset").value = offset;
 
+  if (evidence) q.set("evidence_id", evidence);
   if (artifact) q.set("artifact_id", artifact);
   if (computer) q.set("computer", computer);
   if (contains) q.set("contains", contains);
@@ -3203,6 +3326,46 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     return;
   }
 
+  // Group the returned page by evidence_id so it's clear which source each
+  // event came from. Single-evidence cases render the flat table exactly as
+  // before. Multi-evidence cases always render labelled sections — even when
+  // a ts-ordered page happens to contain just one evidence — so the source is
+  // never ambiguous.
+  const groups = new Map();
+  data.events.forEach((e) => {
+    const k = e.evidence_id || "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  });
+
+  const multiEvidence = (browserCard._evMeta || []).length > 1;
+  if (!multiEvidence && groups.size <= 1) {
+    resultsBox.appendChild(eventsTable(data.events));
+    return;
+  }
+
+  const meta = {};
+  (browserCard._evMeta || []).forEach((e) => { meta[e.evidence_id] = e; });
+  if (groups.size > 1) {
+    resultsBox.appendChild(h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" },
+      "Grouped by evidence (within the current page). Use the Evidence filter to scope a single source."));
+  }
+  for (const [k, rows] of groups) {
+    const m = meta[k] || {};
+    const sub = [m.source_host, m.evidence_type].filter(Boolean).join(" · ");
+    const summary = h("summary", { class: "evidence-summary" }, [
+      h("span", { class: "evidence-name" }, k || "(unattributed)"),
+      sub ? h("span", { class: "muted", style: "font-size: 11px;" }, sub) : null,
+      h("span", { class: "evidence-count" }, rows.length + " ev"),
+    ]);
+    resultsBox.appendChild(h("details", { class: "evidence-item", open: "open" },
+      [summary, h("div", { class: "evidence-detail" }, eventsTable(rows))]));
+  }
+}
+
+// eventsTable builds the unified_events result table for a set of rows.
+// Shared by the flat (single-evidence) and grouped (multi-evidence) renders.
+function eventsTable(rows) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
     h("th", {}, "Timestamp (UTC)"),
@@ -3213,7 +3376,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     h("th", {}, "Payload"),
   ])));
   const body = h("tbody");
-  data.events.forEach((e) => {
+  rows.forEach((e) => {
     const previewBtn = h("button", { class: "ghost",
       onclick: () => showPayloadModal(e),
     }, "view");
@@ -3227,7 +3390,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     ]));
   });
   tbl.appendChild(body);
-  resultsBox.appendChild(tbl);
+  return tbl;
 }
 
 function showPayloadModal(ev) {

@@ -436,6 +436,7 @@ func (m *Manager) listParseResultsForCase(ctx context.Context, caseID string) ([
 type UnifiedEventQuery struct {
 	CaseID     string
 	ArtifactID string
+	EvidenceID string // exact evidence_id match — scope events to one source evidence
 	AuditID    string // exact audit_id match — Issue #20 (Evidence row drill-down)
 	StartTime  string // ISO8601 UTC, optional
 	EndTime    string
@@ -474,6 +475,10 @@ func (m *Manager) QueryUnifiedEvents(ctx context.Context, q UnifiedEventQuery) (
 	if q.ArtifactID != "" {
 		sb.WriteString(` AND artifact_id = ?`)
 		args = append(args, q.ArtifactID)
+	}
+	if q.EvidenceID != "" {
+		sb.WriteString(` AND evidence_id = ?`)
+		args = append(args, q.EvidenceID)
 	}
 	if q.AuditID != "" {
 		sb.WriteString(` AND audit_id = ?`)
