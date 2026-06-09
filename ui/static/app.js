@@ -2030,10 +2030,18 @@ async function renderTimeline(pane, caseID) {
   ]);
   pane.appendChild(banner);
 
-  // Timeline table (Wave 21: + Review + Action columns)
+  // Timeline table (Wave 21: + Review + Action columns). Each row is
+  // expandable into a detail panel (full summary + all metadata + the raw
+  // underlying event, lazily fetched by audit_id) so the examiner can see
+  // *what actually happened* without leaving the tab. The leading Sev column
+  // + per-row left-border tint make severity scannable at a glance.
+  const rows = data.timeline || [];
+  const COLSPAN = 9;
   const table = h("table", { class: "timeline-table" }, [
     h("thead", {}, h("tr", {}, [
+      h("th", { style: "width: 16px;" }, ""),
       h("th", {}, "Timestamp"),
+      h("th", {}, "Sev"),
       h("th", {}, "Tactic"),
       h("th", {}, "Technique"),
       h("th", {}, "Computer"),
@@ -2043,7 +2051,7 @@ async function renderTimeline(pane, caseID) {
     ])),
   ]);
   const body = h("tbody");
-  (data.timeline || []).forEach((t) => {
+  rows.forEach((t) => {
     const aid = t.audit_id || "";
     const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
     const stateClass = {
@@ -2051,8 +2059,9 @@ async function renderTimeline(pane, caseID) {
       skipped:  "pending",  pending:  "pending",
     }[rev.state] || "pending";
     const stateBadge = h("span", { class: "badge " + stateClass, title: rev.reason || "" }, rev.state || "pending");
+    const sev = tlSeverity(t.severity);
 
-    const action = h("div", { class: "row", style: "gap: 4px;" });
+    const action = h("div", { class: "row timeline-action", style: "gap: 4px;" });
     if (!aid) {
       action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" }, "(no audit_id)"));
     } else if (rev.state === "approved" || rev.state === "rejected") {
@@ -2061,7 +2070,8 @@ async function renderTimeline(pane, caseID) {
     } else {
       action.appendChild(h("button", {
         style: "padding: 1px 8px; font-size: 10px;",
-        onclick: async () => {
+        onclick: async (ev) => {
+          ev.stopPropagation();
           try {
             await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/approve`);
             toast("Approved " + aid.slice(0, 8), "success");
@@ -2072,7 +2082,8 @@ async function renderTimeline(pane, caseID) {
       action.appendChild(h("button", {
         class: "danger",
         style: "padding: 1px 8px; font-size: 10px;",
-        onclick: () => {
+        onclick: (clickEv) => {
+          clickEv.stopPropagation();
           const close = modal([
             h("h3", {}, "Reject timeline entry"),
             h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
@@ -2094,19 +2105,104 @@ async function renderTimeline(pane, caseID) {
       }, "Reject"));
     }
 
-    body.appendChild(h("tr", { class: "timeline-row " + stateClass }, [
+    // Detail row — built lazily on first expand, hidden until then.
+    const caret = h("span", { class: "tl-caret" }, "▸");
+    const detailCell = h("td", { colspan: COLSPAN, class: "tl-detail-cell" });
+    const detailRow = h("tr", { class: "tl-detail-row hidden" }, detailCell);
+    let detailBuilt = false;
+    function buildDetail() {
+      if (detailBuilt) return;
+      detailBuilt = true;
+      const panel = h("div", { class: "tl-detail-panel" });
+      panel.appendChild(h("div", { class: "tl-detail-meta" }, [
+        kv("Time", fmtTS(t.timestamp)),
+        kv("Computer", t.computer || "—"),
+        kv("Tactic", t.tactic || "—"),
+        kv("Technique", t.technique || "—"),
+        kv("Artifact", t.artifact || "—"),
+        kv("Severity", t.severity || "—"),
+        kv("Audit ID", aid || "—"),
+      ]));
+      if (t.summary) {
+        panel.appendChild(h("div", { class: "tl-detail-label" }, "Summary"));
+        panel.appendChild(h("div", { class: "tl-detail-summary" }, t.summary));
+      }
+      panel.appendChild(h("div", { class: "tl-detail-label" }, "Underlying event"));
+      if (!aid) {
+        panel.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
+          "no audit_id — cannot link this entry to a raw event"));
+      } else {
+        const evMeta = h("div", { class: "evidence-meta muted", style: "font-size: 11px; margin-bottom: 6px;" }, "loading raw event…");
+        const evPre = h("pre", { class: "payload-pre" }, "");
+        panel.appendChild(evMeta);
+        panel.appendChild(evPre);
+        (async () => {
+          try {
+            const res = await api("GET",
+              `/api/cases/${encodeURIComponent(caseID)}/events?audit_id=${encodeURIComponent(aid)}&limit=1`);
+            const row = (res.events || [])[0];
+            if (!row) { evMeta.textContent = "no event found for audit_id " + aid; return; }
+            evMeta.textContent =
+              `time: ${row.ts_utc || "?"} · type: ${row.event_type || "?"}` +
+              (row.computer ? ` · computer: ${row.computer}` : "") +
+              (row.evidence_id ? ` · evidence: ${row.evidence_id}` : "") +
+              (row.artifact_id ? ` · artifact: ${row.artifact_id}` : "");
+            let pretty = row.payload_json || "";
+            try { pretty = JSON.stringify(JSON.parse(row.payload_json), null, 2); } catch (_) {}
+            evPre.textContent = pretty || "(empty payload)";
+          } catch (e) {
+            evMeta.textContent = "load failed: " + e.message;
+          }
+        })();
+      }
+      detailCell.appendChild(panel);
+    }
+
+    const mainRow = h("tr", {
+      class: `timeline-row expandable sevrow-${sev} ${stateClass}`,
+    }, [
+      h("td", { class: "tl-caret-cell sev-cell" }, caret),
       h("td", { class: "ts" }, fmtTS(t.timestamp)),
+      h("td", {}, h("span", { class: "badge sev-" + sev }, sev)),
       h("td", {}, h("span", { class: "badge tactic" }, t.tactic || "")),
       h("td", {}, t.technique || ""),
       h("td", {}, t.computer || ""),
       h("td", { class: "summary" }, t.summary || ""),
       h("td", {}, stateBadge),
-      h("td", {}, action),
-    ]));
+      h("td", { class: "tl-action-cell" }, action),
+    ]);
+    mainRow.onclick = (ev) => {
+      if (ev.target.closest("button, input, a")) return;
+      const willOpen = detailRow.classList.contains("hidden");
+      if (willOpen) buildDetail();
+      detailRow.classList.toggle("hidden");
+      mainRow.classList.toggle("expanded", willOpen);
+      caret.textContent = willOpen ? "▾" : "▸";
+    };
+
+    body.appendChild(mainRow);
+    body.appendChild(detailRow);
   });
   table.appendChild(body);
 
-  pane.appendChild(h("div", {}, [h("h3", {}, `Timeline (${(data.timeline || []).length} events)`), table]));
+  const tlBox = h("div", {}, [
+    h("h3", {}, `Timeline (${rows.length} events)` + (rows.length ? " — click a row for details" : "")),
+  ]);
+  if (rows.length === 0) {
+    tlBox.appendChild(h("div", { class: "empty" }, "No timeline entries yet (run Analyze → Synthesize)."));
+  } else {
+    tlBox.appendChild(table);
+  }
+  pane.appendChild(tlBox);
+}
+
+// tlSeverity maps a finding's normalised severity (critical/high/medium/low/
+// informational/unknown) onto the short forms the .badge.sev-* / .sevrow-*
+// CSS classes use. Anything unexpected falls back to "info".
+function tlSeverity(raw) {
+  const s = String(raw || "").toLowerCase();
+  if (["critical", "high", "medium", "low"].includes(s)) return s;
+  return "info";
 }
 
 // ============================================================================
