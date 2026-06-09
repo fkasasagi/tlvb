@@ -1185,6 +1185,7 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// Tier 3 (DFIR Reporter) — same renderer the CLI `tlvb report --tier 3`
 		// drives. Reads the tier2 synthesis.json + derives timeline/IOC/MITRE
 		// from findings/.
+		t3Start := time.Now()
 		res, err := tier3.Render(tier3.Config{
 			CaseID:        caseID,
 			SynthesisPath: filepath.Join(root, caseID, "synthesis.json"),
@@ -1199,6 +1200,10 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return "", err
 		}
+		// Log tier3 to the unified execution log so the Audit tab's tier3
+		// filter (and the .fcz export) reflects report generation.
+		tier3.LogReportAction(filepath.Join(root, caseID, "actions.jsonl"),
+			caseID, formats, res.OutDir, len(res.Files), time.Since(t3Start).Seconds())
 		return fmt.Sprintf("wrote %d files to %s", len(res.Files), res.OutDir), nil
 	})
 	writeJSON(w, 202, st)

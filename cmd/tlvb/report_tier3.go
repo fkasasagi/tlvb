@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/completeness"
@@ -53,6 +54,7 @@ func runReportTier3(caseID string, args []string) error {
 		*examiner = dbExaminer
 	}
 
+	t3Start := time.Now()
 	rep, err := tier3.Render(tier3.Config{
 		CaseID:         caseID,
 		SynthesisPath:  *synthPath,
@@ -69,6 +71,11 @@ func runReportTier3(caseID string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Record Tier 3 in the case's unified execution log so the WebUI Audit
+	// tab's tier3 filter (and the .fcz chain-of-custody export) shows report
+	// generation — the other four tiers already log here, tier3 was the gap.
+	tier3.LogReportAction(filepath.Join("outputs", "cases", caseID, "actions.jsonl"),
+		caseID, formats, rep.OutDir, len(rep.Files), time.Since(t3Start).Seconds())
 	fmt.Printf("\nTier 3 report — case=%s\n", rep.CaseID)
 	fmt.Printf("  output dir:        %s\n", rep.OutDir)
 	fmt.Printf("  generated_at:      %s\n", rep.GeneratedAt.Format("2006-01-02 15:04:05 UTC"))
