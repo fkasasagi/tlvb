@@ -87,9 +87,16 @@ def _detect_format(path: pathlib.Path) -> str | None:
                 # IIS native: fixed 15 comma-separated columns, ", " delimited.
                 if line.count(", ") >= 10 and "," in line:
                     return "iis"
-                # A bare space-delimited data line without a header is most
-                # likely W3C with the header further up (or rolled). Default w3c.
-                return "w3c"
+                # A non-comment data line matching NEITHER the NCSA shape NOR the
+                # IIS-native column shape, with no W3C #Fields/#Software header
+                # seen yet, is not a web log we recognise. Keep scanning (a header
+                # may follow after a roll); fall through to None if nothing else
+                # matches. This strictness matters because the orchestrator uses
+                # this same sniffer to classify EVERY *.log by content — a default
+                # "w3c" here would misroute arbitrary logs (setup.log, …) to this
+                # parser. The IIS-default `#Software:`/`#Fields:` header keeps real
+                # W3C logs reliably detected.
+                continue
     except OSError:
         return None
     return None
