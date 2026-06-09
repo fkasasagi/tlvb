@@ -292,6 +292,14 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	systemPrompt string, audit *SynthAudit) (string, error) {
 
+	// The overall call aggregates EVERY cluster's narrative, so it routinely
+	// needs more wall-clock than a single per-cluster call. Giving it the flat
+	// per-cluster timeout made multi-cluster cases (e.g. tamu2_3 with 11
+	// clusters) consistently hit "context deadline exceeded" and fall back to
+	// the deterministic stitch — the root cause behind issue #51's "executive
+	// summary not functioning". Scale the budget with the cluster count.
+	timeout := overallSynthTimeout(cfg.PerClusterTimeout, len(clusters))
+
 	// Try with full per-cluster narratives first. If claude CLI fails
 	// (commonly exit 1 with no stderr — usually transient or context-size
 	// driven), retry once with compacted narratives (each truncated to
@@ -303,7 +311,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		if err != nil {
 			return "", err
 		}
-		subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
+		subCtx, cancel := context.WithTimeout(ctx, timeout)
 		startedAt := time.Now()
 		out, err := callClaude(subCtx, cfg, systemPrompt, userMsg)
 		dur := time.Since(startedAt)
@@ -370,6 +378,22 @@ const (
 	fallbackOverallStoryPrefixJA = "【注意: このサマリは LLM 生成に失敗したため、攻撃クラスタ要約の自動連結で代替しています。人手でのレビューと再実行が必要です。】"
 	fallbackOverallStoryPrefixEN = "[NOTE: This summary is a fallback auto-stitch because the LLM overall synthesis failed. Manual review and re-run required.]"
 )
+
+// overallSynthTimeout returns the wall-clock budget for the case-wide overall
+// synthesis call. Unlike a per-cluster call it aggregates every cluster, so it
+// gets a base of 2× the per-cluster timeout plus 30s per cluster, capped at
+// 20 min. (Issue #51: the flat per-cluster budget made multi-cluster cases
+// time out and fall back to the deterministic stitch.)
+func overallSynthTimeout(perCluster time.Duration, nClusters int) time.Duration {
+	if perCluster <= 0 {
+		perCluster = 5 * time.Minute
+	}
+	t := perCluster*2 + time.Duration(nClusters)*30*time.Second
+	if max := 20 * time.Minute; t > max {
+		t = max
+	}
+	return t
+}
 
 // fallbackOverallStory builds a deterministic overall_story by stitching
 // together each cluster's narrative. Called when the LLM-based overall
