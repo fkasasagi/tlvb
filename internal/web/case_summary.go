@@ -33,15 +33,29 @@ type CaseSummary struct {
 }
 
 type ParseSummary struct {
-	EvidenceCount int               `json:"evidence_count"`
-	EventsTotal   int64             `json:"events_total"`
-	Artifacts     []ArtifactSummary `json:"artifacts,omitempty"`
-	LastParsedAt  string            `json:"last_parsed_at,omitempty"`
+	EvidenceCount int                    `json:"evidence_count"`
+	EventsTotal   int64                  `json:"events_total"`
+	Artifacts     []ArtifactSummary      `json:"artifacts,omitempty"`
+	Evidence      []EvidenceParseSummary `json:"evidence,omitempty"`
+	LastParsedAt  string                 `json:"last_parsed_at,omitempty"`
 }
 
 type ArtifactSummary struct {
 	ArtifactID string `json:"artifact_id"`
 	EventCount int64  `json:"event_count"`
+}
+
+// EvidenceParseSummary breaks the parse totals down per source evidence so the
+// UI can answer "which evidence did these events come from" when a case bundles
+// more than one collection / disk image.
+type EvidenceParseSummary struct {
+	EvidenceID   string            `json:"evidence_id"`
+	SourceHost   string            `json:"source_host,omitempty"`
+	EvidenceType string            `json:"evidence_type,omitempty"`
+	Path         string            `json:"path,omitempty"`
+	EventsTotal  int64             `json:"events_total"`
+	Artifacts    []ArtifactSummary `json:"artifacts,omitempty"`
+	LastEventAt  string            `json:"last_event_at,omitempty"`
 }
 
 type FindingsSummary struct {
@@ -146,6 +160,74 @@ func (s *Server) summariseParse(caseID string) *ParseSummary {
 		_ = row.Scan(&ts)
 		if ts != nil && !ts.IsZero() {
 			ps.LastParsedAt = ts.UTC().Format(time.RFC3339)
+		}
+
+		// per-evidence × per-artifact breakdown so the UI can group events by
+		// the source evidence (collection bundle / disk image) they came from.
+		evRows, err := m.DB().Query(
+			`SELECT COALESCE(evidence_id, ''), artifact_id, COUNT(*) AS n, MAX(ts_utc) AS last_ts
+			   FROM unified_events
+			  WHERE case_id = ?
+			  GROUP BY evidence_id, artifact_id`, caseID)
+		if err != nil {
+			return err
+		}
+		defer evRows.Close()
+		byEv := map[string]*EvidenceParseSummary{}
+		var evOrder []string
+		for evRows.Next() {
+			var evID, art string
+			var n int64
+			var lastTS *time.Time
+			if err := evRows.Scan(&evID, &art, &n, &lastTS); err != nil {
+				return err
+			}
+			es := byEv[evID]
+			if es == nil {
+				es = &EvidenceParseSummary{EvidenceID: evID}
+				byEv[evID] = es
+				evOrder = append(evOrder, evID)
+			}
+			es.Artifacts = append(es.Artifacts, ArtifactSummary{ArtifactID: art, EventCount: n})
+			es.EventsTotal += n
+			if lastTS != nil && !lastTS.IsZero() {
+				if t := lastTS.UTC().Format(time.RFC3339); t > es.LastEventAt {
+					es.LastEventAt = t
+				}
+			}
+		}
+		if err := evRows.Err(); err != nil {
+			return err
+		}
+		// Enrich with evidence-table metadata (host / type / path) and order by
+		// registration time; evidence_ids seen only in events (legacy NULLs)
+		// fall to the end.
+		metaByID := map[string]casedb.EvidenceRow{}
+		var order []string
+		if meta, err := m.ListEvidence(context.Background(), caseID); err == nil {
+			for _, e := range meta {
+				metaByID[e.EvidenceID] = e
+				if _, ok := byEv[e.EvidenceID]; ok {
+					order = append(order, e.EvidenceID)
+				}
+			}
+		}
+		for _, id := range evOrder {
+			if _, ok := metaByID[id]; !ok {
+				order = append(order, id)
+			}
+		}
+		for _, id := range order {
+			es := byEv[id]
+			if info, ok := metaByID[id]; ok {
+				es.SourceHost = info.SourceHost
+				es.EvidenceType = info.EvidenceType
+				es.Path = info.Path
+			}
+			sort.Slice(es.Artifacts, func(i, j int) bool {
+				return es.Artifacts[i].EventCount > es.Artifacts[j].EventCount
+			})
+			ps.Evidence = append(ps.Evidence, *es)
 		}
 		return nil
 	})

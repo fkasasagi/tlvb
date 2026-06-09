@@ -239,6 +239,7 @@ def extract(
     *,
     target_paths: Iterable[tuple[str, str]] = _TRIAGE_PATHS,
     timeout_seconds: int = 1800,
+    evidence_id: Optional[str] = None,
 ) -> ExtractionResult:
     """Mount + extract a triage subset.
 
@@ -246,6 +247,13 @@ def extract(
     result still carries an ``extract.log`` with the failure recorded so
     Review Gate 0 can surface what went wrong instead of erroring the
     whole pipeline.
+
+    When ``evidence_id`` is given the log is written per-evidence to
+    ``workspace/extracts/<evidence_id>.log`` (and every row is stamped with
+    the id) so a case that bundles more than one disk image keeps each
+    image's extractions separate instead of the second image overwriting the
+    first's ``extract.log``. Without an id the legacy ``workspace/extract.log``
+    path is used.
     """
     fmt = detect_image(image_path)
     if fmt is None:
@@ -253,7 +261,13 @@ def extract(
 
     staging_root = workspace / "extracted"
     staging_root.mkdir(parents=True, exist_ok=True)
-    extract_log = workspace / "extract.log"
+    if evidence_id:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", evidence_id)
+        extracts_dir = workspace / "extracts"
+        extracts_dir.mkdir(parents=True, exist_ok=True)
+        extract_log = extracts_dir / f"{safe}.log"
+    else:
+        extract_log = workspace / "extract.log"
 
     records: list[ExtractRecord] = []
     started = time.time()
@@ -320,13 +334,17 @@ def extract(
     with extract_log.open("w", encoding="utf-8") as fh:
         fh.write(json.dumps({
             "schema": "findevil/extract-log/v1",
+            "evidence_id": evidence_id or "",
             "image_path": str(image_path),
             "image_format": fmt,
             "mount_method": mount_method,
             "summary": summary,
         }) + "\n")
         for r in records:
-            fh.write(json.dumps(dataclasses.asdict(r)) + "\n")
+            d = dataclasses.asdict(r)
+            if evidence_id:
+                d["evidence_id"] = evidence_id
+            fh.write(json.dumps(d) + "\n")
 
     return ExtractionResult(
         staging_dir=staging_root,

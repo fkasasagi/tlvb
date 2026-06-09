@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,22 +39,24 @@ type extractReviewDoc struct {
 }
 
 type extractRecord struct {
-	Target        string  `json:"target"`
-	Status        string  `json:"status"` // ok | not_found | fail | skip
-	Partition     *int    `json:"partition,omitempty"`
-	Inum          string  `json:"inum,omitempty"`
-	SHA256        string  `json:"sha256,omitempty"`
-	Bytes         int64   `json:"bytes"`
-	ExtractedPath string  `json:"extracted_path,omitempty"`
-	Error         string  `json:"error,omitempty"`
+	EvidenceID    string `json:"evidence_id,omitempty"`
+	Target        string `json:"target"`
+	Status        string `json:"status"` // ok | not_found | fail | skip
+	Partition     *int   `json:"partition,omitempty"`
+	Inum          string `json:"inum,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	Bytes         int64  `json:"bytes"`
+	ExtractedPath string `json:"extracted_path,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type extractHeader struct {
-	Schema       string         `json:"schema"`
-	ImagePath    string         `json:"image_path"`
-	ImageFormat  string         `json:"image_format"`
-	MountMethod  string         `json:"mount_method"`
-	Summary      map[string]any `json:"summary"`
+	Schema      string         `json:"schema"`
+	EvidenceID  string         `json:"evidence_id,omitempty"`
+	ImagePath   string         `json:"image_path"`
+	ImageFormat string         `json:"image_format"`
+	MountMethod string         `json:"mount_method"`
+	Summary     map[string]any `json:"summary"`
 }
 
 var (
@@ -106,13 +109,13 @@ func (s *Server) saveExtractReview(doc extractReviewDoc) error {
 	return os.WriteFile(path, body, 0o644)
 }
 
-// readExtractLog parses outputs/cases/<id>/extract.log into a header + list.
-// Returns empty values (not an error) when the case had no image input,
-// so the UI can show "no extractions for this case" without a 404.
-func (s *Server) readExtractLog(caseID string) (extractHeader, []extractRecord) {
+// parseExtractLogFile parses one extract-log JSONL file into its header
+// (first line) + records. Returns zero values (not an error) when the file
+// is missing so callers can treat "no image input" as an empty result.
+func parseExtractLogFile(path string) (extractHeader, []extractRecord) {
 	var header extractHeader
 	var recs []extractRecord
-	f, err := os.Open(s.extractLogPath(caseID))
+	f, err := os.Open(path)
 	if err != nil {
 		return header, recs
 	}
@@ -139,19 +142,83 @@ func (s *Server) readExtractLog(caseID string) (extractHeader, []extractRecord) 
 	return header, recs
 }
 
+// readExtractLogs returns the case's extraction headers + records, grouped so
+// each record carries the evidence_id it came from.
+//
+// Multi-evidence cases write one log per image to extracts/<evidence_id>.log
+// (parsers/image_extractor.py); when that directory exists we read every file
+// and stamp records with their evidence id (from the header, falling back to
+// the filename). Older single-image cases only have the legacy case-level
+// extract.log, which we read as a single (possibly unattributed) group.
+func (s *Server) readExtractLogs(caseID string) ([]extractHeader, []extractRecord) {
+	dir := filepath.Join(s.cfg.OutputsRoot, caseID, "extracts")
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		var headers []extractHeader
+		var recs []extractRecord
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+				continue
+			}
+			h, rs := parseExtractLogFile(filepath.Join(dir, e.Name()))
+			ev := h.EvidenceID
+			if ev == "" {
+				ev = strings.TrimSuffix(e.Name(), ".log")
+			}
+			h.EvidenceID = ev
+			headers = append(headers, h)
+			for i := range rs {
+				if rs[i].EvidenceID == "" {
+					rs[i].EvidenceID = ev
+				}
+				recs = append(recs, rs[i])
+			}
+		}
+		if len(headers) > 0 || len(recs) > 0 {
+			return headers, recs
+		}
+	}
+	// Legacy single-image case: one extract.log at the case root.
+	h, rs := parseExtractLogFile(s.extractLogPath(caseID))
+	for i := range rs {
+		if rs[i].EvidenceID == "" {
+			rs[i].EvidenceID = h.EvidenceID
+		}
+	}
+	if h.Schema == "" && len(rs) == 0 {
+		return nil, nil
+	}
+	return []extractHeader{h}, rs
+}
+
+// extractReviewKey is the per-record key used in extract_review.json. It is
+// namespaced by evidence_id so the same target label (e.g. "MFT") on two
+// different disk images doesn't collide on one review state. Legacy records
+// with no evidence_id keep the bare target, preserving existing review state.
+func extractReviewKey(evidenceID, target string) string {
+	if evidenceID == "" {
+		return target
+	}
+	return evidenceID + "::" + target
+}
+
 // GET /api/cases/:id/extracts
 func (s *Server) handleGetExtracts(w http.ResponseWriter, r *http.Request) {
 	caseID := r.PathValue("id")
-	header, recs := s.readExtractLog(caseID)
+	headers, recs := s.readExtractLogs(caseID)
 
 	mu := extractReviewLock(caseID)
 	mu.Lock()
 	doc := s.loadExtractReview(caseID)
 	mu.Unlock()
 
-	// Stamp each record with current review state — default pending.
+	// Stamp each record with current review state — default pending. The
+	// review_key is namespaced by evidence_id so the UI approves/rejects the
+	// right per-evidence record (and same-named targets across images don't
+	// share state).
 	type augmented struct {
 		extractRecord
+		ReviewKey  string    `json:"review_key"`
 		State      string    `json:"state"`
 		Reason     string    `json:"reason,omitempty"`
 		ReviewedBy string    `json:"reviewed_by,omitempty"`
@@ -160,29 +227,40 @@ func (s *Server) handleGetExtracts(w http.ResponseWriter, r *http.Request) {
 	out := make([]augmented, 0, len(recs))
 	counts := map[string]int{"approved": 0, "rejected": 0, "pending": 0}
 	for _, rec := range recs {
-		rv, ok := doc.Reviews[rec.Target]
+		key := extractReviewKey(rec.EvidenceID, rec.Target)
+		rv, ok := doc.Reviews[key]
 		if !ok {
-			rv.State = "pending"
+			// Fall back to the legacy bare-target key so reviews recorded
+			// before evidence namespacing still show through.
+			rv, ok = doc.Reviews[rec.Target]
 		}
-		if rv.State == "" {
+		if !ok || rv.State == "" {
 			rv.State = "pending"
 		}
 		counts[rv.State]++
 		out = append(out, augmented{
 			extractRecord: rec,
+			ReviewKey:     key,
 			State:         rv.State,
 			Reason:        rv.Reason,
 			ReviewedBy:    rv.ReviewedBy,
 			ReviewedAt:    rv.ReviewedAt,
 		})
 	}
-	writeJSON(w, 200, map[string]any{
-		"case_id":  caseID,
-		"header":   header,
-		"records":  out,
-		"counts":   counts,
-		"total":    len(out),
-	})
+	resp := map[string]any{
+		"case_id": caseID,
+		"headers": headers,
+		"records": out,
+		"counts":  counts,
+		"total":   len(out),
+	}
+	// Backward-compatible single header for older UI builds.
+	if len(headers) > 0 {
+		resp["header"] = headers[0]
+	} else {
+		resp["header"] = extractHeader{}
+	}
+	writeJSON(w, 200, resp)
 }
 
 // POST /api/cases/:id/extracts/{target}/approve

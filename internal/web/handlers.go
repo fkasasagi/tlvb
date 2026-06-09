@@ -1365,6 +1365,7 @@ func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 	q := casedb.UnifiedEventQuery{
 		CaseID:     id,
 		ArtifactID: r.URL.Query().Get("artifact_id"),
+		EvidenceID: r.URL.Query().Get("evidence_id"),
 		AuditID:    r.URL.Query().Get("audit_id"),
 		StartTime:  r.URL.Query().Get("start"),
 		EndTime:    r.URL.Query().Get("end"),

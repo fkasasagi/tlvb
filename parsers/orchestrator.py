@@ -969,6 +969,7 @@ def run(
         try:
             res = image_extractor.extract(
                 input_path, workspace, timeout_seconds=timeout_seconds * 3,
+                evidence_id=evidence_id,
             )
             _emit({"type": "stage", "phase": "image_extracted",
                    "summary": res.summary,
