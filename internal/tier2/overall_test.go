@@ -162,6 +162,30 @@ func TestTemporalOutlierClusters(t *testing.T) {
 	}
 }
 
+func TestOverallSynthTimeout(t *testing.T) {
+	base := 5 * time.Minute
+	// Single cluster: base 2× + 30s.
+	if got := overallSynthTimeout(base, 1); got != 10*time.Minute+30*time.Second {
+		t.Errorf("1 cluster: got %v", got)
+	}
+	// 11 clusters (tamu2_3): 10m + 5m30s = 15m30s — comfortably above the flat
+	// 5-min budget that caused the timeout-driven fallback.
+	if got := overallSynthTimeout(base, 11); got != 15*time.Minute+30*time.Second {
+		t.Errorf("11 clusters: got %v", got)
+	}
+	if got := overallSynthTimeout(base, 11); got <= base {
+		t.Errorf("overall budget must exceed the per-cluster budget, got %v", got)
+	}
+	// Capped at 20 min for pathological cluster counts.
+	if got := overallSynthTimeout(base, 1000); got != 20*time.Minute {
+		t.Errorf("cap: got %v", got)
+	}
+	// Zero per-cluster falls back to the 5-min default base.
+	if got := overallSynthTimeout(0, 0); got != 10*time.Minute {
+		t.Errorf("zero per-cluster: got %v", got)
+	}
+}
+
 func TestBuildOverallUserMessageValidJSON(t *testing.T) {
 	// Sanity: the output is valid JSON that parses as an array of objects.
 	clusters := []Cluster{
