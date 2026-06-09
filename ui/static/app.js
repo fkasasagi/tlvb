@@ -2559,14 +2559,26 @@ async function paintCaseSnapshot(host, caseID) {
       .join(" · ");
     const more = (p.artifacts || []).length > 6
       ? ` · +${p.artifacts.length - 6} more` : "";
-    body.appendChild(snapshotTile("Tier 0 · Parse",
+    const parseTile = snapshotTile("Tier 0 · Parse",
       [
         kv("Evidence", p.evidence_count),
         kv("Events", p.events_total.toLocaleString()),
         kv("Last", fmtTS(p.last_parsed_at) || "—"),
       ],
       artifacts ? "Artifacts: " + artifacts + more : null
-    ));
+    );
+    // Per-evidence breakdown — only when the case bundles >1 evidence, so
+    // single-evidence cases keep the compact view. Each evidence is a
+    // collapsible row that expands to its source host / type / top artifacts,
+    // making it obvious which evidence the parsed events came from.
+    const evs = p.evidence || [];
+    if (evs.length > 1) {
+      parseTile.appendChild(h("div", { class: "evidence-breakdown" }, [
+        h("div", { class: "evidence-breakdown-title" }, "Per evidence"),
+        ...evs.map(evidenceParseDetails),
+      ]));
+    }
+    body.appendChild(parseTile);
   } else {
     body.appendChild(snapshotTile("Tier 0 · Parse",
       [h("span", { class: "muted" }, "no parsed events yet")], null));
@@ -2634,6 +2646,36 @@ async function paintCaseSnapshot(host, caseID) {
 
   card.appendChild(body);
   host.appendChild(card);
+}
+
+// evidenceParseDetails renders one EvidenceParseSummary as a collapsible
+// <details> row: the summary line shows evidence_id + event count (visible
+// while collapsed), and expanding reveals host / type / path / top artifacts.
+function evidenceParseDetails(es) {
+  const summary = h("summary", { class: "evidence-summary" }, [
+    h("span", { class: "evidence-name" }, es.evidence_id || "(unattributed)"),
+    h("span", { class: "evidence-count" }, (es.events_total || 0).toLocaleString() + " ev"),
+  ]);
+  const lines = [];
+  const sub = [es.source_host, es.evidence_type].filter(Boolean).join(" · ");
+  if (sub) lines.push(h("div", { class: "muted", style: "font-size: 11px;" }, sub));
+  if (es.path) {
+    lines.push(h("div", { class: "muted mono",
+      style: "font-size: 10px; word-break: break-all;" }, es.path));
+  }
+  const topArts = (es.artifacts || []).slice(0, 8)
+    .map((a) => `${a.artifact_id}=${a.event_count.toLocaleString()}`).join(" · ");
+  const moreArts = (es.artifacts || []).length > 8
+    ? ` · +${es.artifacts.length - 8} more` : "";
+  if (topArts) {
+    lines.push(h("div", { style: "font-size: 11px; margin-top: 4px;" }, topArts + moreArts));
+  }
+  if (es.last_event_at) {
+    lines.push(h("div", { class: "muted", style: "font-size: 11px; margin-top: 4px;" },
+      "last: " + (fmtTS(es.last_event_at) || "—")));
+  }
+  return h("details", { class: "evidence-item" },
+    [summary, h("div", { class: "evidence-detail" }, lines)]);
 }
 
 function snapshotTile(title, rows, footer) {
@@ -3093,9 +3135,27 @@ async function renderEvents(pane, caseID, detail) {
     `Total events parsed: ${detail.case.unified_event_rows.toLocaleString()}. ` +
     "Use the filters below to query the unified_events table."));
 
+  // Evidence metadata for the filter dropdown + per-evidence grouping labels.
+  // Stashed on the card so loadEventsPage (called from Prev/Next without
+  // `detail` in scope) can still resolve evidence_id → host/type.
+  const evidences = (detail && detail.evidence) || [];
+  browserCard._evMeta = evidences;
+
   // Filter form
   const artifactIDs = [...new Set(prs.map((p) => p.artifact_id).filter(Boolean))].sort();
+  // Evidence selector only appears for multi-evidence cases — single-evidence
+  // cases gain nothing from it and the events already all share one source.
+  const evField = evidences.length > 1
+    ? h("div", { class: "f-field" }, [
+        h("label", {}, "Evidence"),
+        h("select", { id: "ev_evidence" },
+          [h("option", { value: "" }, "(all)"),
+           ...evidences.map((e) => h("option", { value: e.evidence_id },
+             e.evidence_id + (e.source_host ? ` (${e.source_host})` : "")))]),
+      ])
+    : null;
   const filterRow = h("div", { class: "filter-row" }, [
+    evField,
     h("div", { class: "f-field" }, [
       h("label", {}, "Artifact"),
       h("select", { id: "ev_artifact" },
@@ -3151,6 +3211,8 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
   resultsBox.innerHTML = `<div class="empty"><span class="spinner"></span>querying…</div>`;
 
   const q = new URLSearchParams();
+  const evSel    = browserCard.querySelector("#ev_evidence");
+  const evidence = evSel ? evSel.value : "";
   const artifact = browserCard.querySelector("#ev_artifact").value;
   const computer = browserCard.querySelector("#ev_computer").value.trim();
   const contains = browserCard.querySelector("#ev_contains").value.trim();
@@ -3162,6 +3224,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     : parseInt(browserCard.querySelector("#ev_offset").value, 10) || 0;
   browserCard.querySelector("#ev_offset").value = offset;
 
+  if (evidence) q.set("evidence_id", evidence);
   if (artifact) q.set("artifact_id", artifact);
   if (computer) q.set("computer", computer);
   if (contains) q.set("contains", contains);
@@ -3203,6 +3266,46 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     return;
   }
 
+  // Group the returned page by evidence_id so it's clear which source each
+  // event came from. Single-evidence cases render the flat table exactly as
+  // before. Multi-evidence cases always render labelled sections — even when
+  // a ts-ordered page happens to contain just one evidence — so the source is
+  // never ambiguous.
+  const groups = new Map();
+  data.events.forEach((e) => {
+    const k = e.evidence_id || "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  });
+
+  const multiEvidence = (browserCard._evMeta || []).length > 1;
+  if (!multiEvidence && groups.size <= 1) {
+    resultsBox.appendChild(eventsTable(data.events));
+    return;
+  }
+
+  const meta = {};
+  (browserCard._evMeta || []).forEach((e) => { meta[e.evidence_id] = e; });
+  if (groups.size > 1) {
+    resultsBox.appendChild(h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" },
+      "Grouped by evidence (within the current page). Use the Evidence filter to scope a single source."));
+  }
+  for (const [k, rows] of groups) {
+    const m = meta[k] || {};
+    const sub = [m.source_host, m.evidence_type].filter(Boolean).join(" · ");
+    const summary = h("summary", { class: "evidence-summary" }, [
+      h("span", { class: "evidence-name" }, k || "(unattributed)"),
+      sub ? h("span", { class: "muted", style: "font-size: 11px;" }, sub) : null,
+      h("span", { class: "evidence-count" }, rows.length + " ev"),
+    ]);
+    resultsBox.appendChild(h("details", { class: "evidence-item", open: "open" },
+      [summary, h("div", { class: "evidence-detail" }, eventsTable(rows))]));
+  }
+}
+
+// eventsTable builds the unified_events result table for a set of rows.
+// Shared by the flat (single-evidence) and grouped (multi-evidence) renders.
+function eventsTable(rows) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
     h("th", {}, "Timestamp (UTC)"),
@@ -3213,7 +3316,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     h("th", {}, "Payload"),
   ])));
   const body = h("tbody");
-  data.events.forEach((e) => {
+  rows.forEach((e) => {
     const previewBtn = h("button", { class: "ghost",
       onclick: () => showPayloadModal(e),
     }, "view");
@@ -3227,7 +3330,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     ]));
   });
   tbl.appendChild(body);
-  resultsBox.appendChild(tbl);
+  return tbl;
 }
 
 function showPayloadModal(ev) {
