@@ -251,28 +251,45 @@ def detect(root: pathlib.Path) -> list[Detection]:
             browser_files.append(p)
         if name in _SQLECMD_MAP_BASENAMES:
             sqlecmd_files.append(p)
-        if name.lower().endswith(".log"):
+        lname = name.lower()
+        if (lname.endswith(".log") or lname.endswith(".out")
+                or lname in ("access_log", "error_log")
+                or "access_log" in lname or "error_log" in lname):
+            # Candidates for web-server logs: IIS/W3C/nginx (*.log), Apache
+            # (error_log/access_log, no ext), Tomcat (catalina.out /
+            # localhost_access_log*.txt). Content-sniffed below; non-web logs
+            # are dropped by the sniffers (None), so over-inclusion is cheap.
             web_log_candidates.append(p)
 
-    # ---- w3c_iis: path-agnostic, content-sniffed ----
-    # IIS / web-server access logs can be written anywhere — applicationHost
-    # .config's <logFile directory> is admin-configurable — so we classify by
-    # CONTENT, not path: any *.log whose first lines look like W3C Extended,
-    # IIS-native, or NCSA is routed to the web-log parser regardless of where
-    # it sits or what it's named. _detect_format returns None for ordinary logs.
-    from parsers.w3c_iis_parser import _detect_format as _sniff_web_log
+    # ---- web-server logs: path-agnostic, content-sniffed (2-stage) ----
+    # Web-server log output dirs are admin-configurable, so we classify by
+    # CONTENT, not path. ACCESS logs (IIS W3C / IIS-native / Apache-nginx-Tomcat
+    # NCSA Common-Combined) → w3c_iis. DIAGNOSTIC logs (Apache/nginx/Tomcat
+    # error_log + catalina.out, all non-NCSA) → web_error. Each sniffer returns
+    # None for ordinary/non-web logs, so try access first then error.
+    from parsers.w3c_iis_parser import _detect_format as _sniff_access
+    from parsers.web_error_parser import _detect_error_format as _sniff_error
     for log in web_log_candidates:
-        key = ("w3c_iis", str(log))
-        if key in seen:
-            continue
-        if _sniff_web_log(log) is not None:
-            seen.add(key)
-            out.append(Detection(
-                artifact_id="w3c_iis",
-                parser_module="parsers.w3c_iis_parser",
-                input_path=log,
-                input_mode="file",
-            ))
+        if _sniff_access(log) is not None:            # NCSA / W3C / IIS-native access log
+            key = ("w3c_iis", str(log))
+            if key not in seen:
+                seen.add(key)
+                out.append(Detection(
+                    artifact_id="w3c_iis",
+                    parser_module="parsers.w3c_iis_parser",
+                    input_path=log,
+                    input_mode="file",
+                ))
+        elif _sniff_error(log) is not None:           # Apache/nginx/Tomcat diagnostic log
+            key = ("web_error", str(log))
+            if key not in seen:
+                seen.add(key)
+                out.append(Detection(
+                    artifact_id="web_error",
+                    parser_module="parsers.web_error_parser",
+                    input_path=log,
+                    input_mode="file",
+                ))
 
     for d in sorted(_minimise_dirs(reg_dirs)):
         key = ("registry", str(d))

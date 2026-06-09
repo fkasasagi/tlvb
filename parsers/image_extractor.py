@@ -118,6 +118,20 @@ _TRIAGE_PATHS: list[tuple[str, str]] = [
     # applicationHost.config drives the custom-log-dir resolution above, and is
     # itself evidence of IIS-module persistence (e.g. a rogue <add name=... />).
     (r"Windows/System32/inetsrv/config/applicationHost.config",  "Windows/System32/inetsrv/config/applicationHost.config"),
+    # ----- Apache HTTP Server / nginx / Tomcat (cross-server web logs) -----
+    # Default Windows install layouts. Custom install dirs / relocated logs are
+    # resolved from each server's config in extract()'s 2nd pass. Access logs are
+    # NCSA → w3c_iis; error/diagnostic logs → web_error (both content-sniffed).
+    (r"Apache24/logs",                                           "Apache24/logs"),
+    (r"Apache24/conf/httpd.conf",                                "Apache24/conf/httpd.conf"),
+    (r"xampp/apache/logs",                                       "xampp/apache/logs"),
+    (r"xampp/apache/conf/httpd.conf",                            "xampp/apache/conf/httpd.conf"),
+    (r"nginx/logs",                                              "nginx/logs"),
+    (r"nginx/conf/nginx.conf",                                   "nginx/conf/nginx.conf"),
+    (r"Program Files/Apache Software Foundation/Tomcat 9.0/logs",        "tomcat-9.0/logs"),
+    (r"Program Files/Apache Software Foundation/Tomcat 9.0/conf/server.xml", "tomcat-9.0/conf/server.xml"),
+    (r"Program Files/Apache Software Foundation/Tomcat 10.1/logs",       "tomcat-10.1/logs"),
+    (r"Program Files/Apache Software Foundation/Tomcat 10.1/conf/server.xml", "tomcat-10.1/conf/server.xml"),
 ]
 
 # Per-user paths — applied to every Users/<u>/ subdir we discover. The
@@ -233,6 +247,81 @@ def _iis_log_dirs_from_config(cfg_path: pathlib.Path) -> list[str]:
     return out
 
 
+def _apache_log_paths_from_config(cfg_path: pathlib.Path) -> list[str]:
+    """Extract CustomLog / ErrorLog targets from an Apache httpd.conf. Relative
+    paths are ServerRoot-relative (resolved when ServerRoot is present). Returns
+    partition-relative NTFS paths; [] on any read error (graceful — the default
+    Apache24/xampp logs dir was already pulled by the static triage list)."""
+    if not cfg_path.exists():
+        return []
+    try:
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    server_root = None
+    out: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r'(?i)ServerRoot\s+"?([^"\s]+)"?', line)
+        if m:
+            server_root = m.group(1)
+            continue
+        m = re.match(r'(?i)(?:CustomLog|ErrorLog)\s+"?([^"\s|]+)"?', line)
+        if m:
+            p = m.group(1)
+            if not re.match(r"^([A-Za-z]:|[/\\])", p) and server_root:
+                p = server_root.rstrip("/\\") + "/" + p
+            rel = _winpath_to_partrel(p)
+            if rel and rel not in (".", "/"):
+                out.append(rel)
+    return out
+
+
+def _nginx_log_paths_from_config(cfg_path: pathlib.Path) -> list[str]:
+    """Extract access_log / error_log targets from an nginx.conf. Relative paths
+    can't be prefix-resolved here (the prefix is a CLI arg) so absolute custom
+    paths are the main win; the default nginx/logs dir is in the static list."""
+    if not cfg_path.exists():
+        return []
+    try:
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out: list[str] = []
+    for m in re.finditer(r"(?im)^\s*(?:access_log|error_log)\s+([^\s;]+)", text):
+        p = m.group(1)
+        if p.lower() in ("off", "/dev/null"):
+            continue
+        rel = _winpath_to_partrel(p)
+        if rel and rel not in (".", "/"):
+            out.append(rel)
+    return out
+
+
+def _tomcat_log_dirs_from_config(cfg_path: pathlib.Path) -> list[str]:
+    """Extract the AccessLogValve ``directory`` from a Tomcat server.xml (XML).
+    Absolute custom dirs are resolved; the default relative 'logs' is covered by
+    the static Tomcat logs dir in the triage list (and simply not_found here)."""
+    if not cfg_path.exists():
+        return []
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(cfg_path)
+    except Exception:
+        return []
+    out: list[str] = []
+    for v in tree.iter("Valve"):
+        if "AccessLogValve" in (v.get("className") or ""):
+            d = v.get("directory")
+            if d:
+                rel = _winpath_to_partrel(d)
+                if rel and rel not in (".", "/"):
+                    out.append(rel)
+    return out
+
+
 def extract(
     image_path: pathlib.Path,
     workspace: pathlib.Path,
@@ -304,6 +393,24 @@ def extract(
                     part_idx, timeout_seconds,
                 )
                 records.append(rec)
+            # Apache / nginx / Tomcat: resolve log targets from each server's
+            # config (CustomLog/ErrorLog, access_log/error_log, AccessLogValve)
+            # and pull any custom/relocated paths the static triage list missed.
+            for cfg_rel, resolver in (
+                ("Apache24/conf/httpd.conf", _apache_log_paths_from_config),
+                ("xampp/apache/conf/httpd.conf", _apache_log_paths_from_config),
+                ("nginx/conf/nginx.conf", _nginx_log_paths_from_config),
+                ("tomcat-9.0/conf/server.xml", _tomcat_log_dirs_from_config),
+                ("tomcat-10.1/conf/server.xml", _tomcat_log_dirs_from_config),
+            ):
+                cfg = staging_for_part / cfg_rel
+                for rel in resolver(cfg):
+                    rec = _extract_one(
+                        raw_device, offset_bytes, rel,
+                        staging_for_part / rel, f"weblog:{rel}",
+                        part_idx, timeout_seconds,
+                    )
+                    records.append(rec)
     finally:
         mount_cleanup()
 

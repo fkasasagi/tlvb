@@ -333,6 +333,29 @@ artifacts:
     caveats:
       - "#Fields ヘッダ前提の W3C Extended Log Format"
 
+  - id: web_error
+    name: "Apache / nginx / Tomcat error log"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.web_error_parser
+    tool:
+      name: "(in-process)"
+      version: "0.1.0"
+      binary: "(none — pure Python)"
+    input:
+      mode: file
+      pattern: "**/*.log"
+    command_template: "(in-process web-error parser)"
+    output:
+      format: jsonl
+      default_csv_name: web_error.jsonl
+    unified_event_mapping:
+      timestamp: "server-local"
+      event_type: "web_error_log"
+      source_artifact: "web_error"
+    caveats:
+      - "Apache/nginx/Tomcat diagnostic logs (non-NCSA); content-sniffed, server-local time"
+
 # ============================================================================
 # P1 (MVP+) — EZ Tools 拡張パーサ群
 # ============================================================================
