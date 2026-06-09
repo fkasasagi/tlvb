@@ -1434,6 +1434,10 @@ func (s *Server) handleGetAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	// enr joins each thin audit row back to the rich "what / why" context the
+	// agent produced (rule intent + SQL, cluster narrative, active-search
+	// question/answer, anomaly findings) so the Audit tab is legible to a human.
+	enr := newAuditEnricher(s.cfg.OutputsRoot, id)
 	out := []map[string]any{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 4<<20)
@@ -1451,6 +1455,9 @@ func (s *Server) handleGetAudit(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(actor, tierFilter) {
 				continue
 			}
+		}
+		if ex := enr.explain(rec); ex != nil {
+			rec["explain"] = ex
 		}
 		out = append(out, rec)
 	}
