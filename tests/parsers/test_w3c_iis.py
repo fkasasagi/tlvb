@@ -135,3 +135,48 @@ def test_unrecognised_input_returns_fail(tmp_path):
     (src / "junk.log").write_text("not a web log line at all\n")
     res = P.parse(_req(src, tmp_path / "out"))
     assert not res.success
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator: content-based, path-AGNOSTIC detection. IIS log output dirs are
+# admin-configurable (applicationHost.config <logFile directory>), so the
+# detector must classify *.log by CONTENT, not by a path glob — and must NOT
+# misroute ordinary application logs to the web-log parser.
+# ---------------------------------------------------------------------------
+
+def test_detector_is_content_based_and_path_agnostic(tmp_path):
+    from parsers.orchestrator import detect
+    (tmp_path / "D/CustomLogs").mkdir(parents=True)         # W3C at non-default path
+    (tmp_path / "D/CustomLogs/web.log").write_text(W3C_LOG)
+    (tmp_path / "x").mkdir()                                # NCSA elsewhere
+    (tmp_path / "x/access.log").write_text(NCSA_LOG)
+    (tmp_path / "y").mkdir()                                # IIS-native elsewhere
+    (tmp_path / "y/inetsv1.log").write_text(IIS_NATIVE_LOG)
+    (tmp_path / "setup.log").write_text("Installation started\nComponent X installed\n")
+    (tmp_path / "app.log").write_text("INFO start\nERROR boom\n")
+
+    web = sorted(str(d.input_path.relative_to(tmp_path))
+                 for d in detect(tmp_path) if d.artifact_id == "w3c_iis")
+    assert "D/CustomLogs/web.log" in web   # W3C at arbitrary path
+    assert "x/access.log" in web           # NCSA at arbitrary path
+    assert "y/inetsv1.log" in web          # IIS-native at arbitrary path
+    assert not any(n.endswith(("setup.log", "app.log")) for n in web)  # no false positives
+
+
+# ---------------------------------------------------------------------------
+# image_extractor: resolve admin-configured IIS log dirs from
+# applicationHost.config, so a relocated log dir is still pulled from the image.
+# ---------------------------------------------------------------------------
+
+def test_iis_log_dirs_from_config(tmp_path):
+    from parsers.image_extractor import _iis_log_dirs_from_config, _winpath_to_partrel
+    assert _winpath_to_partrel(r"%SystemDrive%\inetpub\logs\LogFiles") == "inetpub/logs/LogFiles"
+    assert _winpath_to_partrel(r"D:\WebLogs\kintai") == "WebLogs/kintai"
+    cfg = tmp_path / "applicationHost.config"
+    cfg.write_text(
+        '<configuration><system.applicationHost><sites>'
+        '<siteDefaults><logFile directory="%SystemDrive%\\inetpub\\logs\\LogFiles" /></siteDefaults>'
+        '<site name="kintai"><logFile directory="D:\\WebLogs\\kintai" /></site>'
+        '</sites></system.applicationHost></configuration>')
+    assert sorted(_iis_log_dirs_from_config(cfg)) == ["WebLogs/kintai", "inetpub/logs/LogFiles"]
+    assert _iis_log_dirs_from_config(tmp_path / "nope") == []   # missing → graceful
