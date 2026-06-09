@@ -84,8 +84,81 @@ func TestFallbackOverallStoryEmptyNarrative(t *testing.T) {
 	if strings.Contains(got, "(no narrative)") {
 		t.Error("empty narrative must not render a placeholder")
 	}
-	if strings.TrimSpace(got) != "" {
-		t.Errorf("expected empty output for all-empty narratives, got %q", got)
+	// The fallback now always carries a warning banner (issue #51) so the
+	// operator knows the LLM overall synthesis failed even when no narrative
+	// text survives. With all narratives empty the output is just the banner.
+	if got != fallbackOverallStoryPrefixJA {
+		t.Errorf("expected banner-only output, got %q", got)
+	}
+}
+
+func TestFallbackOverallStoryDropsNoise(t *testing.T) {
+	t0 := time.Date(2026, 5, 19, 13, 50, 0, 0, time.UTC)
+	t1 := time.Date(2026, 5, 19, 14, 20, 0, 0, time.UTC)
+	clusters := []Cluster{
+		{ID: 1, StartTS: t0, EndTS: t1, AttackPhase: "execution", Narrative: "real attack narrative"},
+		// noise: empty attack phase
+		{ID: 2, AttackPhase: "", Narrative: "VM first boot — likely benign"},
+		// noise: narrative keyword
+		{ID: 3, AttackPhase: "persistence", Narrative: "これは誤検知と思われる正規のインストール"},
+	}
+	got := fallbackOverallStory(clusters, "en")
+	if !strings.HasPrefix(got, fallbackOverallStoryPrefixEN) {
+		t.Errorf("fallback must start with the warning banner, got %q", got)
+	}
+	if !strings.Contains(got, "real attack narrative") {
+		t.Error("attack-cluster narrative must be present")
+	}
+	for _, noise := range []string{"VM first boot", "誤検知"} {
+		if strings.Contains(got, noise) {
+			t.Errorf("noise narrative %q must be dropped from the fallback", noise)
+		}
+	}
+}
+
+func TestIsNoiseCluster(t *testing.T) {
+	cases := []struct {
+		name      string
+		phase     string
+		narrative string
+		want      bool
+	}{
+		{"empty phase", "", "anything", true},
+		{"unknown phase", "unknown", "anything", true},
+		{"attack phase clean", "execution", "mimikatz dumped LSASS", false},
+		{"false positive keyword", "persistence", "this is a false positive", true},
+		{"japanese 誤検知", "lateral-movement", "正規のバックグラウンド処理で誤検知", true},
+		{"sysprep keyword", "execution", "Sysprep generalization run", true},
+		{"benign word alone is not enough", "execution", "the binary is not benign at all", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsNoiseCluster(c.phase, c.narrative); got != c.want {
+				t.Errorf("IsNoiseCluster(%q, %q) = %v, want %v", c.phase, c.narrative, got, c.want)
+			}
+		})
+	}
+}
+
+func TestTemporalOutlierClusters(t *testing.T) {
+	mk := func(year int) Cluster {
+		ts := time.Date(year, 5, 19, 12, 0, 0, 0, time.UTC)
+		return Cluster{StartTS: ts, EndTS: ts.Add(30 * time.Minute)}
+	}
+	// Three clusters in 2026 + one Sysprep-era cluster in 2024.
+	clusters := []Cluster{mk(2026), mk(2026), mk(2026), mk(2024)}
+	flags := temporalOutlierClusters(clusters)
+	if flags[3] != true {
+		t.Error("the 2024 cluster should be flagged as a temporal outlier")
+	}
+	for i := 0; i < 3; i++ {
+		if flags[i] {
+			t.Errorf("cluster %d (2026) should not be a temporal outlier", i)
+		}
+	}
+	// Too few clusters for a stable median → nothing flagged.
+	if got := temporalOutlierClusters([]Cluster{mk(2026), mk(2024)}); got[1] {
+		t.Error("with <3 clusters no temporal outlier should be flagged")
 	}
 }
 

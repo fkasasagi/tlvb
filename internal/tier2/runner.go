@@ -332,22 +332,126 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	return "", fmt.Errorf("analyseOverallLLM: exhausted retries")
 }
 
+// noiseNarrativeKeywords are substrings that, when present in a cluster's
+// narrative, mark it as likely benign / pre-existing system activity rather
+// than attacker action. Kept deliberately specific (no bare "正規"/"legitimate")
+// so genuine attack narratives that merely use those words are not misflagged.
+var noiseNarrativeKeywords = []string{
+	"誤検知", "false positive", "false-positive",
+	"正規のインストール", "正規のバックグラウンド", "正規のソフトウェア",
+	"legitimate install", "legitimate software", "benign system",
+	"sysprep", "first boot", "初回ブート", "vm 作成", "vm作成", "os セットアップ",
+}
+
+// IsNoiseCluster applies a conservative heuristic to decide whether a cluster
+// is likely pre-existing system noise (OS setup, Sysprep, VM first-boot,
+// legitimate software installs) instead of attacker activity. It is cheap by
+// design — phase + narrative keywords only, no LLM — so the same call can run
+// at synthesis time (fallback summary, overall LLM input) and at report time
+// (Tier 3 noise badge), keeping the three call sites consistent.
+func IsNoiseCluster(attackPhase, narrative string) bool {
+	phase := strings.ToLower(strings.TrimSpace(attackPhase))
+	if phase == "" || phase == "unknown" || phase == "noise" {
+		return true
+	}
+	lower := strings.ToLower(narrative)
+	for _, kw := range noiseNarrativeKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// fallbackOverallStoryPrefixJA / EN are the warning banners prepended to a
+// fallback executive summary. Tier 3 detects these exact prefixes to render a
+// visual disclaimer, so keep them in sync with html.go's buildView().
+const (
+	fallbackOverallStoryPrefixJA = "【注意: このサマリは LLM 生成に失敗したため、攻撃クラスタ要約の自動連結で代替しています。人手でのレビューと再実行が必要です。】"
+	fallbackOverallStoryPrefixEN = "[NOTE: This summary is a fallback auto-stitch because the LLM overall synthesis failed. Manual review and re-run required.]"
+)
+
 // fallbackOverallStory builds a deterministic overall_story by stitching
 // together each cluster's narrative. Called when the LLM-based overall
 // pass fails — the operator still gets a coherent case-level summary
-// instead of an empty section in the report.
+// instead of an empty section in the report. Likely-noise clusters are
+// dropped so the fallback summary does not present VM-creation / Sysprep
+// activity as part of the attack chain, and a warning banner is prepended
+// so the operator (and Tier 3) knows this is a degraded summary.
 func fallbackOverallStory(clusters []Cluster, lang string) string {
-	_ = lang // reserved for future language-specific separators
-	var sb strings.Builder
-	for i, c := range clusters {
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
-		if c.Narrative != "" {
-			sb.WriteString(c.Narrative)
+	ja := strings.ToLower(lang) != "en"
+
+	// Separate attack clusters from likely-noise clusters.
+	var attackClusters []Cluster
+	for _, c := range clusters {
+		if !IsNoiseCluster(c.AttackPhase, c.Narrative) {
+			attackClusters = append(attackClusters, c)
 		}
 	}
+	if len(attackClusters) == 0 {
+		attackClusters = clusters // nothing classified as attack → keep all
+	}
+
+	var sb strings.Builder
+	if ja {
+		sb.WriteString(fallbackOverallStoryPrefixJA)
+	} else {
+		sb.WriteString(fallbackOverallStoryPrefixEN)
+	}
+	for _, c := range attackClusters {
+		if c.Narrative == "" {
+			continue
+		}
+		sb.WriteString("\n\n")
+		sb.WriteString(c.Narrative)
+	}
 	return sb.String()
+}
+
+// temporalOutlierClusters flags clusters whose time window sits more than a
+// year away from the median cluster — a strong signal of pre-existing system
+// activity (VM creation, Sysprep) bundled into the same case as the real
+// incident. Returns a bool slice aligned with the input. Needs at least three
+// timestamped clusters for a stable median; otherwise nothing is flagged.
+func temporalOutlierClusters(clusters []Cluster) []bool {
+	flags := make([]bool, len(clusters))
+
+	type centered struct {
+		idx    int
+		center time.Time
+	}
+	var pts []centered
+	for i, c := range clusters {
+		if c.StartTS.IsZero() {
+			continue
+		}
+		center := c.StartTS
+		if !c.EndTS.IsZero() && c.EndTS.After(c.StartTS) {
+			center = c.StartTS.Add(c.EndTS.Sub(c.StartTS) / 2)
+		}
+		pts = append(pts, centered{idx: i, center: center})
+	}
+	if len(pts) < 3 {
+		return flags
+	}
+
+	sorted := append([]centered(nil), pts...)
+	sort.Slice(sorted, func(a, b int) bool {
+		return sorted[a].center.Before(sorted[b].center)
+	})
+	median := sorted[len(sorted)/2].center
+
+	const outlierGap = 365 * 24 * time.Hour
+	for _, p := range pts {
+		d := p.center.Sub(median)
+		if d < 0 {
+			d = -d
+		}
+		if d > outlierGap {
+			flags[p.idx] = true
+		}
+	}
+	return flags
 }
 
 type clusterAnalysisResp struct {
@@ -448,27 +552,30 @@ ClusterContext:
 
 func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string) (string, error) {
 	type clite struct {
-		ID              int      `json:"cluster_id"`
-		AttackPhase     string   `json:"attack_phase,omitempty"`
-		Narrative       string   `json:"narrative,omitempty"`
-		MITRETechniques []string `json:"mitre_techniques,omitempty"`
-		WindowStart     string   `json:"window_start,omitempty"`
-		WindowEnd       string   `json:"window_end,omitempty"`
-		FindingCount    int      `json:"finding_count"`
+		ID               int      `json:"cluster_id"`
+		AttackPhase      string   `json:"attack_phase,omitempty"`
+		Narrative        string   `json:"narrative,omitempty"`
+		MITRETechniques  []string `json:"mitre_techniques,omitempty"`
+		WindowStart      string   `json:"window_start,omitempty"`
+		WindowEnd        string   `json:"window_end,omitempty"`
+		FindingCount     int      `json:"finding_count"`
+		IsNoiseCandidate bool     `json:"is_noise_candidate,omitempty"`
 	}
 	const compactMaxChars = 1500
+	temporalOutlier := temporalOutlierClusters(clusters)
 	var cls []clite
-	for _, c := range clusters {
+	for i, c := range clusters {
 		narrative := c.Narrative
 		if compactNarratives && len(narrative) > compactMaxChars {
 			narrative = narrative[:compactMaxChars] + "...[truncated for retry]"
 		}
 		cl := clite{
-			ID:              c.ID,
-			AttackPhase:     c.AttackPhase,
-			Narrative:       narrative,
-			MITRETechniques: c.MITRETechniques,
-			FindingCount:    len(c.Findings),
+			ID:               c.ID,
+			AttackPhase:      c.AttackPhase,
+			Narrative:        narrative,
+			MITRETechniques:  c.MITRETechniques,
+			FindingCount:     len(c.Findings),
+			IsNoiseCandidate: IsNoiseCluster(c.AttackPhase, c.Narrative) || temporalOutlier[i],
 		}
 		if !c.StartTS.IsZero() {
 			cl.WindowStart = c.StartTS.Format(time.RFC3339)
