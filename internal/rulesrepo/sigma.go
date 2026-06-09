@@ -64,17 +64,20 @@ type sigmaLogsource struct {
 // concludes no mapping exists.
 //
 // Two sub-groups:
-//   - proxy/firewall/database/webserver: network/appliance logs, entirely
+//   - proxy/firewall/database: network/appliance logs, entirely
 //     outside the Windows host-forensics scope.
 //   - file_access: a Windows category, but it requires the
 //     Microsoft-Windows-Kernel-File ETW provider (not Sysmon, not the
 //     default Security/Operational channels), which Tier 0 doesn't collect.
 //     Move it out of this set if a Kernel-File parser is ever added.
+//
+// 'webserver' was removed from this set on 2026-06-09: the W3C/IIS parser
+// (parsers/w3c_iis_parser.py) now ingests access logs into
+// artifact_id='w3c_iis', so Sigma category:webserver rules CAN match.
 var unsupportedCategories = map[string]bool{
 	"proxy":       true,
 	"firewall":    true,
 	"database":    true,
-	"webserver":   true,
 	"file_access": true,
 }
 
@@ -96,7 +99,6 @@ var unsupportedServices = map[string]bool{
 	"nginx":   true,
 	"tomcat":  true,
 	"haproxy": true,
-	"iis":     true, // IIS access log — Tier 0 W3C parser is still skeleton
 	"sshd":    true,
 	"syslog":  true,
 	"auditd":  true,
