@@ -262,7 +262,7 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	defer cancel()
 
 	startedAt := time.Now()
-	out, err := callClaudeCLI(subCtx, cfg, systemPrompt, userMsg)
+	out, err := callClaude(subCtx, cfg, systemPrompt, userMsg)
 	dur := time.Since(startedAt)
 	audit.LLMDurationS += dur.Seconds()
 	audit.LLMCallsTotal++
@@ -305,7 +305,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		}
 		subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 		startedAt := time.Now()
-		out, err := callClaudeCLI(subCtx, cfg, systemPrompt, userMsg)
+		out, err := callClaude(subCtx, cfg, systemPrompt, userMsg)
 		dur := time.Since(startedAt)
 		audit.LLMDurationS += dur.Seconds()
 		audit.LLMCallsTotal++
@@ -541,6 +541,19 @@ func auditLLMCall(cfg Config, detail string, clusterID int, dur time.Duration, o
 		a.CostUSD = out.TotalCostUSD
 	}
 	cfg.al.Append(a)
+}
+
+// callClaude dispatches one Tier 2 LLM call. When ANTHROPIC_API_KEY is set it
+// goes through the Messages API (callAnthropicAPI), which caches the system
+// prompt ONLY — so the large single-use user payloads are billed as plain input
+// instead of being cache-written at the 1.25x premium. With no key it falls
+// back to the `claude -p` CLI (callClaudeCLI), whose behaviour is unchanged.
+// Both paths send byte-identical content to the model, so analysis is unaffected.
+func callClaude(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {
+	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
+		return callAnthropicAPI(ctx, cfg, key, sysPrompt, userMsg)
+	}
+	return callClaudeCLI(ctx, cfg, sysPrompt, userMsg)
 }
 
 func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {

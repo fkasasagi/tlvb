@@ -108,7 +108,7 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, db *sql.DB, c *Clu
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 	defer cancel()
 	startedAt := time.Now()
-	out, err := callClaudeCLI(subCtx, cfg, activeSearchSystemPrompt, prompt)
+	out, err := callClaude(subCtx, cfg, activeSearchSystemPrompt, prompt)
 	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
 	audit.LLMDurationS += dur.Seconds()
@@ -587,7 +587,7 @@ Return ONLY the addendum text. No JSON, no markdown.`
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 	defer cancel()
 	startedAt := time.Now()
-	out, err := callClaudeCLI(subCtx, cfg, system, string(body))
+	out, err := callClaude(subCtx, cfg, system, string(body))
 	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
 	audit.LLMDurationS += dur.Seconds()
@@ -658,7 +658,7 @@ func correctActiveSearchSQL(ctx context.Context, cfg Config, question, failedSQL
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 	defer cancel()
 	startedAt := time.Now()
-	out, err := callClaudeCLI(subCtx, cfg, activeSearchCorrectionSystemPrompt, string(body))
+	out, err := callClaude(subCtx, cfg, activeSearchCorrectionSystemPrompt, string(body))
 	dur := time.Since(startedAt)
 	audit.LLMCallsTotal++
 	audit.LLMDurationS += dur.Seconds()
