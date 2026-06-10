@@ -16,8 +16,9 @@ from parsers.base import ParseRequest
 from parsers import web_error_parser as P
 
 
-def _req(inp: pathlib.Path, out: pathlib.Path) -> ParseRequest:
-    return ParseRequest(input_path=inp, output_dir=out, case_id="T", evidence_id="EV")
+def _req(inp: pathlib.Path, out: pathlib.Path, tz: str = "UTC") -> ParseRequest:
+    return ParseRequest(input_path=inp, output_dir=out, case_id="T",
+                        evidence_id="EV", timezone=tz)
 
 
 def _events(p: str) -> list[dict]:
@@ -52,8 +53,20 @@ def test_apache_error(tmp_path):
     assert all(e["payload"]["server_type"] == "apache" for e in evs)
     assert evs[0]["payload"]["severity"] == "error"        # "core:error" → "error"
     assert evs[0]["payload"]["client_ip"] == "192.168.50.1"  # :port dropped
-    assert evs[0]["timestamp"] == "2026-06-08T13:18:17.123456"
+    # Server-LOCAL time, interpreted in the evidence tz (UTC here) → UTC ISO.
+    assert evs[0]["timestamp"] == "2026-06-08T13:18:17.123456+00:00"
     assert evs[1]["payload"]["client_ip"] == "203.0.113.9"
+
+
+def test_local_time_canonicalised_to_utc(tmp_path):
+    # IIS/Apache/nginx/Tomcat diagnostic logs are server-LOCAL with no offset.
+    # With evidence timezone=Asia/Tokyo (UTC+9), 13:18:17 JST → 04:18:17 UTC.
+    res = P.parse(_req(_write(tmp_path, "ap", "error_log", APACHE),
+                       tmp_path / "o", tz="Asia/Tokyo"))
+    assert res.success
+    evs = _events(res.output_jsonl)
+    assert evs[0]["timestamp"] == "2026-06-08T04:18:17.123456+00:00"
+    assert any("Asia/Tokyo" in n for n in res.notes)
 
 
 def test_nginx_error(tmp_path):

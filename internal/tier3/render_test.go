@@ -222,6 +222,32 @@ func TestSplitParagraphs(t *testing.T) {
 	}
 }
 
+func TestReportTimezoneFormatting(t *testing.T) {
+	// reportLocation falls back to UTC on empty/garbage, echoes valid zones.
+	if loc, label := reportLocation(""); loc != time.UTC || label != "UTC" {
+		t.Errorf("reportLocation(\"\"): got (%v,%q), want (UTC,UTC)", loc, label)
+	}
+	if loc, label := reportLocation("Not/AZone"); loc != time.UTC || label != "UTC" {
+		t.Errorf("reportLocation(garbage): got (%v,%q), want (UTC,UTC)", loc, label)
+	}
+	jst, label := reportLocation("Asia/Tokyo")
+	if label != "Asia/Tokyo" {
+		t.Fatalf("reportLocation label: got %q", label)
+	}
+
+	// 13:00 UTC == 22:00 JST (+09:00). formatTSIn preserves the offset.
+	utc := time.Date(2026, 6, 10, 13, 0, 0, 0, time.UTC)
+	if got := formatTSIn(utc, jst); got != "2026-06-10T22:00:00+09:00" {
+		t.Errorf("formatTSIn JST: got %q, want 2026-06-10T22:00:00+09:00", got)
+	}
+	if got := formatTSIn(utc, time.UTC); got != "2026-06-10T13:00:00Z" {
+		t.Errorf("formatTSIn UTC: got %q, want 2026-06-10T13:00:00Z", got)
+	}
+	if got := formatTSIn(time.Time{}, jst); got != "" {
+		t.Errorf("formatTSIn(zero): got %q, want empty", got)
+	}
+}
+
 func TestSeverityClass(t *testing.T) {
 	cases := map[string]string{
 		"critical":      "sev-critical",
