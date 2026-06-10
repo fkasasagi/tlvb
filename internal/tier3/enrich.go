@@ -106,8 +106,13 @@ type iocRow struct {
 	Value    string
 	Artifact string
 	Count    int
-	tactics  map[string]bool // owning findings' mitre_tactics
-	findings map[string]bool // owning findings' titles (for the "src" column)
+	// Confidence buckets the IOC for the report's three-tier table:
+	//   confirmed → extracted from a deterministic Tier 1A signature finding
+	//   inferred  → extracted from a Tier 1B anomaly (LLM-judged) finding
+	//   noise     → a known parser artifact / non-actionable value
+	Confidence string
+	tactics    map[string]bool // owning findings' mitre_tactics
+	findings   map[string]bool // owning findings' titles (for the "src" column)
 }
 
 // mitreRow aggregates one MITRE technique across findings. Derived
@@ -158,6 +163,7 @@ func loadEnrichment(findingsDir string) *enrichment {
 		det := &findingDetail{}
 		artSet := map[string]bool{}
 		var earliestAudit, computer string
+		findingConf := iocConfidenceForSource(f.Source)
 		for _, ev := range f.Evidence {
 			if ev.hasTS() {
 				if !det.HasTS || ev.TsUTC.Before(det.FirstSeen) {
@@ -172,7 +178,7 @@ func loadEnrichment(findingsDir string) *enrichment {
 			if computer == "" {
 				computer = evComputer(ev)
 			}
-			collectIOCs(iocAgg, ev, f.Tactics, f.Title)
+			collectIOCs(iocAgg, ev, f.Tactics, f.Title, findingConf)
 		}
 		det.EvidenceCount = len(f.Evidence)
 		det.Artifacts = sortedKeys(artSet)
@@ -311,7 +317,7 @@ func iocKeyClass(key string) string {
 	}
 }
 
-func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, findingLabel string) {
+func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, findingLabel, findingConf string) {
 	for k, v := range ev.Extra {
 		cls := iocKeyClass(k)
 		if cls == "" {
@@ -321,16 +327,25 @@ func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, f
 		if val == "" || val == "-" || val == "<nil>" || len(val) > 300 {
 			continue
 		}
+		// A value-level parser artifact (e.g. "LogonType 3") is noise no matter
+		// which finding surfaced it — keep it out of the confirmed/suspected
+		// tiers so it never lands on a blocklist.
+		conf := findingConf
+		if isParserNoise(cls, val) {
+			conf = "noise"
+		}
 		key := cls + "\x00" + val
 		r, ok := agg[key]
 		if !ok {
 			r = &iocRow{
 				Type: cls, Value: val, Artifact: ev.ArtifactID, Count: 0,
-				tactics: map[string]bool{}, findings: map[string]bool{},
+				Confidence: conf,
+				tactics:    map[string]bool{}, findings: map[string]bool{},
 			}
 			agg[key] = r
 		}
 		r.Count++
+		r.Confidence = mergeIOCConfidence(r.Confidence, conf)
 		for _, t := range tactics {
 			if t = strings.TrimSpace(t); t != "" {
 				r.tactics[t] = true
@@ -339,6 +354,64 @@ func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, f
 		if findingLabel = strings.TrimSpace(findingLabel); findingLabel != "" {
 			r.findings[findingLabel] = true
 		}
+	}
+}
+
+// iocConfidenceForSource maps a finding source engine to the IOC confidence tier.
+// Mirrors tier2.ProvenanceForSource: deterministic signature rules are
+// "confirmed"; the LLM-judged anomaly lens is "inferred" (suspected).
+func iocConfidenceForSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "anomaly_hunter", "tier1b":
+		return "inferred"
+	default: // sigma | hayabusa | stix | custom | rule
+		return "confirmed"
+	}
+}
+
+// noiseIOCValues are parser-emitted / non-actionable IOC values that must never
+// appear in the confirmed or suspected tiers (report improvement Vol.2: a
+// LogonType pushed to a blocklist is actively harmful). Matched case-insensitively
+// against the trimmed value.
+var noiseIOCValues = map[string]bool{
+	"logontype 0":   true,
+	"logontype 2":   true,
+	"logontype 3":   true,
+	"logontype 10":  true,
+	"-\\-":          true,
+	"\\":            true,
+	"parse-pending": true,
+	"n/a":           true,
+}
+
+// isParserNoise reports whether an IOC value is a known parser artifact rather
+// than a real indicator.
+func isParserNoise(iocType, value string) bool {
+	return noiseIOCValues[strings.ToLower(strings.TrimSpace(value))]
+}
+
+// mergeIOCConfidence keeps the strongest confidence seen for an IOC, except that
+// a "noise" verdict is sticky (value-level, so it applies to every occurrence).
+func mergeIOCConfidence(existing, incoming string) string {
+	if existing == "noise" || incoming == "noise" {
+		return "noise"
+	}
+	if iocConfRank(incoming) > iocConfRank(existing) {
+		return incoming
+	}
+	return existing
+}
+
+func iocConfRank(c string) int {
+	switch c {
+	case "confirmed":
+		return 3
+	case "inferred":
+		return 2
+	case "noise":
+		return 1
+	default:
+		return 0
 	}
 }
 

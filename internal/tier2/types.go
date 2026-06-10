@@ -141,10 +141,49 @@ type CaseSynthesis struct {
 	TotalFindings int            `json:"total_findings"`
 	ClusterCount  int            `json:"cluster_count"`
 	Clusters      []SynthCluster `json:"clusters"`
-	OverallStory  string         `json:"overall_story"`
-	MITREMapping  []MITREEntry   `json:"mitre_mapping"`
-	OpenQuestions []string       `json:"open_questions,omitempty"`
-	Audit         SynthAudit     `json:"audit"`
+	// OverallStory is the case-wide executive summary. For backward
+	// compatibility it always holds the technical layer (== TechSummary), so
+	// older readers and the Web UI keep working unchanged.
+	OverallStory string `json:"overall_story"`
+	// ExecBrief is the non-technical "key findings" layer of the executive
+	// summary (Layer 1) — short bullet points for a decision-maker, no process
+	// names / registry paths / EventIDs. Empty when the LLM produced no
+	// `---EXEC---` section or the deterministic fallback was used.
+	ExecBrief string `json:"exec_brief,omitempty"`
+	// TechSummary is the DFIR-analyst layer of the executive summary (Layer 2)
+	// — the existing 4-5 paragraph technical prose. Equal to OverallStory.
+	TechSummary  string       `json:"tech_summary,omitempty"`
+	MITREMapping []MITREEntry `json:"mitre_mapping"`
+	// OpenQuestions is the flat, deduplicated union of every cluster's open
+	// questions (kept for backward compatibility and as the fallback view).
+	OpenQuestions []string `json:"open_questions,omitempty"`
+	// OpenQuestionsSynth is the LLM-consolidated, prioritised view of the open
+	// questions (critical / needs-collection / supplementary). Empty when the
+	// consolidation LLM was skipped or failed — the report then falls back to
+	// the flat OpenQuestions list.
+	OpenQuestionsSynth OpenQuestionsSynthesis `json:"open_questions_synthesis,omitempty"`
+	Audit              SynthAudit             `json:"audit"`
+}
+
+// OpenQuestionsSynthesis is the prioritised, deduplicated consolidation of the
+// per-cluster open questions, produced by a dedicated Tier 2 LLM pass
+// (skills/open_questions_synthesis.md). Splitting ~50 raw bullet points into
+// three actionable tiers was a common reviewer ask (report improvement Vol.2).
+type OpenQuestionsSynthesis struct {
+	// Critical: questions whose answers would change the conclusions about root
+	// cause, initial access, or scope of compromise (max ~5).
+	Critical []string `json:"critical,omitempty"`
+	// NeedsCollection: questions resolvable by obtaining a specific additional
+	// artifact (the artifact is named in each item).
+	NeedsCollection []string `json:"needs_collection,omitempty"`
+	// Supplementary: everything else, lower priority.
+	Supplementary []string `json:"supplementary,omitempty"`
+}
+
+// IsEmpty reports whether the synthesis carries no questions in any tier — the
+// signal the report uses to fall back to the flat OpenQuestions list.
+func (o OpenQuestionsSynthesis) IsEmpty() bool {
+	return len(o.Critical) == 0 && len(o.NeedsCollection) == 0 && len(o.Supplementary) == 0
 }
 
 // SynthCluster is the cluster shape in synthesis.json. Drops the heavy
