@@ -87,12 +87,29 @@ func (s *Server) handleListCases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rows []casedb.CaseRow
-	// Read-only so the Dashboard stays reachable (busy, not hung) while a Parse
-	// holds the DB — listing is the user's escape hatch out of a busy case view.
+	var eventCounts map[string]int64
+	var evidenceCounts map[string]int
+	// One read-only open, three set-based queries against small tables (cases,
+	// parse_results, evidence) — none of which scan the multi-GB unified_events
+	// fact table. The old code re-opened the DB and COUNT-scanned unified_events
+	// once *per case*, which both pegged serve under polling and tripped a
+	// go-duckdb hang on large DBs, leaving /api/cases (and thus the Dashboard)
+	// stuck for minutes. Read-only so the Dashboard stays reachable (busy, not
+	// hung) while a Parse holds the DB — listing is the user's escape hatch.
 	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 		var ierr error
-		rows, ierr = m.ListCases(r.Context())
-		return ierr
+		if rows, ierr = m.ListCases(r.Context()); ierr != nil {
+			return ierr
+		}
+		// Counts are best-effort enrichment: a failure here must not blank the
+		// whole Dashboard, so fall back to empty maps rather than erroring.
+		if eventCounts, ierr = m.EventCountsByCase(r.Context()); ierr != nil {
+			eventCounts = map[string]int64{}
+		}
+		if evidenceCounts, ierr = m.CountEvidenceByCase(r.Context()); ierr != nil {
+			evidenceCounts = map[string]int{}
+		}
+		return nil
 	})
 	if err != nil {
 		if writeIfDBBusy(w, err) {
@@ -104,15 +121,8 @@ func (s *Server) handleListCases(w http.ResponseWriter, r *http.Request) {
 	out := make([]caseSummary, 0, len(rows))
 	for _, c := range rows {
 		summary := caseSummary{CaseRow: c}
-		// Best-effort enrich; ignore individual-case errors (incl. ErrDBBusy).
-		_ = s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
-			st, err := m.GetCaseStatus(r.Context(), c.CaseID)
-			if err == nil && st != nil {
-				summary.EvidenceCount = st.EvidenceCount
-				summary.UnifiedRowCount = st.UnifiedRowCount
-			}
-			return nil
-		})
+		summary.EvidenceCount = evidenceCounts[c.CaseID]
+		summary.UnifiedRowCount = eventCounts[c.CaseID]
 		summary.populateArtifactStatus(s.cfg.OutputsRoot)
 		out = append(out, summary)
 	}

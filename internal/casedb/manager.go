@@ -1,14 +1,15 @@
 // Package casedb is the read-mostly access layer for case state.
 //
 // Schema (DuckDB):
-//   cases            (case_id PK, name, examiner, timezone, created_at, status)
-//   evidence         (evidence_id PK, case_id FK, path, sha256, size_bytes,
-//                     registered_at, source_host, evidence_type)
-//   parse_results    (case_id, artifact_id PK, started_at, finished_at,
-//                     command, exit_code, stdout_tail, stderr_tail,
-//                     output_csv, row_count)
-//   unified_events   (case_id, evidence_id, artifact_id, audit_id, ts_utc,
-//                     event_type, computer, payload_json)  -- main fact table
+//
+//	cases            (case_id PK, name, examiner, timezone, created_at, status)
+//	evidence         (evidence_id PK, case_id FK, path, sha256, size_bytes,
+//	                  registered_at, source_host, evidence_type)
+//	parse_results    (case_id, artifact_id PK, started_at, finished_at,
+//	                  command, exit_code, stdout_tail, stderr_tail,
+//	                  output_csv, row_count)
+//	unified_events   (case_id, evidence_id, artifact_id, audit_id, ts_utc,
+//	                  event_type, computer, payload_json)  -- main fact table
 //
 // All public methods on *Manager are read-only when opened with ReadOnly.
 // Mutating helpers (RegisterCase, RegisterEvidence, RecordParseResult,
@@ -278,11 +279,65 @@ func (m *Manager) ListCases(ctx context.Context) ([]CaseRow, error) {
 	return out, rows.Err()
 }
 
+// EventCountsByCase returns per-case ingested-event counts for the Dashboard
+// listing, derived from the tiny parse_results table (SUM of the parser-
+// reported row_count) rather than by scanning the multi-GB unified_events
+// table.
+//
+// Why not COUNT(unified_events): the listing must enrich *every* case at once,
+// and a grouped COUNT over unified_events makes the go-duckdb driver hang for
+// minutes on some large DBs (the same payload block where it asserts on heavy
+// queries — Python duckdb runs the identical COUNT in ~10ms, so it is a driver
+// issue, not the query). parse_results carries one row per (case, artifact)
+// with the row_count recorded at ingest, so SUM(row_count) is the same total
+// without ever touching the fact table. Cases with no parse rows are absent
+// from the map (callers default to 0).
+func (m *Manager) EventCountsByCase(ctx context.Context) (map[string]int64, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT case_id, CAST(COALESCE(SUM(row_count), 0) AS BIGINT)
+		   FROM parse_results GROUP BY case_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// CountEvidenceByCase returns evidence counts for every case in a single
+// GROUP BY scan (same rationale as CountUnifiedEventsByCase).
+func (m *Manager) CountEvidenceByCase(ctx context.Context) (map[string]int, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT case_id, COUNT(*) FROM evidence GROUP BY case_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 type CaseStatus struct {
-	Case            CaseRow         `json:"case"`
-	EvidenceCount   int             `json:"evidence_count"`
+	Case            CaseRow          `json:"case"`
+	EvidenceCount   int              `json:"evidence_count"`
 	ParseResults    []ParseResultRow `json:"parse_results"`
-	UnifiedRowCount int64           `json:"unified_event_rows"`
+	UnifiedRowCount int64            `json:"unified_event_rows"`
 }
 
 func (m *Manager) GetCaseStatus(ctx context.Context, caseID string) (*CaseStatus, error) {
@@ -351,16 +406,16 @@ func (m *Manager) ListEvidence(ctx context.Context, caseID string) ([]EvidenceRo
 }
 
 type ParseResultRow struct {
-	CaseID      string     `json:"case_id"`
-	ArtifactID  string     `json:"artifact_id"`
-	StartedAt   time.Time  `json:"started_at"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
-	Command     string     `json:"command"`
-	ExitCode    *int       `json:"exit_code,omitempty"`
-	StdoutTail  string     `json:"stdout_tail,omitempty"`
-	StderrTail  string     `json:"stderr_tail,omitempty"`
-	OutputCSV   string     `json:"output_csv,omitempty"`
-	RowCount    *int64     `json:"row_count,omitempty"`
+	CaseID     string     `json:"case_id"`
+	ArtifactID string     `json:"artifact_id"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Command    string     `json:"command"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	StdoutTail string     `json:"stdout_tail,omitempty"`
+	StderrTail string     `json:"stderr_tail,omitempty"`
+	OutputCSV  string     `json:"output_csv,omitempty"`
+	RowCount   *int64     `json:"row_count,omitempty"`
 }
 
 func (m *Manager) GetParseResult(ctx context.Context, caseID, artifactID string) (*ParseResultRow, error) {
