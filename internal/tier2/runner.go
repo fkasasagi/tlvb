@@ -530,6 +530,20 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// summary not functioning". Scale the budget with the cluster count.
 	timeout := overallSynthTimeout(cfg.PerClusterTimeout, len(clusters))
 
+	// The overall synthesis is the single most important Tier 2 output (the
+	// report's executive summary) and it runs LAST — after every per-cluster
+	// and active-search call. Callers wrap the whole run in one deadline (the
+	// Web synthesize job uses a flat 15/25 min for the entire pipeline), so by
+	// the time control reaches here that deadline is frequently already spent.
+	// The call then fails instantly with "context deadline exceeded" (~0s) and
+	// the report silently degrades to the fallback stitch + warning banner.
+	// Detach from the parent's spent deadline so the overall pass always gets
+	// its own budget; a genuine cancellation (Ctrl-C / superseded job) is still
+	// honoured below and inside detachedDeadlineContext.
+	if ctx.Err() == context.Canceled {
+		return "", ctx.Err()
+	}
+
 	// Try with full per-cluster narratives first. If claude CLI fails
 	// (commonly exit 1 with no stderr — usually transient or context-size
 	// driven), retry once with compacted narratives (each truncated to
@@ -541,7 +555,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		if err != nil {
 			return "", err
 		}
-		subCtx, cancel := context.WithTimeout(ctx, timeout)
+		subCtx, cancel := detachedDeadlineContext(ctx, timeout)
 		startedAt := time.Now()
 		out, err := callClaude(subCtx, cfg, systemPrompt, userMsg)
 		dur := time.Since(startedAt)
@@ -554,13 +568,13 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 			return strings.TrimSpace(out.Result), nil
 		}
 		// transient — wait a bit before retry, but only if there are
-		// more attempts.
+		// more attempts. Honour a genuine cancel; a spent parent deadline
+		// is exactly what we detach from, so don't let it abort the retry.
 		if attempt < 2 {
-			select {
-			case <-ctx.Done():
+			if ctx.Err() == context.Canceled {
 				return "", ctx.Err()
-			case <-time.After(3 * time.Second):
 			}
+			time.Sleep(3 * time.Second)
 		} else {
 			// last attempt failed → return error so the caller can
 			// build a fallback overall_story locally.
@@ -568,6 +582,30 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		}
 	}
 	return "", fmt.Errorf("analyseOverallLLM: exhausted retries")
+}
+
+// detachedDeadlineContext returns a context for the overall-synthesis LLM call
+// that carries its OWN timeout, independent of any (already-spent) deadline on
+// the parent. The overall pass runs last in a Tier 2 run, so inheriting the
+// parent's deadline meant the per-cluster phase could leave it with no time and
+// the executive summary would fail instantly. A genuine cancellation of the
+// parent (Ctrl-C / superseded job) still propagates to the returned context;
+// the parent merely running out its deadline does not. The caller must call the
+// returned cancel func.
+func detachedDeadlineContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
+	if parent.Done() != nil {
+		go func() {
+			select {
+			case <-parent.Done():
+				if parent.Err() == context.Canceled {
+					cancel()
+				}
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
 }
 
 // noiseNarrativeKeywords are substrings that, when present in a cluster's
