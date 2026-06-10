@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -129,13 +130,21 @@ func (s *Server) handleListCases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
+// errCaseExists signals that a create targeted a case_id that is still present.
+// RegisterCase is an UPSERT, so without this guard a plain create would silently
+// reuse the old row and inherit its evidence / events / parse_results (the
+// "deleted case carries over" bug). The carry-over is keyed purely on case_id —
+// a shared human name is irrelevant.
+var errCaseExists = errors.New("case already exists")
+
 func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CaseID   string `json:"case_id"`
-		Name     string `json:"name"`
-		Examiner string `json:"examiner"`
-		Timezone string `json:"timezone"`
-		Language string `json:"language"`
+		CaseID    string `json:"case_id"`
+		Name      string `json:"name"`
+		Examiner  string `json:"examiner"`
+		Timezone  string `json:"timezone"`
+		Language  string `json:"language"`
+		Overwrite bool   `json:"overwrite"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, 400, "bad json: %v", err)
@@ -152,6 +161,17 @@ func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 		req.Timezone = "UTC"
 	}
 
+	// Overwrite wipes the existing case's data — refuse while its pipeline is
+	// mid-flight, same guard as delete.
+	if req.Overwrite {
+		for _, k := range []JobKind{JobParse, JobAnalyze, JobSynthesize, JobReport} {
+			if s.jobs.IsRunning(req.CaseID, k) {
+				writeError(w, 409, "case %q has a running %s job; wait for it to finish", req.CaseID, k)
+				return
+			}
+		}
+	}
+
 	row := casedb.CaseRow{
 		CaseID:    req.CaseID,
 		Name:      req.Name,
@@ -159,12 +179,40 @@ func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 		Timezone:  req.Timezone,
 		CreatedAt: time.Now().UTC(),
 	}
+	overwrote := false
 	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+		if existing, gerr := m.GetCaseStatus(r.Context(), req.CaseID); gerr == nil {
+			if !req.Overwrite {
+				return fmt.Errorf("%w: %q has %d evidence / %d events — delete it first, or recreate with overwrite=true",
+					errCaseExists, req.CaseID, existing.EvidenceCount, existing.UnifiedRowCount)
+			}
+			// overwrite=true: clear the old case (DB rows) before recreating so
+			// the new case starts clean instead of inheriting old rows. Mirrors
+			// the case-import overwrite flow.
+			if derr := deleteCase(r.Context(), m, req.CaseID); derr != nil {
+				return fmt.Errorf("overwrite: clear existing case: %w", derr)
+			}
+			if cerr := m.Checkpoint(r.Context()); cerr != nil {
+				s.logger.Warn("checkpoint after overwrite-delete failed", "case", req.CaseID, "err", cerr)
+			}
+			overwrote = true
+		}
 		return m.RegisterCase(r.Context(), row)
 	})
 	if err != nil {
+		if errors.Is(err, errCaseExists) {
+			writeError(w, 409, "%v", err)
+			return
+		}
 		writeError(w, 500, "register case: %v", err)
 		return
+	}
+	// On overwrite, also drop the stale workspace dir (findings / synthesis /
+	// reports) so on-disk artifacts from the old case don't resurface.
+	if overwrote {
+		if rerr := os.RemoveAll(filepath.Join(s.cfg.OutputsRoot, req.CaseID)); rerr != nil {
+			s.logger.Warn("overwrite: delete case workspace failed", "case", req.CaseID, "err", rerr)
+		}
 	}
 	writeJSON(w, 201, row)
 }
