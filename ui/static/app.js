@@ -3356,8 +3356,173 @@ function extractRow(caseID, pane, r) {
   ]);
 }
 
+// ---- Parse Results — Review Gate 0 helpers (per-artifact + per-evidence) ----
+// Shared by the flat (single-evidence) and grouped (multi-evidence) renders so
+// the row / approve / analyze behaviour stays identical between the two layouts.
+
+// parseResultStatus classifies a parse_results row into the 4-state Review
+// Gate 0 status (OK / EMPTY / NOT_PRESENT / FAIL). The NOT_PRESENT sentinel is
+// set by parsers/orchestrator.py when an implemented artefact wasn't found in
+// the input, so the gate shows every implemented artefact, not just detected.
+function parseResultStatus(pr) {
+  const cmd = pr.command || "";
+  if (cmd.startsWith("(not present")) {
+    return { kind: "not_present", label: "NOT_PRESENT", badge: "missing",
+             hint: "artefact not present in input" };
+  }
+  if (pr.exit_code === 0 && (pr.row_count || 0) > 0) {
+    return { kind: "ok", label: "OK", badge: "ok",
+             hint: "exit=0 · rows=" + (pr.row_count || 0) };
+  }
+  if (pr.exit_code === 0) {
+    return { kind: "empty", label: "EMPTY", badge: "warn", hint: "exit=0 but 0 rows" };
+  }
+  return { kind: "fail", label: "FAIL", badge: "err",
+           hint: "exit=" + (pr.exit_code != null ? pr.exit_code : "?") };
+}
+
+const PARSE_STATUS_RANK = { ok: 0, empty: 1, not_present: 2, fail: 3 };
+
+// sortParseResults orders rows by status (OK first) then artifact_id.
+function sortParseResults(prs) {
+  return prs.slice().sort((a, b) => {
+    const ra = PARSE_STATUS_RANK[parseResultStatus(a).kind] ?? 9;
+    const rb = PARSE_STATUS_RANK[parseResultStatus(b).kind] ?? 9;
+    if (ra !== rb) return ra - rb;
+    return (a.artifact_id || "").localeCompare(b.artifact_id || "");
+  });
+}
+
+// parseResultThead builds the <thead>. countLabel is "Rows" (flat — parse
+// output rows) or "Events" (per-evidence — ingested events for one evidence).
+function parseResultThead(countLabel) {
+  return h("thead", {}, h("tr", {}, [
+    h("th", {}, "Artifact"),
+    h("th", {}, "Status"),
+    h("th", {}, countLabel),
+    h("th", {}, "Duration"),
+    h("th", {}, "Started"),
+    h("th", {}, "Review"),
+    h("th", {}, "Action"),
+    h("th", {}, "Analyze"),
+  ]));
+}
+
+// parseResultRow renders one parse_results row. `count` overrides the displayed
+// row/event count (the per-evidence grouping passes the events-from-this-
+// evidence count); pass null to fall back to the artifact's global row_count.
+// Review / approve / analyze are all keyed on artifact_id, so the same artifact
+// shown under more than one evidence shares a single review decision.
+function parseResultRow(caseID, detail, pr, review, count) {
+  const st = parseResultStatus(pr);
+  const isNP = st.kind === "not_present";
+  const dur = isNP ? "—"
+    : (pr.finished_at && pr.started_at)
+    ? ((new Date(pr.finished_at) - new Date(pr.started_at)) / 1000).toFixed(2) + "s"
+    : "—";
+  const aid = pr.artifact_id || "?";
+  const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
+  const stateClass = {
+    approved: "approved", rejected: "rejected",
+    skipped:  "pending",  pending:  "pending",
+  }[rev.state] || "pending";
+  const stateBadge = h("span", { class: "badge " + stateClass, title: rev.reason || "" }, rev.state || "pending");
+
+  const action = h("div", { class: "row", style: "gap: 4px;" });
+  if (rev.state === "approved" || rev.state === "rejected") {
+    action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
+      (rev.reviewed_by || "?") + " · " + fmtTS(rev.reviewed_at).slice(0, 16)));
+  } else {
+    action.appendChild(h("button", {
+      onclick: async () => {
+        try {
+          await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/approve`);
+          toast("Approved " + aid, "success");
+          await renderEvents($("#tabpane"), caseID, detail);
+        } catch (e) { toast(e.message, "error"); }
+      },
+    }, "Approve"));
+    action.appendChild(h("button", {
+      class: "danger",
+      onclick: () => {
+        const close = modal([
+          h("h3", {}, "Reject parse result " + aid),
+          h("div", { class: "form-row" }, [h("label", {}, "Reason"),
+            h("input", { id: "pr_reason", placeholder: "why is this parser output bad?" })]),
+          h("div", { class: "actions" }, [
+            h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+            h("button", { class: "danger", onclick: async () => {
+              try {
+                await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/reject`,
+                  { reason: $("#pr_reason").value.trim() });
+                close(); toast("Rejected " + aid, "success");
+                await renderEvents($("#tabpane"), caseID, detail);
+              } catch (e) { toast(e.message, "error"); }
+            }}, "Reject"),
+          ]),
+        ]);
+      },
+    }, "Reject"));
+  }
+
+  // Per-artifact Analyze button — only for rows with actual data (OK). Empty /
+  // failed / not_present rows wouldn't produce meaningful LLM output, so the
+  // button is omitted to avoid burning model budget on guaranteed-empty scans.
+  const analyzeCell = h("td", {});
+  if (st.kind === "ok") {
+    analyzeCell.appendChild(h("button", {
+      class: "ghost",
+      style: "padding: 2px 8px; font-size: 11px;",
+      title: `Run relevant Tactic Agents scoped to artifact_id="${aid}". `
+           + `Server picks the tactics whose SQL prefilter references this artifact.`,
+      onclick: async () => {
+        if (!confirm(`Analyze "${aid}" with relevant tactics?\n\n`
+            + `LLM cost: ~1-3 tactics × Claude run. Findings will be saved to `
+            + `outputs/cases/${caseID}/findings/by-artifact/${aid}/.`)) {
+          return;
+        }
+        try {
+          await api("POST",
+            `/api/cases/${encodeURIComponent(caseID)}/analyze/artifact/${encodeURIComponent(aid)}`);
+          toast(`analyze artifact=${aid} started · check Status tab`, "success");
+        } catch (e) {
+          toast(`analyze artifact=${aid} failed: ${e.message}`, "error");
+        }
+      },
+    }, "▶ Analyze"));
+  } else {
+    analyzeCell.appendChild(h("span", { class: "muted", style: "font-size: 10px;" }, "—"));
+  }
+
+  const shownCount = (count != null) ? count : pr.row_count;
+  return h("tr", { class: isNP ? "pr-row-not-present" : "" }, [
+    h("td", {}, h("span", { class: "badge tactic" }, aid)),
+    h("td", {}, h("span", { class: "badge " + st.badge, title: st.hint }, st.label)),
+    h("td", {}, isNP ? "—" : (shownCount != null ? Number(shownCount).toLocaleString() : "—")),
+    h("td", {}, dur),
+    h("td", { class: "ts" }, isNP ? "—" : fmtTS(pr.started_at)),
+    h("td", {}, stateBadge),
+    h("td", {}, action),
+    h("td", {}, analyzeCell),
+  ]);
+}
+
+// parseResultTable builds a full table from a list of { pr, count } entries.
+function parseResultTable(caseID, detail, entries, review, countLabel) {
+  const tbl = h("table", { class: "events-table" });
+  tbl.appendChild(parseResultThead(countLabel));
+  const body = h("tbody");
+  entries.forEach((e) => body.appendChild(parseResultRow(caseID, detail, e.pr, review, e.count)));
+  tbl.appendChild(body);
+  return tbl;
+}
+
 async function renderEvents(pane, caseID, detail) {
   pane.innerHTML = "";
+
+  // Evidence metadata (host / type / path) — hoisted so both the Parse Results
+  // grouping below and the Events Browser further down can use it.
+  const evidences = (detail && detail.evidence) || [];
 
   // ---------- Extracts (Issue #23) ----------
   // Renders only when extract.log exists (i.e. the evidence was a disk
@@ -3407,146 +3572,82 @@ async function renderEvents(pane, caseID, detail) {
     ]);
     prSection.appendChild(banner);
 
-    // Wave 15: 4-status classification (OK / EMPTY / NOT_PRESENT / FAIL).
-    // The NOT_PRESENT sentinel is set by parsers/orchestrator.py when an
-    // implemented artefact wasn't found in the input — Review Gate 0 then
-    // shows a complete picture of every implemented artefact, not just the
-    // detected ones.
-    const prStatus = (pr) => {
-      const cmd = pr.command || "";
-      if (cmd.startsWith("(not present")) {
-        return { kind: "not_present", label: "NOT_PRESENT", badge: "missing",
-                 hint: "artefact not present in input" };
-      }
-      if (pr.exit_code === 0 && (pr.row_count || 0) > 0) {
-        return { kind: "ok",      label: "OK",          badge: "ok",
-                 hint: "exit=0 · rows=" + (pr.row_count || 0) };
-      }
-      if (pr.exit_code === 0) {
-        return { kind: "empty",   label: "EMPTY",       badge: "warn",
-                 hint: "exit=0 but 0 rows" };
-      }
-      return     { kind: "fail",    label: "FAIL",        badge: "err",
-                   hint: "exit=" + (pr.exit_code != null ? pr.exit_code : "?") };
-    };
-    const statusRank = { ok: 0, empty: 1, not_present: 2, fail: 3 };
-    const prsSorted = prs.slice().sort((a, b) => {
-      const ra = statusRank[prStatus(a).kind] ?? 9;
-      const rb = statusRank[prStatus(b).kind] ?? 9;
-      if (ra !== rb) return ra - rb;
-      return (a.artifact_id || "").localeCompare(b.artifact_id || "");
-    });
+    // Group the artifacts by the source evidence whose events they contain.
+    // parse_results is keyed per-artifact (one row per artifact_id for the
+    // whole case), so the evidence attribution comes from the per-evidence
+    // event breakdown in /summary (parse.evidence[].artifacts[]). Single-
+    // evidence cases keep the original flat table; multi-evidence cases get
+    // one collapsible group per evidence, plus a trailing group for artifacts
+    // that produced no events and so can't be attributed to a single evidence.
+    const prByID = {};
+    prs.forEach((pr) => { if (pr.artifact_id) prByID[pr.artifact_id] = pr; });
 
-    const tbl = h("table", { class: "events-table" });
-    tbl.appendChild(h("thead", {}, h("tr", {}, [
-      h("th", {}, "Artifact"),
-      h("th", {}, "Status"),
-      h("th", {}, "Rows"),
-      h("th", {}, "Duration"),
-      h("th", {}, "Started"),
-      h("th", {}, "Review"),
-      h("th", {}, "Action"),
-      h("th", {}, "Analyze"),  // Wave 20h: artifact-scoped LLM run
-    ])));
-    const body = h("tbody");
-    prsSorted.forEach((pr) => {
-      const st = prStatus(pr);
-      const isNP = st.kind === "not_present";
-      const ok = pr.exit_code != null && pr.exit_code === 0;
-      const dur = isNP ? "—"
-        : (pr.finished_at && pr.started_at)
-        ? ((new Date(pr.finished_at) - new Date(pr.started_at)) / 1000).toFixed(2) + "s"
-        : "—";
-      const aid = pr.artifact_id || "?";
-      const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
-      const stateClass = {
-        approved: "approved", rejected: "rejected",
-        skipped:  "pending",  pending:  "pending",
-      }[rev.state] || "pending";
-      const stateBadge = h("span", { class: "badge " + stateClass, title: rev.reason || "" }, rev.state || "pending");
+    // The per-evidence breakdown from /summary (derived from unified_events) is
+    // the authoritative count of how many evidence the case bundles — we gate on
+    // it rather than detail.evidence, which can come back empty on a cases.duckdb
+    // that predates newer evidence-table columns.
+    let evBreakdown = [];
+    try {
+      const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
+      evBreakdown = (sum && sum.parse && sum.parse.evidence) || [];
+    } catch (_) { /* summary unavailable → fall back to the flat table */ }
 
-      const action = h("div", { class: "row", style: "gap: 4px;" });
-      if (rev.state === "approved" || rev.state === "rejected") {
-        action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
-          (rev.reviewed_by || "?") + " · " + fmtTS(rev.reviewed_at).slice(0, 16)));
-      } else {
-        action.appendChild(h("button", {
-          onclick: async () => {
-            try {
-              await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/approve`);
-              toast("Approved " + aid, "success");
-              await renderEvents($("#tabpane"), caseID, detail);
-            } catch (e) { toast(e.message, "error"); }
-          },
-        }, "Approve"));
-        action.appendChild(h("button", {
-          class: "danger",
-          onclick: () => {
-            const close = modal([
-              h("h3", {}, "Reject parse result " + aid),
-              h("div", { class: "form-row" }, [h("label", {}, "Reason"),
-                h("input", { id: "pr_reason", placeholder: "why is this parser output bad?" })]),
-              h("div", { class: "actions" }, [
-                h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
-                h("button", { class: "danger", onclick: async () => {
-                  try {
-                    await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/reject`,
-                      { reason: $("#pr_reason").value.trim() });
-                    close(); toast("Rejected " + aid, "success");
-                    await renderEvents($("#tabpane"), caseID, detail);
-                  } catch (e) { toast(e.message, "error"); }
-                }}, "Reject"),
-              ]),
-            ]);
-          },
-        }, "Reject"));
+    if (evBreakdown.length <= 1) {
+      // Single evidence, or summary unavailable — original flat per-artifact table.
+      prSection.appendChild(parseResultTable(caseID, detail,
+        sortParseResults(prs).map((pr) => ({ pr, count: null })), review, "Rows"));
+    } else {
+      prSection.appendChild(h("div",
+        { class: "muted", style: "margin-bottom: 8px; font-size: 11px;" },
+        "Artifacts grouped by the source evidence whose events they contain. " +
+        "Approve / Reject applies to an artifact's parser output across the whole " +
+        "case (parse review is keyed per artifact, not per evidence)."));
+
+      const attributed = new Set();
+      evBreakdown.forEach((es) => {
+        const countByID = {};
+        (es.artifacts || []).forEach((a) => { countByID[a.artifact_id] = a.event_count; });
+        const groupPRs = sortParseResults(
+          (es.artifacts || []).map((a) => prByID[a.artifact_id]).filter(Boolean));
+        if (groupPRs.length === 0) return;
+        const entries = groupPRs.map((pr) => {
+          attributed.add(pr.artifact_id);
+          return { pr, count: countByID[pr.artifact_id] };
+        });
+        const sub = [es.source_host, es.evidence_type].filter(Boolean).join(" · ");
+        const summary = h("summary", { class: "evidence-summary" }, [
+          h("span", { class: "evidence-name" }, es.evidence_id || "(unattributed)"),
+          ...(sub ? [h("span", { class: "muted", style: "font-size: 11px;" }, sub)] : []),
+          h("span", { class: "evidence-count" },
+            `${entries.length} artifacts · ${(es.events_total || 0).toLocaleString()} ev`),
+        ]);
+        const detailEl = h("div", { class: "evidence-detail" }, [
+          ...(es.path ? [h("div", { class: "muted mono",
+            style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, es.path)] : []),
+          parseResultTable(caseID, detail, entries, review, "Events"),
+        ]);
+        prSection.appendChild(
+          h("details", { class: "evidence-item", open: "open" }, [summary, detailEl]));
+      });
+
+      // Artifacts with no events anywhere (EMPTY / NOT_PRESENT / FAIL) have no
+      // evidence_id in unified_events, so they live in one shared group.
+      const orphans = sortParseResults(prs.filter((pr) => !attributed.has(pr.artifact_id)));
+      if (orphans.length > 0) {
+        const summary = h("summary", { class: "evidence-summary" }, [
+          h("span", { class: "evidence-name" }, "No events parsed"),
+          h("span", { class: "muted", style: "font-size: 11px;" },
+            "not attributable to a single evidence"),
+          h("span", { class: "evidence-count" }, `${orphans.length} artifacts`),
+        ]);
+        const detailEl = h("div", { class: "evidence-detail" }, [
+          parseResultTable(caseID, detail,
+            orphans.map((pr) => ({ pr, count: null })), review, "Rows"),
+        ]);
+        prSection.appendChild(
+          h("details", { class: "evidence-item", open: "open" }, [summary, detailEl]));
       }
-
-      // Wave 20h: per-artifact Analyze button. Only shown for rows with
-      // actual data (OK). Empty / failed / not_present rows wouldn't
-      // produce meaningful LLM output; the button is omitted to avoid
-      // burning model budget on guaranteed-empty scans.
-      const analyzeCell = h("td", {});
-      if (st.kind === "ok") {
-        analyzeCell.appendChild(h("button", {
-          class: "ghost",
-          style: "padding: 2px 8px; font-size: 11px;",
-          title: `Run relevant Tactic Agents scoped to artifact_id="${aid}". `
-                + `Server picks the tactics whose SQL prefilter references this artifact.`,
-          onclick: async () => {
-            if (!confirm(`Analyze "${aid}" with relevant tactics?\n\n`
-                + `LLM cost: ~1-3 tactics × Claude run. Findings will be saved to `
-                + `outputs/cases/${caseID}/findings/by-artifact/${aid}/.`)) {
-              return;
-            }
-            try {
-              const resp = await api("POST",
-                `/api/cases/${encodeURIComponent(caseID)}/analyze/artifact/${encodeURIComponent(aid)}`);
-              toast(`analyze artifact=${aid} started · check Status tab`, "success");
-              // If user is currently NOT on Status tab, hint that progress
-              // is visible there.
-            } catch (e) {
-              toast(`analyze artifact=${aid} failed: ${e.message}`, "error");
-            }
-          },
-        }, "▶ Analyze"));
-      } else {
-        analyzeCell.appendChild(h("span", { class: "muted", style: "font-size: 10px;" }, "—"));
-      }
-
-      body.appendChild(h("tr", { class: isNP ? "pr-row-not-present" : "" }, [
-        h("td", {}, h("span", { class: "badge tactic" }, aid)),
-        h("td", {}, h("span", { class: "badge " + st.badge, title: st.hint }, st.label)),
-        h("td", {}, isNP ? "—" : (pr.row_count != null ? pr.row_count.toLocaleString() : "—")),
-        h("td", {}, dur),
-        h("td", { class: "ts" }, isNP ? "—" : fmtTS(pr.started_at)),
-        h("td", {}, stateBadge),
-        h("td", {}, action),
-        h("td", {}, analyzeCell),
-      ]));
-    });
-    tbl.appendChild(body);
-    prSection.appendChild(tbl);
+    }
 
     if (!review.all_approved_or_skipped && prs.length > 0) {
       prSection.appendChild(h("div", { class: "muted", style: "margin-top: 8px; font-size: 11px;" },
@@ -3563,10 +3664,9 @@ async function renderEvents(pane, caseID, detail) {
     `Total events parsed: ${detail.case.unified_event_rows.toLocaleString()}. ` +
     "Use the filters below to query the unified_events table."));
 
-  // Evidence metadata for the filter dropdown + per-evidence grouping labels.
-  // Stashed on the card so loadEventsPage (called from Prev/Next without
-  // `detail` in scope) can still resolve evidence_id → host/type.
-  const evidences = (detail && detail.evidence) || [];
+  // Evidence metadata stashed on the card so loadEventsPage (called from
+  // Prev/Next without `detail` in scope) can still resolve evidence_id →
+  // host/type. `evidences` itself is hoisted to the top of renderEvents.
   browserCard._evMeta = evidences;
 
   // Filter form
