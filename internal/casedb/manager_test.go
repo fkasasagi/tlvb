@@ -158,6 +158,54 @@ func TestMigrateEvidencePK_FromV0(t *testing.T) {
 	}
 }
 
+// TestListEvidence_MissingTimezoneColumn covers the read-only compatibility
+// path: a DB written before evidence.timezone existed, opened read-only (so
+// ensureSchema's ADD COLUMN migration can't run). ListEvidence must still
+// return the rows — with an empty timezone (= inherit case TZ) — rather than
+// erroring out, which previously blanked detail.evidence and silently
+// disabled the Events-tab evidence filter and per-evidence Status view.
+func TestListEvidence_MissingTimezoneColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.duckdb")
+	// createV0EvidenceDB writes an evidence table with NO timezone column.
+	createV0EvidenceDB(t, path, [][2]string{
+		{"EV-A", "case_1"},
+		{"EV-B", "case_1"},
+		{"EV-C", "case_2"},
+	})
+
+	// Open read-only — ensureSchema (and ADD COLUMN timezone) is skipped, so
+	// the column stays absent, exactly like the web server's query path.
+	ro, err := Open(path, ReadOnly)
+	if err != nil {
+		t.Fatalf("Open read-only: %v", err)
+	}
+	defer ro.Close()
+
+	ctx := context.Background()
+	if ro.columnExists(ctx, "evidence", "timezone") {
+		t.Fatal("precondition failed: v0 evidence table must not have a timezone column")
+	}
+
+	evs, err := ro.ListEvidence(ctx, "case_1")
+	if err != nil {
+		t.Fatalf("ListEvidence on a pre-timezone DB must not error, got: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 evidence rows for case_1, got %d", len(evs))
+	}
+	for _, e := range evs {
+		if e.Timezone != "" {
+			t.Errorf("evidence %s: want empty timezone (inherit case TZ), got %q",
+				e.EvidenceID, e.Timezone)
+		}
+		if e.EvidenceType != "auto" {
+			t.Errorf("evidence %s: non-timezone columns must still populate, got evidence_type=%q",
+				e.EvidenceID, e.EvidenceType)
+		}
+	}
+}
+
 // TestMigrateEvidencePK_AlreadyMigrated verifies that a DB already on
 // the new schema is a no-op (idempotent).
 func TestMigrateEvidencePK_AlreadyMigrated(t *testing.T) {

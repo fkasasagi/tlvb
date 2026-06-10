@@ -397,11 +397,38 @@ type EvidenceRow struct {
 	Timezone string `json:"timezone,omitempty"`
 }
 
+// columnExists reports whether table.column is present in the current schema.
+// Used to stay compatible with a cases.duckdb written by an older binary that
+// the read-only query path can't migrate in place — ensureSchema (and its
+// ADD COLUMN migrations) only runs on a ReadWrite open. Cheap catalog lookup,
+// safe on a read-only connection.
+func (m *Manager) columnExists(ctx context.Context, table, column string) bool {
+	var n int
+	if err := m.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.columns
+		   WHERE table_name = ? AND column_name = ?`, table, column).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 func (m *Manager) ListEvidence(ctx context.Context, caseID string) ([]EvidenceRow, error) {
+	// evidence.timezone (per-evidence display TZ) was added after the initial
+	// schema. A DB last written by an older binary and only ever opened
+	// read-only afterwards (the web server's query path) never had the
+	// ADD COLUMN migration applied, so selecting the column errors and blanks
+	// the entire evidence list — which silently disabled the Events-tab
+	// evidence filter and the per-evidence Status view. Degrade to an empty
+	// timezone (= inherit the case timezone) when the column is absent; the
+	// next ReadWrite open re-runs ensureSchema and adds it for real.
+	tzExpr := "COALESCE(timezone, '')"
+	if !m.columnExists(ctx, "evidence", "timezone") {
+		tzExpr = "'' AS timezone"
+	}
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT evidence_id, case_id, path, sha256, size_bytes,
 		        registered_at, COALESCE(source_host, ''), COALESCE(evidence_type, ''),
-		        COALESCE(timezone, '')
+		        `+tzExpr+`
 		   FROM evidence WHERE case_id = ? ORDER BY registered_at`, caseID)
 	if err != nil {
 		return nil, err
