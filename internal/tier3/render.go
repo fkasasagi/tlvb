@@ -44,6 +44,11 @@ func Render(cfg Config) (*Report, error) {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 
+	// Report display timezone: events are stored UTC; the report renders them
+	// in the case timezone (Config.Timezone). Resolved once and threaded into
+	// every renderer so HTML and CSV agree.
+	loc, _ := reportLocation(cfg.Timezone)
+
 	// Best-effort enrichment from per-finding evidence files (severity counts,
 	// IOCs, key-event timeline, MITRE matrix, per-finding evidence detail).
 	en := loadEnrichment(cfg.FindingsDir)
@@ -68,7 +73,7 @@ func Render(cfg Config) (*Report, error) {
 		switch f {
 		case "html":
 			out := filepath.Join(cfg.OutDir, "report.html")
-			if err := renderHTML(out, cs, cfg, en); err != nil {
+			if err := renderHTML(out, cs, cfg, en, loc); err != nil {
 				return rep, fmt.Errorf("render html: %w", err)
 			}
 			rep.Files = append(rep.Files, fileMeta("html", out))
@@ -78,19 +83,19 @@ func Render(cfg Config) (*Report, error) {
 			cp := filepath.Join(cfg.OutDir, "clusters.csv")
 			ip := filepath.Join(cfg.OutDir, "ioc.csv")
 			tp := filepath.Join(cfg.OutDir, "timeline.csv")
-			if err := renderFindingsCSV(fp, cs); err != nil {
+			if err := renderFindingsCSV(fp, cs, loc); err != nil {
 				return rep, fmt.Errorf("render findings csv: %w", err)
 			}
 			if err := renderMITRECSV(mp, cs); err != nil {
 				return rep, fmt.Errorf("render mitre csv: %w", err)
 			}
-			if err := renderClustersCSV(cp, cs); err != nil {
+			if err := renderClustersCSV(cp, cs, loc); err != nil {
 				return rep, fmt.Errorf("render clusters csv: %w", err)
 			}
 			if err := renderIOCCSV(ip, en); err != nil {
 				return rep, fmt.Errorf("render ioc csv: %w", err)
 			}
-			if err := renderTimelineCSV(tp, en); err != nil {
+			if err := renderTimelineCSV(tp, en, loc); err != nil {
 				return rep, fmt.Errorf("render timeline csv: %w", err)
 			}
 			rep.Files = append(rep.Files,

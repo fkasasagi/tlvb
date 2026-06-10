@@ -28,6 +28,12 @@ type Config struct {
 	Language      string   // "ja" | "en" — UI labels, NOT LLM-narratives
 	OnlyApproved  bool     // (future) filter to Review Gate 1A approved findings
 
+	// Timezone is the IANA zone the report's timestamps are displayed in
+	// (e.g. "Asia/Tokyo"). Events are stored in UTC; this only changes the
+	// rendered time. Empty / unloadable → UTC. The CLI fills this from the
+	// case timezone.
+	Timezone string
+
 	// FindingsDir is the per-case findings root used to enrich the report with
 	// per-finding evidence, IOCs and a key-event timeline. Defaults to
 	// outputs/cases/<id>/findings. Missing dir → enrichment is simply skipped.

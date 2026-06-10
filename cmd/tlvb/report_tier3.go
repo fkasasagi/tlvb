@@ -30,6 +30,9 @@ func runReportTier3(caseID string, args []string) error {
 	org := fs.String("org", "", "examiner organization shown on the report")
 	classification := fs.String("classification", "",
 		"handling classification banner (default: CONFIDENTIAL)")
+	tz := fs.String("timezone", "",
+		"report display timezone, IANA name (default: the case timezone). "+
+			"Events are stored UTC; this only changes rendered times.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -49,9 +52,15 @@ func runReportTier3(caseID string, args []string) error {
 
 	// Forensic case metadata is best-effort: a missing/locked DB just omits
 	// the evidence & chain-of-custody section rather than failing the report.
-	meta, dbExaminer := loadReportCaseMeta(*dbPath, caseID)
+	meta, dbExaminer, caseTZ := loadReportCaseMeta(*dbPath, caseID)
 	if *examiner == "" {
 		*examiner = dbExaminer
+	}
+	// Report display timezone: explicit --timezone wins, else the case
+	// timezone, else UTC (tier3.Render falls back to UTC on empty/unloadable).
+	reportTZ := *tz
+	if reportTZ == "" {
+		reportTZ = caseTZ
 	}
 
 	t3Start := time.Now()
@@ -61,6 +70,7 @@ func runReportTier3(caseID string, args []string) error {
 		OutDir:         *outDir,
 		Formats:        formats,
 		Language:       *lang,
+		Timezone:       reportTZ,
 		FindingsDir:    *findingsDir,
 		CaseMeta:       meta,
 		Examiner:       *examiner,
@@ -88,16 +98,17 @@ func runReportTier3(caseID string, args []string) error {
 
 // loadReportCaseMeta pulls evidence + case identity from the case DB.
 // Returns (nil, "") on any error so the caller can render without it.
-func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string) {
+func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string) {
 	mgr, err := casedb.Open(dbPath, casedb.ReadOnly)
 	if err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
 	defer mgr.Close()
 	ctx := context.Background()
 
 	meta := &tier3.CaseMeta{}
 	examiner := ""
+	timezone := ""
 
 	if cases, err := mgr.ListCases(ctx); err == nil {
 		for _, c := range cases {
@@ -106,6 +117,7 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string) {
 				meta.Status = c.Status
 				meta.CreatedAt = c.CreatedAt
 				examiner = c.Examiner
+				timezone = c.Timezone
 				break
 			}
 		}
@@ -150,7 +162,7 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string) {
 	}
 
 	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {
-		return nil, examiner
+		return nil, examiner, timezone
 	}
-	return meta, examiner
+	return meta, examiner, timezone
 }

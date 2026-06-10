@@ -123,6 +123,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/cases", s.handleCreateCase)
 	s.mux.HandleFunc("GET /api/cases/{id}", s.handleGetCase)
 	s.mux.HandleFunc("DELETE /api/cases/{id}", s.handleDeleteCase)
+	s.mux.HandleFunc("POST /api/cases/{id}/evidence/{evid}/timezone", s.handleSetEvidenceTimezone)
 
 	s.mux.HandleFunc("POST /api/cases/{id}/parse", s.handleStartParse)
 	s.mux.HandleFunc("GET /api/cases/{id}/parse/status", s.handleParseStatus)

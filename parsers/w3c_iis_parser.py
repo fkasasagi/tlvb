@@ -9,7 +9,8 @@ normalises all three:
   * **W3C Extended Log File Format** — ``#Fields:``-driven, space-delimited,
     UTC. The IIS default.
   * **IIS native (Microsoft IIS Log File Format)** — fixed comma-delimited
-    column order, no header, local time.
+    column order, no header, local time (canonicalised to UTC at parse time
+    using the evidence timezone as the source zone).
   * **NCSA Common / Combined** — Apache-style, ``"METHOD URI PROTO"`` quoted
     request, offset-stamped time.
 
@@ -40,6 +41,7 @@ from parsers.base import (
     audit_id,
     fail,
     make_unified_event,
+    naive_local_to_utc_iso,
     now_iso,
     write_unified_events,
 )
@@ -117,18 +119,19 @@ def _ts_w3c(date: str, t: str) -> str:
     return f"{date}T{t}Z"
 
 
-def _ts_iis_native(date: str, t: str) -> str:
-    """IIS native MM/DD/YY HH:MM:SS (LOCAL time) → naive ISO-8601 (no Z).
+def _ts_iis_native(date: str, t: str, tz: str) -> str:
+    """IIS native MM/DD/YY HH:MM:SS (LOCAL time) → UTC ISO-8601.
 
     IIS native logs are written in the server's local time with no offset, so
-    we cannot safely stamp UTC. Emitted naive; see the note in ParseResult.
+    we canonicalise to UTC by interpreting the wall-clock in the evidence
+    timezone (`tz`), keeping the store UTC like every other artifact.
     """
     if not date or not t:
         return ""
     for fmt in ("%m/%d/%y %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
         try:
             dt = datetime.datetime.strptime(f"{date} {t}", fmt)
-            return dt.isoformat()
+            return naive_local_to_utc_iso(dt, tz)
         except ValueError:
             continue
     return ""
@@ -143,9 +146,10 @@ def _ts_ncsa(raw: str) -> str:
         return ""
 
 
-def _iter_w3c(path: pathlib.Path) -> Iterator[dict]:
+def _iter_w3c(path: pathlib.Path, tz: str) -> Iterator[dict]:
     """Yield normalised row dicts from a W3C Extended log. ``#Fields:`` may
-    appear multiple times (config change / log roll); re-bind on each."""
+    appear multiple times (config change / log roll); re-bind on each.
+    W3C time is UTC by spec, so ``tz`` is unused here."""
     fields: list[str] = []
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -171,8 +175,10 @@ def _iter_w3c(path: pathlib.Path) -> Iterator[dict]:
             yield row
 
 
-def _iter_iis_native(path: pathlib.Path) -> Iterator[dict]:
-    """Yield normalised row dicts from an IIS native log (fixed columns)."""
+def _iter_iis_native(path: pathlib.Path, tz: str) -> Iterator[dict]:
+    """Yield normalised row dicts from an IIS native log (fixed columns).
+    IIS-native time is server-LOCAL; ``tz`` is the source zone used to
+    canonicalise to UTC."""
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.rstrip("\r\n").rstrip(",")
@@ -182,12 +188,13 @@ def _iter_iis_native(path: pathlib.Path) -> Iterator[dict]:
             if len(parts) < len(_IIS_NATIVE_FIELDS):
                 parts += ["-"] * (len(_IIS_NATIVE_FIELDS) - len(parts))
             row = dict(zip(_IIS_NATIVE_FIELDS, parts))
-            row["__ts__"] = _ts_iis_native(row.get("date", ""), row.get("time", ""))
+            row["__ts__"] = _ts_iis_native(row.get("date", ""), row.get("time", ""), tz)
             yield row
 
 
-def _iter_ncsa(path: pathlib.Path) -> Iterator[dict]:
-    """Yield normalised row dicts from an NCSA Common/Combined log."""
+def _iter_ncsa(path: pathlib.Path, tz: str) -> Iterator[dict]:
+    """Yield normalised row dicts from an NCSA Common/Combined log.
+    NCSA carries an explicit offset, so ``tz`` is unused here."""
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.rstrip("\r\n")
@@ -222,7 +229,7 @@ def _iter_ncsa(path: pathlib.Path) -> Iterator[dict]:
             yield row
 
 
-def _iter_logs(root: pathlib.Path) -> Iterator[tuple[pathlib.Path, str, dict]]:
+def _iter_logs(root: pathlib.Path, tz: str) -> Iterator[tuple[pathlib.Path, str, dict]]:
     """Yield (path, log_format, normalised_row) across all .log files."""
     targets = [root] if root.is_file() else sorted(root.rglob("*.log"))
     iterators = {"w3c": _iter_w3c, "iis": _iter_iis_native, "ncsa": _iter_ncsa}
@@ -231,7 +238,7 @@ def _iter_logs(root: pathlib.Path) -> Iterator[tuple[pathlib.Path, str, dict]]:
         if fmt is None:
             continue
         try:
-            for row in iterators[fmt](path):
+            for row in iterators[fmt](path, tz):
                 yield path, fmt, row
         except OSError:
             continue
@@ -252,7 +259,7 @@ def parse(req: ParseRequest) -> ParseResult:
 
     def _iter() -> Iterator[dict]:
         idx = 0
-        for path, fmt, row in _iter_logs(req.input_path):
+        for path, fmt, row in _iter_logs(req.input_path, req.timezone):
             if fmt == "iis":
                 saw_native[0] = True
             ts_utc = row.pop("__ts__", "")
@@ -301,8 +308,8 @@ def parse(req: ParseRequest) -> ParseResult:
     ]
     if saw_native[0]:
         notes.append(
-            "IIS native records carry LOCAL time (no offset) — their timestamps "
-            "are emitted naive (no Z). Treat cross-artifact correlation with care.")
+            "IIS native records carry LOCAL time (no offset); converted to UTC "
+            f"assuming source timezone='{req.timezone}' (the evidence timezone).")
     return ParseResult(
         artifact_id=ARTIFACT_ID, success=True,
         command="(in-process web-log parser)", exit_code=0,

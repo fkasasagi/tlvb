@@ -12,7 +12,7 @@ import (
 
 // renderFindingsCSV: one row per finding reference inside each cluster.
 // Use UTF-8 BOM so Excel auto-detects the encoding.
-func renderFindingsCSV(path string, cs tier2.CaseSynthesis) error {
+func renderFindingsCSV(path string, cs tier2.CaseSynthesis, loc *time.Location) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -34,8 +34,8 @@ func renderFindingsCSV(path string, cs tier2.CaseSynthesis) error {
 			row := []string{
 				fmt.Sprintf("%d", c.ID),
 				c.AttackPhase,
-				formatTS(c.StartTS),
-				formatTS(c.EndTS),
+				formatTSIn(c.StartTS, loc),
+				formatTSIn(c.EndTS, loc),
 				fr.Source,
 				fr.RuleID,
 				fr.Title,
@@ -85,7 +85,7 @@ func renderMITRECSV(path string, cs tier2.CaseSynthesis) error {
 }
 
 // renderClustersCSV: one row per cluster with a brief narrative.
-func renderClustersCSV(path string, cs tier2.CaseSynthesis) error {
+func renderClustersCSV(path string, cs tier2.CaseSynthesis, loc *time.Location) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -106,8 +106,8 @@ func renderClustersCSV(path string, cs tier2.CaseSynthesis) error {
 		row := []string{
 			fmt.Sprintf("%d", c.ID),
 			c.AttackPhase,
-			formatTS(c.StartTS),
-			formatTS(c.EndTS),
+			formatTSIn(c.StartTS, loc),
+			formatTSIn(c.EndTS, loc),
 			fmt.Sprintf("%d", len(c.FindingRefs)),
 			strings.Join(c.MITRETechniques, "; "),
 			fmt.Sprintf("%d", len(c.OpenQuestions)),
@@ -146,7 +146,7 @@ func renderIOCCSV(path string, en *enrichment) error {
 }
 
 // renderTimelineCSV: one row per key event (finding), chronologically ordered.
-func renderTimelineCSV(path string, en *enrichment) error {
+func renderTimelineCSV(path string, en *enrichment, loc *time.Location) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -157,12 +157,12 @@ func renderTimelineCSV(path string, en *enrichment) error {
 	}
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	if err := w.Write([]string{"ts_utc", "severity", "artifact", "event_type", "source", "title"}); err != nil {
+	if err := w.Write([]string{"timestamp", "severity", "artifact", "event_type", "source", "title"}); err != nil {
 		return err
 	}
 	for _, r := range en.Timeline {
 		if err := w.Write([]string{
-			formatTS(r.TS), r.Severity, r.Artifact, r.EventType, r.Source, oneLine(r.Title),
+			formatTSIn(r.TS, loc), r.Severity, r.Artifact, r.EventType, r.Source, oneLine(r.Title),
 		}); err != nil {
 			return err
 		}
@@ -170,11 +170,27 @@ func renderTimelineCSV(path string, en *enrichment) error {
 	return nil
 }
 
-func formatTS(t time.Time) string {
+// reportLocation resolves the report display timezone (IANA name) to a
+// *time.Location, falling back to UTC when empty or unloadable. The label is
+// the resolved IANA name for display in the report metadata.
+func reportLocation(tz string) (*time.Location, string) {
+	if tz == "" {
+		return time.UTC, "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC, "UTC"
+	}
+	return loc, tz
+}
+
+// formatTSIn renders a UTC instant in the report display timezone as RFC3339
+// (offset preserved, so the value is unambiguous and machine-parseable).
+func formatTSIn(t time.Time, loc *time.Location) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.In(loc).Format(time.RFC3339)
 }
 
 // oneLine flattens newlines so the CSV row is single-line.

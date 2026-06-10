@@ -273,3 +273,79 @@ func TestRegisterEvidence_RejectsDuplicateWithinCase(t *testing.T) {
 		t.Fatalf("second register with same (case_X, EV-dup) should fail")
 	}
 }
+
+// TestEvidenceTimezone covers the per-evidence display-timezone column:
+// register defaults to inherit (empty), UpdateEvidenceTimezone sets/clears it,
+// the value round-trips through ListEvidence, and updating an unknown evidence
+// errors. Events themselves are never touched by this — it is metadata only.
+func TestEvidenceTimezone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fresh.duckdb")
+	m, err := Open(path, ReadWrite)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer m.Close()
+
+	ctx := context.Background()
+	if _, err := m.db.ExecContext(ctx,
+		`INSERT INTO cases (case_id, name, examiner, timezone, created_at, status)
+		   VALUES ('case_TZ', 'TZ', 'test', 'UTC', NOW(), 'active')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Register with an explicit timezone — it must round-trip.
+	if err := m.RegisterEvidence(ctx, EvidenceRow{
+		EvidenceID: "EV-1", CaseID: "case_TZ", Path: "/tmp/a", SHA256: "s",
+		Timezone: "Asia/Tokyo", RegisteredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register EV-1: %v", err)
+	}
+	// Register without one — defaults to empty (inherit case).
+	if err := m.RegisterEvidence(ctx, EvidenceRow{
+		EvidenceID: "EV-2", CaseID: "case_TZ", Path: "/tmp/b", SHA256: "s",
+		RegisteredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register EV-2: %v", err)
+	}
+
+	tzOf := func(id string) string {
+		evs, err := m.ListEvidence(ctx, "case_TZ")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, e := range evs {
+			if e.EvidenceID == id {
+				return e.Timezone
+			}
+		}
+		t.Fatalf("evidence %s not listed", id)
+		return ""
+	}
+
+	if got := tzOf("EV-1"); got != "Asia/Tokyo" {
+		t.Fatalf("EV-1 timezone: want Asia/Tokyo, got %q", got)
+	}
+	if got := tzOf("EV-2"); got != "" {
+		t.Fatalf("EV-2 timezone: want empty (inherit), got %q", got)
+	}
+
+	// Override EV-2, then clear it back to inherit.
+	if err := m.UpdateEvidenceTimezone(ctx, "case_TZ", "EV-2", "America/New_York"); err != nil {
+		t.Fatalf("set EV-2 tz: %v", err)
+	}
+	if got := tzOf("EV-2"); got != "America/New_York" {
+		t.Fatalf("EV-2 after set: want America/New_York, got %q", got)
+	}
+	if err := m.UpdateEvidenceTimezone(ctx, "case_TZ", "EV-2", ""); err != nil {
+		t.Fatalf("clear EV-2 tz: %v", err)
+	}
+	if got := tzOf("EV-2"); got != "" {
+		t.Fatalf("EV-2 after clear: want empty, got %q", got)
+	}
+
+	// Updating a non-existent evidence must error (no silent no-op).
+	if err := m.UpdateEvidenceTimezone(ctx, "case_TZ", "EV-nope", "UTC"); err == nil {
+		t.Fatalf("expected error updating unknown evidence")
+	}
+}

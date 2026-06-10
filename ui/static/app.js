@@ -155,12 +155,73 @@ const escapeHTML = (s) => String(s ?? "")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
 
-const fmtTS = (ts) => {
+// ----- display timezone -----------------------------------------------------
+// Events are stored in canonical UTC. The examiner picks how timestamps are
+// *displayed* without re-querying: per-evidence (each event in its own
+// evidence's timezone) or a single zone forced across the whole view. The
+// choice persists in localStorage; per-evidence effective zones come from the
+// case summary (parse.evidence[].timezone) and the case timezone is the
+// fallback for timestamps with no evidence (report/synthesis metadata).
+const VIEW_TZ_EVIDENCE = "__evidence__"; // sentinel: use each evidence's zone
+
+let TZ_CTX = { caseTZ: "UTC", evidence: {} }; // {evidence_id: IANA zone}
+
+function currentViewTZ() {
+  return localStorage.getItem("tlvb_view_tz") || VIEW_TZ_EVIDENCE;
+}
+function setViewTZ(v) {
+  localStorage.setItem("tlvb_view_tz", v);
+  location.reload(); // simplest re-render strategy (matches setLocale)
+}
+
+// setTZContext records the current case's timezone map so fmtTS can resolve a
+// zone for each evidence. caseTZ is the per-case fallback; evList is the
+// summary's parse.evidence[] (each carries an effective `timezone`).
+function setTZContext(caseTZ, evList) {
+  TZ_CTX = { caseTZ: caseTZ || "UTC", evidence: {} };
+  (evList || []).forEach((e) => {
+    if (e && e.evidence_id && e.timezone) TZ_CTX.evidence[e.evidence_id] = e.timezone;
+  });
+}
+
+// resolveDisplayTZ picks the IANA zone for a given (optional) evidence_id.
+function resolveDisplayTZ(evidenceId) {
+  const sel = currentViewTZ();
+  if (sel && sel !== VIEW_TZ_EVIDENCE) return sel; // explicit global override
+  if (evidenceId && TZ_CTX.evidence[evidenceId]) return TZ_CTX.evidence[evidenceId];
+  return TZ_CTX.caseTZ || "UTC";
+}
+
+// formatInTZ renders a Date in the given IANA zone as
+// "YYYY-MM-DD HH:MM:SS <abbrev>" (e.g. "2026-06-10 22:00:00 JST").
+function formatInTZ(d, tz) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      timeZoneName: "short",
+    }).formatToParts(d);
+    const g = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+    let hh = g("hour"); if (hh === "24") hh = "00"; // some engines emit 24:00
+    const zone = g("timeZoneName");
+    return `${g("year")}-${g("month")}-${g("day")} ${hh}:${g("minute")}:${g("second")}` +
+           (zone ? ` ${zone}` : "");
+  } catch (_) {
+    // Unknown/invalid zone → fall back to UTC ISO.
+    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+  }
+}
+
+// fmtTS(ts[, evidenceId]) — render a UTC instant in the resolved display zone.
+// evidenceId is optional; when omitted (metadata timestamps) the case/override
+// zone is used. Backwards-compatible with existing single-arg call sites.
+const fmtTS = (ts, evidenceId) => {
   if (!ts) return "—";
   try {
     const d = new Date(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+    return formatInTZ(d, resolveDisplayTZ(evidenceId));
   } catch (_) { return ts; }
 };
 
@@ -252,6 +313,19 @@ window.addEventListener("DOMContentLoaded", () => {
   if (sel) {
     sel.value = currentLocale();
     sel.addEventListener("change", (e) => setLocale(e.target.value));
+  }
+  // Display-timezone switcher: "Evidence-local" (per-evidence) + IANA zones.
+  const tzSel = document.getElementById("tz-switcher");
+  if (tzSel) {
+    const mk = (value, text) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = text; return o;
+    };
+    tzSel.appendChild(mk(VIEW_TZ_EVIDENCE, "🕓 Evidence-local"));
+    tzSel.appendChild(mk("UTC", "UTC"));
+    supportedTimezones().forEach((z) => { if (z !== "UTC") tzSel.appendChild(mk(z, z)); });
+    tzSel.value = currentViewTZ();
+    tzSel.addEventListener("change", (e) => setViewTZ(e.target.value));
   }
   dispatch();
 });
@@ -726,6 +800,15 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
 
   // ---- header card
   const c = detail.case;
+  // Seed the display-timezone context: case timezone is the fallback, and a
+  // best-effort summary fetch fills per-evidence effective zones so every tab
+  // (events / timeline) can render per-evidence times without visiting Status
+  // first. A 503 (case busy) or missing parse just leaves the case fallback.
+  setTZContext(c.timezone, []);
+  try {
+    const tzSum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
+    setTZContext(c.timezone, tzSum && tzSum.parse ? tzSum.parse.evidence : []);
+  } catch (_) { /* keep the case-timezone fallback */ }
   const headerCard = h("div", { class: "card" }, [
     h("div", { class: "row", style: "align-items: center;" }, [
       h("div", { style: "flex: 1;" }, [
@@ -1931,7 +2014,7 @@ function findingRow(caseID, f, pane) {
       h("span", { class: "source" }, (ev.artifact_id || "?") + " "),
       h("span", { class: "audit-id" }, ev.audit_id),
       ev.event_type ? h("span", { class: "muted", style: "margin-left: 6px;" }, ev.event_type) : "",
-      ev.ts_utc ? h("span", { class: "muted", style: "margin-left: 6px;" }, fmtTS(ev.ts_utc)) : "",
+      ev.ts_utc ? h("span", { class: "muted", style: "margin-left: 6px;" }, fmtTS(ev.ts_utc, ev.evidence_id)) : "",
     ]));
     const meta = h("div", { class: "evidence-meta muted" }, "");
     const payloadBox = h("pre", { class: "payload-pre evidence-payload" }, "");
@@ -2178,7 +2261,7 @@ async function renderTimeline(pane, caseID) {
       detailBuilt = true;
       const panel = h("div", { class: "tl-detail-panel" });
       panel.appendChild(h("div", { class: "tl-detail-meta" }, [
-        kv("Time", fmtTS(t.timestamp)),
+        kv("Time", fmtTS(t.timestamp, t.evidence_id)),
         kv("Computer", t.computer || "—"),
         kv("Tactic", t.tactic || "—"),
         kv("Technique", t.technique || "—"),
@@ -2225,7 +2308,7 @@ async function renderTimeline(pane, caseID) {
       class: `timeline-row expandable sevrow-${sev} ${stateClass}`,
     }, [
       h("td", { class: "tl-caret-cell sev-cell" }, caret),
-      h("td", { class: "ts" }, fmtTS(t.timestamp)),
+      h("td", { class: "ts" }, fmtTS(t.timestamp, t.evidence_id)),
       h("td", {}, h("span", { class: "badge sev-" + sev }, sev)),
       h("td", {}, h("span", { class: "badge tactic" }, t.tactic || "")),
       h("td", {}, t.technique || ""),
@@ -2569,7 +2652,7 @@ function redrawAudit(list, entries) {
       : h("span", { class: "audit-toggle-placeholder" }, " ");
     const row = h("div", { class: "audit-item" + (failed ? " failed" : "") }, [
       toggle,
-      h("span", { class: "ts" }, fmtTS(e.ts)),
+      h("span", { class: "ts" }, fmtTS(e.ts, e.evidence_id)),
       h("span", { class: "actor" }, e.actor || ""),
       h("span", { class: "kind" }, e.kind || ""),
       summaryEl,
@@ -2805,6 +2888,9 @@ async function paintCaseSnapshot(host, caseID) {
   // Tier 0 — parse
   if (sum.parse) {
     const p = sum.parse;
+    // Refresh per-evidence display-timezone map from the (just-fetched) summary
+    // so a parse that added evidence updates the zone resolution immediately.
+    setTZContext(TZ_CTX.caseTZ, p.evidence);
     const artifacts = (p.artifacts || []).slice(0, 6)
       .map((a) => `${a.artifact_id}=${a.event_count.toLocaleString()}`)
       .join(" · ");
@@ -2823,10 +2909,10 @@ async function paintCaseSnapshot(host, caseID) {
     // collapsible row that expands to its source host / type / top artifacts,
     // making it obvious which evidence the parsed events came from.
     const evs = p.evidence || [];
-    if (evs.length > 1) {
+    if (evs.length >= 1) {
       parseTile.appendChild(h("div", { class: "evidence-breakdown" }, [
         h("div", { class: "evidence-breakdown-title" }, "Per evidence"),
-        ...evs.map(evidenceParseDetails),
+        ...evs.map((e) => evidenceParseDetails(e, caseID)),
       ]));
     }
     body.appendChild(parseTile);
@@ -2902,9 +2988,11 @@ async function paintCaseSnapshot(host, caseID) {
 // evidenceParseDetails renders one EvidenceParseSummary as a collapsible
 // <details> row: the summary line shows evidence_id + event count (visible
 // while collapsed), and expanding reveals host / type / path / top artifacts.
-function evidenceParseDetails(es) {
+function evidenceParseDetails(es, caseID) {
   const summary = h("summary", { class: "evidence-summary" }, [
     h("span", { class: "evidence-name" }, es.evidence_id || "(unattributed)"),
+    es.timezone ? h("span", { class: "muted", style: "font-size: 10px; margin-left: 6px;" },
+      "🕓 " + es.timezone) : "",
     h("span", { class: "evidence-count" }, (es.events_total || 0).toLocaleString() + " ev"),
   ]);
   const lines = [];
@@ -2923,7 +3011,36 @@ function evidenceParseDetails(es) {
   }
   if (es.last_event_at) {
     lines.push(h("div", { class: "muted", style: "font-size: 11px; margin-top: 4px;" },
-      "last: " + (fmtTS(es.last_event_at) || "—")));
+      "last: " + (fmtTS(es.last_event_at, es.evidence_id) || "—")));
+  }
+  // Per-evidence display-timezone editor. Empty option = inherit the case
+  // timezone; any IANA zone overrides it. Events stay UTC in storage; changing
+  // this re-renders all timestamps (and is the source zone used to convert
+  // naive-local artifacts — IIS native / web error logs — on the NEXT parse).
+  if (es.evidence_id && caseID) {
+    const tzSel = h("select",
+      { style: "font-size: 11px; max-width: 200px;",
+        onchange: async (e) => {
+          try {
+            await api("POST",
+              `/api/cases/${encodeURIComponent(caseID)}/evidence/` +
+              `${encodeURIComponent(es.evidence_id)}/timezone`,
+              { timezone: e.target.value });
+            toast("evidence timezone updated — re-parse to re-canonicalise local-time logs", "ok");
+            location.reload();
+          } catch (err) { showError(err); }
+        } },
+      [h("option", { value: "" }, `inherit case (${TZ_CTX.caseTZ || "UTC"})`),
+       ...supportedTimezones().map((z) => {
+         const o = h("option", { value: z }, z);
+         if (es.timezone_override && es.timezone === z) o.selected = true;
+         return o;
+       })]);
+    lines.push(h("div",
+      { style: "font-size: 11px; margin-top: 6px; display: flex; gap: 6px; align-items: center;" },
+      [h("span", { class: "muted" }, "Display TZ:"), tzSel,
+       h("span", { class: "muted" },
+         es.timezone_override ? "(override)" : "(inherited)")]));
   }
   return h("details", { class: "evidence-item" },
     [summary, h("div", { class: "evidence-detail" }, lines)]);
@@ -3465,15 +3582,17 @@ async function renderEvents(pane, caseID, detail) {
     const prByID = {};
     prs.forEach((pr) => { if (pr.artifact_id) prByID[pr.artifact_id] = pr; });
 
+    // The per-evidence breakdown from /summary (derived from unified_events) is
+    // the authoritative count of how many evidence the case bundles — we gate on
+    // it rather than detail.evidence, which can come back empty on a cases.duckdb
+    // that predates newer evidence-table columns.
     let evBreakdown = [];
-    if (evidences.length > 1) {
-      try {
-        const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
-        evBreakdown = (sum && sum.parse && sum.parse.evidence) || [];
-      } catch (_) { /* summary unavailable → fall back to the flat table */ }
-    }
+    try {
+      const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
+      evBreakdown = (sum && sum.parse && sum.parse.evidence) || [];
+    } catch (_) { /* summary unavailable → fall back to the flat table */ }
 
-    if (evBreakdown.length === 0) {
+    if (evBreakdown.length <= 1) {
       // Single evidence, or summary unavailable — original flat per-artifact table.
       prSection.appendChild(parseResultTable(caseID, detail,
         sortParseResults(prs).map((pr) => ({ pr, count: null })), review, "Rows"));
@@ -3717,7 +3836,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
 function eventsTable(rows) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
-    h("th", {}, "Timestamp (UTC)"),
+    h("th", {}, "Timestamp"),
     h("th", {}, "Artifact"),
     h("th", {}, "Event Type"),
     h("th", {}, "Computer"),
@@ -3730,7 +3849,7 @@ function eventsTable(rows) {
       onclick: () => showPayloadModal(e),
     }, "view");
     body.appendChild(h("tr", {}, [
-      h("td", { class: "ts" }, fmtTS(e.ts_utc)),
+      h("td", { class: "ts" }, fmtTS(e.ts_utc, e.evidence_id)),
       h("td", {}, h("span", { class: "badge tactic" }, e.artifact_id || "")),
       h("td", {}, e.event_type || ""),
       h("td", {}, e.computer || ""),
@@ -3750,7 +3869,7 @@ function showPayloadModal(ev) {
   const close = modal([
     h("h3", {}, "Event payload"),
     h("div", { class: "muted", style: "margin-bottom: 8px;" },
-      `${ev.artifact_id} · ${ev.event_type} · ${ev.computer || "(no host)"} · ${fmtTS(ev.ts_utc)}`),
+      `${ev.artifact_id} · ${ev.event_type} · ${ev.computer || "(no host)"} · ${fmtTS(ev.ts_utc, ev.evidence_id)}`),
     h("div", { class: "muted", style: "margin-bottom: 8px;" }, "audit_id: " + (ev.audit_id || "")),
     h("pre", { class: "payload-pre" }, pretty),
     h("div", { class: "actions" }, [

@@ -79,6 +79,32 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
+def naive_local_to_utc_iso(dt: datetime.datetime, tz_name: str) -> str:
+    """Interpret a *naive* datetime as wall-clock time in ``tz_name`` (an IANA
+    zone such as ``"Asia/Tokyo"``) and return the equivalent UTC ISO-8601
+    string with an explicit ``+00:00`` offset.
+
+    The canonical store is UTC (see module docstring), but some artifacts —
+    IIS native access logs, Apache/nginx/Tomcat diagnostic logs — record the
+    server's LOCAL time with no offset. Those parsers cannot self-determine the
+    source zone, so the examiner-supplied evidence timezone
+    (``ParseRequest.timezone``) is used as the source zone to canonicalise to
+    UTC at parse time. DST for the given date is handled by ``zoneinfo``.
+
+    An empty/garbage ``dt`` is the caller's responsibility; an unknown
+    ``tz_name`` falls back to UTC (no shift).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        src: datetime.tzinfo = (
+            ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else datetime.timezone.utc
+        )
+    except Exception:
+        src = datetime.timezone.utc
+    return dt.replace(tzinfo=src).astimezone(datetime.timezone.utc).isoformat()
+
+
 def tail(s: str | bytes, max_bytes: int = 4096) -> str:
     """Last ``max_bytes`` of stdout/stderr — keeps DuckDB rows bounded."""
     if isinstance(s, bytes):
@@ -247,6 +273,7 @@ __all__ = [
     "audit_id",
     "fail",
     "make_unified_event",
+    "naive_local_to_utc_iso",
     "now_iso",
     "run_command",
     "tail",

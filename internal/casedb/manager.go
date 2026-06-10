@@ -137,8 +137,16 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 			registered_at   TIMESTAMP NOT NULL,
 			source_host     VARCHAR,
 			evidence_type   VARCHAR,
+			timezone        VARCHAR,
 			PRIMARY KEY (case_id, evidence_id)
 		)`,
+		// Per-evidence display timezone (IANA name). NULL means "inherit the
+		// case timezone". Stored events stay canonical UTC; this drives only
+		// the display-time conversion (Web UI + Tier 3 reports) and is the
+		// source zone used to canonicalise naive-local artifacts at parse
+		// time (IIS native, web error logs). ADD COLUMN IF NOT EXISTS makes
+		// this idempotent for DBs created before the column existed.
+		`ALTER TABLE evidence ADD COLUMN IF NOT EXISTS timezone VARCHAR`,
 		`CREATE TABLE IF NOT EXISTS parse_results (
 			case_id      VARCHAR NOT NULL,
 			artifact_id  VARCHAR NOT NULL,
@@ -233,11 +241,12 @@ CREATE TABLE evidence (
     registered_at   TIMESTAMP NOT NULL,
     source_host     VARCHAR,
     evidence_type   VARCHAR,
+    timezone        VARCHAR,
     PRIMARY KEY (case_id, evidence_id)
 );
 INSERT INTO evidence
     SELECT evidence_id, case_id, path, sha256, size_bytes,
-           registered_at, source_host, evidence_type
+           registered_at, source_host, evidence_type, timezone
     FROM evidence_v0;
 DROP TABLE evidence_v0;`
 	if _, err := m.db.ExecContext(ctx, migrationSQL); err != nil {
@@ -382,12 +391,17 @@ type EvidenceRow struct {
 	RegisteredAt time.Time `json:"registered_at"`
 	SourceHost   string    `json:"source_host,omitempty"`
 	EvidenceType string    `json:"evidence_type,omitempty"`
+	// Timezone is the per-evidence display timezone (IANA name). Empty means
+	// "inherit the case timezone". Events are stored in UTC regardless; this
+	// only drives display-time conversion and naive-local parse canonicalisation.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 func (m *Manager) ListEvidence(ctx context.Context, caseID string) ([]EvidenceRow, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT evidence_id, case_id, path, sha256, size_bytes,
-		        registered_at, COALESCE(source_host, ''), COALESCE(evidence_type, '')
+		        registered_at, COALESCE(source_host, ''), COALESCE(evidence_type, ''),
+		        COALESCE(timezone, '')
 		   FROM evidence WHERE case_id = ? ORDER BY registered_at`, caseID)
 	if err != nil {
 		return nil, err
@@ -397,7 +411,7 @@ func (m *Manager) ListEvidence(ctx context.Context, caseID string) ([]EvidenceRo
 	for rows.Next() {
 		var e EvidenceRow
 		if err := rows.Scan(&e.EvidenceID, &e.CaseID, &e.Path, &e.SHA256, &e.SizeBytes,
-			&e.RegisteredAt, &e.SourceHost, &e.EvidenceType); err != nil {
+			&e.RegisteredAt, &e.SourceHost, &e.EvidenceType, &e.Timezone); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -672,11 +686,32 @@ func (m *Manager) RegisterEvidence(ctx context.Context, e EvidenceRow) error {
 	}
 	_, err := m.db.ExecContext(ctx, `
 		INSERT INTO evidence (evidence_id, case_id, path, sha256, size_bytes,
-		                     registered_at, source_host, evidence_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		                     registered_at, source_host, evidence_type, timezone)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.EvidenceID, e.CaseID, e.Path, e.SHA256, e.SizeBytes,
-		e.RegisteredAt, nullableString(e.SourceHost), nullableString(e.EvidenceType))
+		e.RegisteredAt, nullableString(e.SourceHost), nullableString(e.EvidenceType),
+		nullableString(e.Timezone))
 	return err
+}
+
+// UpdateEvidenceTimezone sets the per-evidence display timezone (IANA name).
+// An empty tz clears the override so the evidence falls back to the case
+// timezone. Events are never rewritten — only display/parse interpretation
+// changes — so this is safe to call at any time.
+func (m *Manager) UpdateEvidenceTimezone(ctx context.Context, caseID, evidenceID, tz string) error {
+	if m.mode == ReadOnly {
+		return errors.New("casedb opened read-only")
+	}
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE evidence SET timezone = ? WHERE case_id = ? AND evidence_id = ?`,
+		nullableString(tz), caseID, evidenceID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no evidence %q in case %q", evidenceID, caseID)
+	}
+	return nil
 }
 
 func nullableString(s string) any {
