@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -210,9 +211,16 @@ func (s *Server) routes() {
 	staticSub, _ := fs.Sub(uiSub, "static")
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		// Anything not matched by /static/ or /api/ falls back to index.html
-		// so the SPA can run client-side routing on /cases/<id> URLs.
+		// Anything not matched by /static/ or /api/ falls back to index.html so
+		// the (hash-routed) SPA can boot from any URL. But an asset-looking path
+		// (e.g. a stale client requesting /app.js without the /static/ prefix)
+		// must 404 loudly — serving index.html for it ships HTML that the
+		// browser then tries to execute as JS, silently breaking the page.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path != "/" && path.Ext(r.URL.Path) != "" {
 			http.NotFound(w, r)
 			return
 		}
@@ -222,7 +230,10 @@ func (s *Server) routes() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
+		// no-store (not just no-cache): the document must never be served from
+		// cache, so an asset-path change in index.html can't strand a client on
+		// a stale shell that references old asset URLs.
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(body)
 	})
 }
