@@ -243,6 +243,7 @@ async function api(method, path, body) {
       try { msg = (await r.text()).slice(0, 200) || msg; } catch (_) {}
     }
     const err = new Error(msg);
+    err.status = r.status;
     // 503 + busy:true — the case DB is held by a running job (Parse / mutation),
     // not a real failure. Callers render a "processing" notice instead of an error.
     if (busy || r.status === 503) err.busy = true;
@@ -440,7 +441,25 @@ route(/^\/$/, async () => {
             await api("POST", "/api/cases", body);
             toast("Case created: " + body.case_id, "success");
             dispatch();
-          } catch (e) { toast(e.message, "error"); }
+          } catch (e) {
+            // 409 + "already exists" — the case_id is still present (a plain
+            // create would silently inherit its old evidence/events). Offer a
+            // full-wipe overwrite, mirroring the .fcz import flow.
+            if (e.status === 409 && /already exists/.test(e.message)) {
+              if (confirm(
+                `ケース "${body.case_id}" は既に存在します（${e.message}）。\n` +
+                `既存のデータ（証拠・イベント・分析結果・レポート）を完全に削除して作り直しますか？\nこの操作は元に戻せません。`
+              )) {
+                try {
+                  await api("POST", "/api/cases", { ...body, overwrite: true });
+                  toast("Case recreated (overwritten): " + body.case_id, "success");
+                  dispatch();
+                } catch (e2) { toast(e2.message, "error"); }
+              }
+              return;
+            }
+            toast(e.message, "error");
+          }
         },
       }, "Create case"),
     ]),
