@@ -223,10 +223,19 @@ func (s *Server) handleDeleteCase(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
-		// The casedb package only exposes RegisterCase so we use raw SQL for delete.
-		// NB: this leaves evidence/unified_events orphan-rows behind by design —
-		// chain-of-custody record. UI delete just hides the case.
-		return deleteCase(r.Context(), m, id)
+		if derr := deleteCase(r.Context(), m, id); derr != nil {
+			return derr
+		}
+		// Flush the delete out of the WAL immediately. Dropping a large case
+		// writes MBs to the WAL; if it lingers, go-duckdb stalls replaying it on
+		// later read-only opens, making /api/cases and case detail hang. We hold
+		// the exclusive write lock here, so this is the natural place to checkpoint.
+		// Best-effort: the rows are already gone, so a checkpoint failure must not
+		// fail the delete (the WAL is flushed later at threshold / clean shutdown).
+		if cerr := m.Checkpoint(r.Context()); cerr != nil {
+			s.logger.Warn("checkpoint after delete failed", "case", id, "err", cerr)
+		}
+		return nil
 	})
 	if err != nil {
 		writeError(w, 500, "delete case: %v", err)

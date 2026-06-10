@@ -648,6 +648,20 @@ func (m *Manager) DeleteCase(ctx context.Context, caseID string) error {
 	return nil
 }
 
+// Checkpoint flushes the write-ahead log into the main database file. A large
+// delete (e.g. dropping a case's hundreds of thousands of unified_events rows)
+// can leave megabytes in the WAL; until it is checkpointed, go-duckdb stalls
+// replaying that WAL on every subsequent read-only open, which makes the
+// Dashboard listing and case detail hang. Callers run this right after a big
+// mutation so the WAL never lingers.
+func (m *Manager) Checkpoint(ctx context.Context) error {
+	if m.mode == ReadOnly {
+		return errors.New("casedb opened read-only")
+	}
+	_, err := m.db.ExecContext(ctx, `CHECKPOINT`)
+	return err
+}
+
 // RegisterEvidence inserts an evidence row.
 func (m *Manager) RegisterEvidence(ctx context.Context, e EvidenceRow) error {
 	if m.mode == ReadOnly {
