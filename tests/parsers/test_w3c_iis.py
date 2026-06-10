@@ -10,7 +10,8 @@ Asserted here:
   - format auto-detection (w3c / iis / ncsa)
   - field normalisation to W3C names across all three layouts
   - URI stem/query split
-  - timestamp handling (W3C & NCSA → UTC 'Z'; IIS native → naive local time)
+  - timestamp handling (W3C & NCSA → UTC 'Z'; IIS native LOCAL → UTC via the
+    evidence timezone)
   - multiple #Fields headers in one W3C file (config change / log roll)
   - computer derivation (s-computername > s-ip)
 """
@@ -24,9 +25,9 @@ from parsers.base import ParseRequest
 from parsers import w3c_iis_parser as P
 
 
-def _req(input_path: pathlib.Path, out: pathlib.Path) -> ParseRequest:
+def _req(input_path: pathlib.Path, out: pathlib.Path, tz: str = "UTC") -> ParseRequest:
     return ParseRequest(input_path=input_path, output_dir=out,
-                        case_id="T", evidence_id="EV")
+                        case_id="T", evidence_id="EV", timezone=tz)
 
 
 def _events(jsonl_path: str) -> list[dict]:
@@ -84,12 +85,22 @@ def test_iis_native_detect_and_normalise(tmp_path):
     assert all(e["payload"]["log_format"] == "iis" for e in evs)
     assert evs[0]["payload"]["cs-uri-stem"] == "/index.html"
     assert evs[0]["computer"] == "WEBSRV01"  # s-computername
-    # IIS native carries LOCAL time (no offset) → naive, no trailing Z
-    assert evs[0]["timestamp"] == "2026-05-21T12:34:56"
-    assert not evs[0]["timestamp"].endswith("Z")
+    # IIS native carries LOCAL time (no offset); evidence tz=UTC here → UTC ISO.
+    assert evs[0]["timestamp"] == "2026-05-21T12:34:56+00:00"
     assert evs[1]["payload"]["cs-uri-stem"] == "/default.aspx"
     assert evs[1]["payload"]["cs-uri-query"] == "id=1"
     assert any("LOCAL time" in n for n in res.notes)
+
+
+def test_iis_native_local_to_utc(tmp_path):
+    # IIS native LOCAL time with evidence timezone=Asia/Tokyo (UTC+9):
+    # 12:34:56 JST → 03:34:56 UTC. W3C/NCSA paths are unaffected by tz.
+    res = P.parse(_req(_write(tmp_path, "iis", IIS_NATIVE_LOG),
+                       tmp_path / "out", tz="Asia/Tokyo"))
+    assert res.success
+    evs = _events(res.output_jsonl)
+    assert evs[0]["timestamp"] == "2026-05-21T03:34:56+00:00"
+    assert any("Asia/Tokyo" in n for n in res.notes)
 
 
 def test_ncsa_detect_split_uri_and_ua(tmp_path):

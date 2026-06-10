@@ -248,6 +248,40 @@ func (s *Server) handleDeleteCase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "deleted", "case_id": id})
 }
 
+// handleSetEvidenceTimezone sets (or clears) the per-evidence display timezone.
+// Body: {"timezone": "Asia/Tokyo"}. An empty string clears the override so the
+// evidence inherits the case timezone. The value must be a loadable IANA zone
+// (or "UTC"). Stored events are never rewritten — this only drives display-time
+// conversion (Web UI + Tier 3 reports) and the source zone used to canonicalise
+// naive-local artifacts (IIS native / web error logs) on the *next* parse.
+func (s *Server) handleSetEvidenceTimezone(w http.ResponseWriter, r *http.Request) {
+	caseID := r.PathValue("id")
+	evID := r.PathValue("evid")
+	var req struct {
+		Timezone string `json:"timezone"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, 400, "bad json: %v", err)
+		return
+	}
+	tz := strings.TrimSpace(req.Timezone)
+	if tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			writeError(w, 400, "invalid timezone %q: %v", tz, err)
+			return
+		}
+	}
+	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+		return m.UpdateEvidenceTimezone(r.Context(), caseID, evID, tz)
+	})
+	if err != nil {
+		writeError(w, 500, "set evidence timezone: %v", err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{
+		"case_id": caseID, "evidence_id": evID, "timezone": tz})
+}
+
 func (sm *caseSummary) populateArtifactStatus(outputsRoot string) {
 	dir := filepath.Join(outputsRoot, sm.CaseID)
 	findings := filepath.Join(dir, "findings")
@@ -477,13 +511,23 @@ func (s *Server) parseOneEvidence(
 	rep.Text(fmt.Sprintf("evidence %d/%d (%s): running orchestrator", evIdx, evTotal, evID))
 	ws := filepath.Join("outputs", "cases", caseID)
 	_ = os.MkdirAll(ws, 0o755)
-	// Issue #19: propagate the case timezone to the orchestrator so the
-	// underlying tools (e.g. `psort.py -z`) render their output in the
-	// examiner's local time.
-	caseTZ := "UTC"
+	// Issue #19: propagate the timezone to the orchestrator so the underlying
+	// tools (e.g. `psort.py -z`) render their output in the examiner's local
+	// time and naive-local artifacts (IIS native / web error logs) get
+	// canonicalised to UTC against the right source zone. The per-evidence
+	// timezone overrides the case timezone when set (empty → inherit case).
+	effectiveTZ := "UTC"
 	if mgr2, mgrErr := casedb.Open(dbPath, casedb.ReadOnly); mgrErr == nil {
 		if cs, gerr := mgr2.GetCaseStatus(ctx, caseID); gerr == nil && cs.Case.Timezone != "" {
-			caseTZ = cs.Case.Timezone
+			effectiveTZ = cs.Case.Timezone
+		}
+		if evs, lerr := mgr2.ListEvidence(ctx, caseID); lerr == nil {
+			for _, e := range evs {
+				if e.EvidenceID == evID && e.Timezone != "" {
+					effectiveTZ = e.Timezone
+					break
+				}
+			}
 		}
 		_ = mgr2.Close()
 	}
@@ -502,7 +546,7 @@ func (s *Server) parseOneEvidence(
 		"-m", "parsers.orchestrator",
 		"--case-id", caseID, "--evidence-id", evID,
 		"--input", abs, "--db", dbPath, "--workspace", ws,
-		"--timezone", caseTZ,
+		"--timezone", effectiveTZ,
 		"--report-json", reportPath,
 		"--progress",
 	}
@@ -1200,10 +1244,11 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// Forensic case metadata (evidence inventory, chain-of-custody SHA-256,
 		// per-artifact event counts) for the report's section 4. Best-effort —
 		// nil simply omits that section, matching the CLI `report --tier 3`.
-		meta, examiner := s.reportCaseMeta(ctx, caseID)
+		meta, examiner, caseTZ := s.reportCaseMeta(ctx, caseID)
 		// Tier 3 (DFIR Reporter) — same renderer the CLI `tlvb report --tier 3`
 		// drives. Reads the tier2 synthesis.json + derives timeline/IOC/MITRE
-		// from findings/.
+		// from findings/. Timestamps render in the case timezone (UTC store →
+		// display conversion); empty/unloadable falls back to UTC.
 		t3Start := time.Now()
 		res, err := tier3.Render(tier3.Config{
 			CaseID:        caseID,
@@ -1212,6 +1257,7 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 			FindingsDir:   filepath.Join(root, caseID, "findings"),
 			Formats:       formats,
 			Language:      lang,
+			Timezone:      caseTZ,
 			OnlyApproved:  onlyApproved,
 			CaseMeta:      meta,
 			Examiner:      examiner,
@@ -1237,9 +1283,10 @@ func (s *Server) handleReportStatus(w http.ResponseWriter, r *http.Request) {
 // from cases.duckdb so the Tier 3 report's "Evidence & Chain of Custody"
 // section renders. Best-effort — a DB error returns (nil, "") and the report
 // simply omits that section (the section template is wrapped in {{if .Meta}}).
-func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.CaseMeta, string) {
+func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.CaseMeta, string, string) {
 	meta := &tier3.CaseMeta{}
 	examiner := ""
+	timezone := ""
 	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 		if cases, err := m.ListCases(ctx); err == nil {
 			for _, c := range cases {
@@ -1248,6 +1295,7 @@ func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.Case
 					meta.Status = c.Status
 					meta.CreatedAt = c.CreatedAt
 					examiner = c.Examiner
+					timezone = c.Timezone
 					break
 				}
 			}
@@ -1285,12 +1333,12 @@ func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.Case
 		return nil
 	})
 	if err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
 	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {
-		return nil, examiner
+		return nil, examiner, timezone
 	}
-	return meta, examiner
+	return meta, examiner, timezone
 }
 
 func (s *Server) handleGetReportHTML(w http.ResponseWriter, r *http.Request) {

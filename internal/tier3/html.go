@@ -30,12 +30,12 @@ import (
 //     - Appendix: Audit / Provenance
 //
 // All CSS is inline; no JS, no external assets — the file is fully portable.
-func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment) error {
+func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment, loc *time.Location) error {
 	d := selectDict(cfg.Language)
-	view := buildView(cs, cfg, en, d)
+	view := buildView(cs, cfg, en, d, loc)
 
 	tpl, err := template.New("report").Funcs(template.FuncMap{
-		"fmtTS":      formatTS,
+		"fmtTS":      func(t time.Time) string { return formatTSIn(t, loc) },
 		"join":       func(s []string) string { return strings.Join(s, ", ") },
 		"sevClass":   severityClass,
 		"sevLabel":   d.sevLabel,
@@ -61,6 +61,7 @@ type reportView struct {
 	Dict           labelDict
 	Lang           string
 	GeneratedAt    string
+	Timezone       string
 	Examiner       string
 	Organization   string
 	Classification string
@@ -111,12 +112,13 @@ type findingRow struct {
 	ConfidenceLabel string // localized label
 }
 
-func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict) reportView {
+func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, loc *time.Location) reportView {
 	v := reportView{
 		Case:           cs,
 		Dict:           d,
 		Lang:           cfg.Language,
-		GeneratedAt:    time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+		GeneratedAt:    time.Now().In(loc).Format("2006-01-02 15:04:05 MST"),
+		Timezone:       loc.String(),
 		Examiner:       orStr(cfg.Examiner, d.UnknownExaminer),
 		Organization:   cfg.Organization,
 		Classification: orStr(cfg.Classification, d.DefaultClassification),
@@ -203,6 +205,7 @@ type labelDict struct {
 	ReportTitle                string
 	Case                       string
 	Generated                  string
+	Timezone                   string
 	Model                      string
 	TotalFindings              string
 	ClusterCount               string
@@ -310,6 +313,7 @@ var dictJA = labelDict{
 	ReportTitle:                "TLVB フォレンジック解析レポート",
 	Case:                       "ケース ID",
 	Generated:                  "生成日時",
+	Timezone:                   "表示タイムゾーン",
 	Model:                      "解析モデル",
 	TotalFindings:              "Finding 総数",
 	ClusterCount:               "クラスタ数",
@@ -415,6 +419,7 @@ var dictEN = labelDict{
 	ReportTitle:                "TLVB Forensic Analysis Report",
 	Case:                       "Case ID",
 	Generated:                  "Generated",
+	Timezone:                   "Display timezone",
 	Model:                      "Analysis model",
 	TotalFindings:              "Total findings",
 	ClusterCount:               "Cluster count",
@@ -716,6 +721,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <header class="meta">
   <dt>{{.Dict.Case}}</dt>          <dd>{{.Case.CaseID}}</dd>
   <dt>{{.Dict.Generated}}</dt>     <dd>{{.GeneratedAt}}</dd>
+  <dt>{{.Dict.Timezone}}</dt>      <dd>{{.Timezone}}</dd>
   <dt>{{.Dict.Examiner}}</dt>      <dd>{{.Examiner}}</dd>
   {{if .Organization}}<dt>{{.Dict.Organization}}</dt><dd>{{.Organization}}</dd>{{end}}
   <dt>{{.Dict.ToolVersion}}</dt>   <dd>{{.ToolVersion}}</dd>

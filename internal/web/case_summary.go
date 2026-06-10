@@ -56,6 +56,13 @@ type EvidenceParseSummary struct {
 	EventsTotal  int64             `json:"events_total"`
 	Artifacts    []ArtifactSummary `json:"artifacts,omitempty"`
 	LastEventAt  string            `json:"last_event_at,omitempty"`
+	// Timezone is the effective display timezone for this evidence (the
+	// per-evidence override if set, otherwise the case timezone). The UI uses
+	// it to convert the canonical-UTC timestamps for display; events are never
+	// re-stored. TimezoneOverride reflects whether an explicit per-evidence
+	// value is set (vs inherited) so the UI can show "inherited" state.
+	Timezone         string `json:"timezone,omitempty"`
+	TimezoneOverride bool   `json:"timezone_override,omitempty"`
 }
 
 type FindingsSummary struct {
@@ -202,6 +209,12 @@ func (s *Server) summariseParse(caseID string) *ParseSummary {
 		// Enrich with evidence-table metadata (host / type / path) and order by
 		// registration time; evidence_ids seen only in events (legacy NULLs)
 		// fall to the end.
+		// Case timezone is the fallback when an evidence has no explicit
+		// per-evidence override (empty timezone column).
+		caseTZ := "UTC"
+		if t := m.DB().QueryRow(`SELECT COALESCE(timezone, 'UTC') FROM cases WHERE case_id = ?`, caseID); t != nil {
+			_ = t.Scan(&caseTZ)
+		}
 		metaByID := map[string]casedb.EvidenceRow{}
 		var order []string
 		if meta, err := m.ListEvidence(context.Background(), caseID); err == nil {
@@ -219,10 +232,15 @@ func (s *Server) summariseParse(caseID string) *ParseSummary {
 		}
 		for _, id := range order {
 			es := byEv[id]
+			es.Timezone = caseTZ // default; overridden below when set
 			if info, ok := metaByID[id]; ok {
 				es.SourceHost = info.SourceHost
 				es.EvidenceType = info.EvidenceType
 				es.Path = info.Path
+				if info.Timezone != "" {
+					es.Timezone = info.Timezone
+					es.TimezoneOverride = true
+				}
 			}
 			sort.Slice(es.Artifacts, func(i, j int) bool {
 				return es.Artifacts[i].EventCount > es.Artifacts[j].EventCount

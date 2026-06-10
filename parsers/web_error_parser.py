@@ -14,8 +14,10 @@ All normalise to ``artifact_id='web_error'`` with payload fields:
 
 Diagnostic logs capture FAILED attempts (permission denied, file not found,
 stack traces) — useful for spotting traversal/SQLi probes that 404'd, segfault
-exploitation, and Tomcat exceptions. Timestamps are server-local (no offset),
-emitted naive.
+exploitation, and Tomcat exceptions. Timestamps are server-LOCAL (no offset);
+we canonicalise them to UTC at parse time by interpreting them in the
+evidence's timezone (``ParseRequest.timezone``), so the store stays UTC like
+every other artifact.
 
 Input: a single log file (error_log / error.log / catalina.out) or a directory.
 """
@@ -33,6 +35,7 @@ from parsers.base import (
     audit_id,
     fail,
     make_unified_event,
+    naive_local_to_utc_iso,
     now_iso,
     write_unified_events,
 )
@@ -88,25 +91,30 @@ def _detect_error_format(path: pathlib.Path) -> str | None:
     return None
 
 
-def _ts_apache(raw: str) -> str:
+# All three diagnostic-log formats stamp server-LOCAL time with no offset. We
+# parse the naive wall-clock and convert to UTC using the evidence timezone
+# (`tz`) as the source zone, keeping the canonical store in UTC.
+def _ts_apache(raw: str, tz: str) -> str:
     for fmt in ("%a %b %d %H:%M:%S.%f %Y", "%a %b %d %H:%M:%S %Y"):
         try:
-            return datetime.datetime.strptime(raw, fmt).isoformat()
+            return naive_local_to_utc_iso(datetime.datetime.strptime(raw, fmt), tz)
         except ValueError:
             continue
     return ""
 
 
-def _ts_nginx(raw: str) -> str:
+def _ts_nginx(raw: str, tz: str) -> str:
     try:
-        return datetime.datetime.strptime(raw, "%Y/%m/%d %H:%M:%S").isoformat()
+        return naive_local_to_utc_iso(
+            datetime.datetime.strptime(raw, "%Y/%m/%d %H:%M:%S"), tz)
     except ValueError:
         return ""
 
 
-def _ts_tomcat(raw: str) -> str:
+def _ts_tomcat(raw: str, tz: str) -> str:
     try:
-        return datetime.datetime.strptime(raw, "%d-%b-%Y %H:%M:%S.%f").isoformat()
+        return naive_local_to_utc_iso(
+            datetime.datetime.strptime(raw, "%d-%b-%Y %H:%M:%S.%f"), tz)
     except ValueError:
         return ""
 
@@ -116,7 +124,7 @@ def _sev_norm(modsev: str) -> str:
     return modsev.split(":")[-1].strip().lower()
 
 
-def _iter_apache(path: pathlib.Path) -> Iterator[dict]:
+def _iter_apache(path: pathlib.Path, tz: str) -> Iterator[dict]:
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             m = _APACHE_RE.match(line.rstrip("\r\n"))
@@ -130,11 +138,11 @@ def _iter_apache(path: pathlib.Path) -> Iterator[dict]:
                 "severity": _sev_norm(g["modsev"]),
                 "client_ip": client,
                 "message": g["msg"],
-                "__ts__": _ts_apache(g["ts"]),
+                "__ts__": _ts_apache(g["ts"], tz),
             }
 
 
-def _iter_nginx(path: pathlib.Path) -> Iterator[dict]:
+def _iter_nginx(path: pathlib.Path, tz: str) -> Iterator[dict]:
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             m = _NGINX_RE.match(line.rstrip("\r\n"))
@@ -147,11 +155,11 @@ def _iter_nginx(path: pathlib.Path) -> Iterator[dict]:
                 "severity": g["sev"].lower(),
                 "client_ip": cm.group("ip").strip() if cm else "-",
                 "message": g["msg"],
-                "__ts__": _ts_nginx(g["ts"]),
+                "__ts__": _ts_nginx(g["ts"], tz),
             }
 
 
-def _iter_tomcat(path: pathlib.Path) -> Iterator[dict]:
+def _iter_tomcat(path: pathlib.Path, tz: str) -> Iterator[dict]:
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             m = _TOMCAT_RE.match(line.rstrip("\r\n"))
@@ -163,11 +171,11 @@ def _iter_tomcat(path: pathlib.Path) -> Iterator[dict]:
                 "severity": g["sev"].lower(),
                 "client_ip": "-",
                 "message": g["msg"],
-                "__ts__": _ts_tomcat(g["ts"]),
+                "__ts__": _ts_tomcat(g["ts"], tz),
             }
 
 
-def _iter_logs(root: pathlib.Path) -> Iterator[tuple[pathlib.Path, str, dict]]:
+def _iter_logs(root: pathlib.Path, tz: str) -> Iterator[tuple[pathlib.Path, str, dict]]:
     targets = [root] if root.is_file() else sorted(root.rglob("*"))
     iters = {"apache": _iter_apache, "nginx": _iter_nginx, "tomcat": _iter_tomcat}
     for path in targets:
@@ -177,7 +185,7 @@ def _iter_logs(root: pathlib.Path) -> Iterator[tuple[pathlib.Path, str, dict]]:
         if fmt is None:
             continue
         try:
-            for row in iters[fmt](path):
+            for row in iters[fmt](path, tz):
                 yield path, fmt, row
         except OSError:
             continue
@@ -194,14 +202,14 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    saw_naive = [False]
+    saw_converted = [False]
 
     def _iter() -> Iterator[dict]:
         idx = 0
-        for path, fmt, row in _iter_logs(req.input_path):
+        for path, fmt, row in _iter_logs(req.input_path, req.timezone):
             ts_utc = row.pop("__ts__", "")
             if ts_utc:
-                saw_naive[0] = True
+                saw_converted[0] = True
             payload = dict(row)
             payload["log_path"] = str(path)
             payload["log_format"] = fmt
@@ -241,8 +249,10 @@ def parse(req: ParseRequest) -> ParseResult:
         "Apache/nginx/Tomcat diagnostic logs normalised to artifact_id='web_error' "
         "(server_type/severity/client_ip/message).",
     ]
-    if saw_naive[0]:
-        notes.append("Timestamps are server-LOCAL (no offset) — emitted naive (no Z).")
+    if saw_converted[0]:
+        notes.append(
+            "Timestamps are server-LOCAL (no offset); converted to UTC assuming "
+            f"source timezone='{req.timezone}' (the evidence timezone).")
     return ParseResult(
         artifact_id=ARTIFACT_ID, success=True,
         command="(in-process web-error parser)", exit_code=0,

@@ -16,9 +16,18 @@
     <nav class="crumbs" id="crumbs"></nav>
     <div class="meta" id="topMeta"></div>
     <!-- Wave 32: language switcher (locale persists in localStorage) -->
+    <!-- Display timezone switcher. Events are stored UTC; this only changes
+         how timestamps render. "Evidence-local" uses each evidence's own
+         timezone; any other value forces that zone across the whole view.
+         Options are populated by app.js (IANA list); persists in localStorage. -->
+    <select id="tz-switcher"
+            title="Display timezone (events are stored in UTC)"
+            style="margin-left: auto; padding: 2px 6px; font-size: 11px;
+                   background: #15192a; color: #ccc; border: 1px solid #2a2e44;"></select>
+    <!-- Wave 32: language switcher (locale persists in localStorage) -->
     <select id="lang-switcher"
             title="UI language"
-            style="margin-left: auto; padding: 2px 6px; font-size: 11px;
+            style="margin-left: 6px; padding: 2px 6px; font-size: 11px;
                    background: #15192a; color: #ccc; border: 1px solid #2a2e44;">
       <option value="ja">日本語</option>
       <option value="en">English</option>
