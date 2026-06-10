@@ -1318,26 +1318,82 @@ async function startReport(caseID) {
 // ============================================================================
 
 async function startAutopilot(caseID) {
+  // Multi-evidence Auto-pilot (parity with the Parse modal). Each row is one
+  // evidence (path + optional id). All rows are parsed into the case in a single
+  // parse job, then the analyze → synthesize → report chain runs over the whole
+  // case. input_mode / image_format apply to every row (same model as Parse).
+  const rows = h("div", { id: "ap_rows" });
+  function addRow(path, evid) {
+    const row = h("div", {
+      class: "form-row ap_row",
+      style: "gap: 6px; align-items: center;",
+    }, [
+      h("input", {
+        class: "ap_path",
+        placeholder: "/cases/<...>/triage.zip or /cases/<...>/evidence.E01",
+        value: path || "",
+        style: "flex: 3;",
+      }),
+      h("input", {
+        class: "ap_evid",
+        placeholder: "EV-001 (auto)",
+        value: evid || "",
+        style: "flex: 1; max-width: 160px;",
+      }),
+      h("button", {
+        class: "ghost",
+        title: "remove this evidence",
+        onclick: () => {
+          if (rows.children.length > 1) row.remove();
+          else toast("少なくとも 1 つの evidence が必要です", "error");
+        },
+      }, "−"),
+    ]);
+    rows.appendChild(row);
+  }
+  addRow();
+
+  // image_format is only consulted when input_mode = image (disabled otherwise).
+  const imageFormatSelect = h("select", { id: "ap_image_format", disabled: "disabled" }, [
+    h("option", { value: "auto" }, "Auto-detect (magic bytes)"),
+    h("option", { value: "ewf" },  "EWF (.E01 / .Ex01)"),
+    h("option", { value: "raw" },  "raw (.dd / .img / .raw)"),
+    h("option", { value: "vmdk" }, "VMDK (.vmdk)"),
+    h("option", { value: "vhd" },  "VHD (.vhd)"),
+    h("option", { value: "vhdx" }, "VHDX (.vhdx)"),
+  ]);
+  const inputModeSelect = h("select", {
+    id: "ap_input_mode",
+    onchange: (ev) => { imageFormatSelect.disabled = ev.target.value !== "image"; },
+  }, [
+    h("option", { value: "auto" }, "auto"),
+    h("option", { value: "cdir" }, "cdir"),
+    h("option", { value: "image" }, "image"),
+    h("option", { value: "washizukami" }, "washizukami"),
+  ]);
+
   const close = modal([
     h("h3", {}, "🤖 Auto-pilot — Parse → Analyze → Synthesize → Report"),
     h("p", { class: "muted", style: "font-size: 12px;" },
       "Both Review Gates (0: parse results, 2: timeline) will be auto-skipped. " +
       "All findings will reach the final report without per-item human approval. " +
       "Use the individual buttons above for examiner-supervised runs."),
-    h("div", { class: "form-row" }, [
-      h("label", {}, "Evidence path"),
-      h("input", { id: "ap_path",
-                   placeholder: "/cases/<...>/triage.zip or /cases/<...>/evidence.E01",
-                   style: "flex: 3;" }),
+    h("div", { class: "form-row", style: "gap: 6px;" }, [
+      h("label", { style: "flex: 3;" }, "Evidence path (.zip / dir / image)"),
+      h("label", { style: "flex: 1; max-width: 160px;" }, "Evidence ID (optional)"),
+      h("span", { style: "width: 32px;" }, ""),
+    ]),
+    rows,
+    h("div", { style: "margin-top: 4px;" }, [
+      h("button", { class: "ghost", onclick: () => addRow() }, "＋ Add evidence"),
     ]),
     h("div", { class: "form-row" }, [
       h("label", {}, "Input mode"),
-      h("select", { id: "ap_input_mode" }, [
-        h("option", { value: "auto" }, "auto"),
-        h("option", { value: "cdir" }, "cdir"),
-        h("option", { value: "image" }, "image"),
-        h("option", { value: "washizukami" }, "washizukami"),
-      ]),
+      inputModeSelect,
+    ]),
+    h("div", { class: "form-row" }, [
+      h("label", {}, "Image format"),
+      imageFormatSelect,
     ]),
     h("div", { class: "form-row" }, [
       h("label", {}, "Report language"),
@@ -1349,12 +1405,19 @@ async function startAutopilot(caseID) {
     h("div", { class: "actions" }, [
       h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
       h("button", { class: "primary", onclick: async () => {
-        const path = $("#ap_path").value.trim();
-        if (!path) { toast("evidence path is required", "error"); return; }
+        const evidences = Array.from(rows.querySelectorAll(".ap_row")).map((row) => ({
+          evidence_path: row.querySelector(".ap_path").value.trim(),
+          evidence_id:   row.querySelector(".ap_evid").value.trim(),
+        })).filter((e) => e.evidence_path);
+        if (evidences.length === 0) {
+          toast("少なくとも 1 つの evidence path が必要です", "error");
+          return;
+        }
         const inputMode = $("#ap_input_mode").value || "auto";
+        const imageFormat = $("#ap_image_format").value || "auto";
         const lang = $("#ap_lang").value || "ja";
         close();
-        toast("🤖 Auto-pilot: skipping gates and starting parse…", "success");
+        toast(`🤖 Auto-pilot: skipping gates and starting parse (${evidences.length} evidence${evidences.length > 1 ? "s" : ""})…`, "success");
         try {
           await api("POST",
             `/api/cases/${encodeURIComponent(caseID)}/parse-review/skip-all`,
@@ -1364,7 +1427,7 @@ async function startAutopilot(caseID) {
             { auto_skip: true });
           await api("POST",
             `/api/cases/${encodeURIComponent(caseID)}/parse`,
-            { evidences: [{ evidence_path: path }], input_mode: inputMode });
+            { evidences, input_mode: inputMode, image_format: imageFormat });
           // Fire-and-forget chain runner (errors surface via toasts).
           autopilotChain(caseID, lang);
         } catch (e) {
