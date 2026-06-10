@@ -336,8 +336,9 @@ h3 { font-size: 13px; color: #c0d0e8; }
 .tactic-group .tactic-header .count { color: var(--muted); font-size: 11px; }
 .tactic-group .findings { padding: 6px 0; }
 .finding {
-  padding: 12px 16px;
+  padding: 12px 16px 12px 13px;
   border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;  /* severity rail, coloured below */
 }
 .finding:last-child { border-bottom: none; }
 .finding .header {
@@ -407,6 +408,40 @@ h3 { font-size: 13px; color: #c0d0e8; }
 }
 .finding .technique-id:hover { color: var(--accent-hi); }
 .tactic-header .tactic-toggle { color: var(--muted); }
+
+/* ------- findings: manual-review readability (search / sort / sev rail) ------- */
+.findings-toolbar .findings-search {
+  flex: 1; min-width: 160px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit; font-size: 12px;
+}
+.findings-toolbar .findings-search:focus { outline: none; border-color: var(--accent-hi); }
+.findings-toolbar select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; font: inherit; font-size: 11px;
+}
+.tactic-group.group-empty { display: none; }
+.findings-nomatch {
+  padding: 24px; text-align: center; color: var(--muted);
+  border: 1px dashed var(--border); border-radius: 4px; margin-bottom: 12px;
+}
+/* earliest-evidence time shown inline on each row for timeline-oriented review */
+.finding .finding-ts {
+  color: #9fb4d8; font-size: 11px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  margin-left: 4px;
+}
+/* severity rail — scan the list by criticality at a glance */
+.finding.sevrow-critical { border-left-color: #ff5e6c; }
+.finding.sevrow-high     { border-left-color: var(--conf-high); }
+.finding.sevrow-medium   { border-left-color: var(--conf-medium); }
+.finding.sevrow-low      { border-left-color: var(--conf-low); }
+.finding.sevrow-info     { border-left-color: #3a4566; }
 
 /* ------- timeline ------- */
 .timeline-table { width: 100%; border-collapse: collapse; font-size: 12px; }
