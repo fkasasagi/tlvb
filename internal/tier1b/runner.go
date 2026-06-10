@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/tlvb/tlvb/internal/auditlog"
+	"github.com/tlvb/tlvb/internal/evidencex"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/tier1a"
 )
@@ -209,8 +210,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		}
 	}
 
+	evidenceEnabled := cfg.EvidenceFetch
 	hctx := buildLLMContext(cfg.CaseID, prior, bundle, existingIntents)
-	userMsg, err := buildUserMessage(hctx, cacheEnabled)
+	userMsg, err := buildUserMessage(hctx, cacheEnabled, evidenceEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -251,10 +253,104 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	_ = os.MkdirAll(filepath.Dir(rawDebugPath), 0o755)
 	_ = os.WriteFile(rawDebugPath, []byte(resp.Result), 0o644)
 
-	findings, plans, err := parseAnomalyOutput(resp.Result)
+	findings, plans, requested, err := parseAnomalyOutput(resp.Result)
 	if err != nil {
 		return rep, fmt.Errorf("parse LLM output: %w (raw saved to %s)", err, rawDebugPath)
 	}
+
+	// --- On-demand evidence extraction (agent-driven file fetch) ---
+	// If the LLM asked to read specific files, extract them read-only from the
+	// case's disk image and run a bounded follow-up pass with their contents so
+	// the findings are grounded in what the files actually contain. Every step
+	// degrades gracefully: no image / mount failure / parse error simply keeps
+	// the prior pass's findings (CLAUDE.md #4 graceful degradation).
+	var evidenceSummaries []evidencex.FetchSummary
+	if evidenceEnabled && len(requested) > 0 {
+		maxRounds := cfg.MaxEvidenceRounds
+		if maxRounds <= 0 {
+			maxRounds = 1
+		}
+		evTimeout := cfg.EvidenceTimeout
+		if evTimeout <= 0 {
+			evTimeout = 10 * time.Minute
+		}
+		rc := evidencex.RoundConfig{
+			Config: evidencex.Config{
+				PythonBin: cfg.PythonBin,
+				RepoDir:   cfg.RepoDir,
+				Timeout:   evTimeout,
+			},
+			CaseID:     cfg.CaseID,
+			OutBaseDir: filepath.Join(filepath.Dir(cfg.FindingsBaseDir), "extractions", "on-demand"),
+			MaxFiles:   cfg.MaxEvidenceFiles,
+		}
+		curUserMsg := userMsg
+		for rep.EvidenceRounds < maxRounds && len(requested) > 0 {
+			rep.FilesRequested += len(requested)
+			round, rerr := evidencex.RunRound(ctx, db, rc, requested)
+			if rerr != nil {
+				emit(cfg, Event{Phase: "evidence", Message: "fetch failed: " + rerr.Error()})
+				break
+			}
+			if !round.Available {
+				emit(cfg, Event{Phase: "evidence",
+					Message: "no mountable disk image in this case — skipping file fetch"})
+				break
+			}
+			summaries := round.Summaries()
+			evidenceSummaries = append(evidenceSummaries, summaries...)
+			for _, s := range summaries {
+				ok := s.Status == "ok"
+				if ok {
+					rep.FilesExtracted++
+				}
+				al.Append(auditlog.Action{Actor: "tier1b", Kind: "evidence_fetch",
+					Detail: s.Target, Success: auditlog.BoolPtr(ok), Error: s.Error})
+			}
+			remaining := maxRounds - rep.EvidenceRounds - 1
+			curUserMsg = curUserMsg + "\n\n" + round.PreviewBlock + finalizeNote(remaining)
+			emit(cfg, Event{Phase: "evidence",
+				Message: fmt.Sprintf("round %d: requested=%d extracted=%d, re-analysing",
+					rep.EvidenceRounds+1, len(summaries), countOK(summaries))})
+
+			llmStart2 := time.Now()
+			resp2, err2 := callClaudeCLI(ctx, cfg, string(skillBytes), curUserMsg)
+			if err2 != nil {
+				al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call",
+					Detail:          cfg.Skill + " (evidence round)",
+					DurationSeconds: time.Since(llmStart2).Seconds(),
+					Success:         auditlog.BoolPtr(false), Error: err2.Error()})
+				emit(cfg, Event{Phase: "evidence", Message: "re-analysis call failed: " + err2.Error()})
+				break
+			}
+			rep.LLMCallDurationS += time.Since(llmStart2).Seconds()
+			rep.InputTokens += resp2.InputTokens
+			rep.CacheReadTokens += resp2.Usage.CacheReadInputTokens
+			rep.OutputTokens += resp2.OutputTokens
+			rep.TotalCostUSD += resp2.TotalCostUSD
+			al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call",
+				Detail: cfg.Skill + " (evidence round)", Model: resp2.EffectiveModel,
+				DurationSeconds: time.Since(llmStart2).Seconds(),
+				InputTokens:     resp2.InputTokens, OutputTokens: resp2.OutputTokens,
+				CacheReadTokens: resp2.Usage.CacheReadInputTokens, CostUSD: resp2.TotalCostUSD,
+				Success: auditlog.BoolPtr(true)})
+			_ = os.WriteFile(rawDebugPath, []byte(resp2.Result), 0o644)
+
+			f2, p2, req2, perr := parseAnomalyOutput(resp2.Result)
+			if perr != nil {
+				emit(cfg, Event{Phase: "evidence",
+					Message: "re-analysis parse failed, keeping prior findings: " + perr.Error()})
+				break
+			}
+			findings = f2
+			if len(p2) > 0 {
+				plans = p2
+			}
+			requested = req2
+			rep.EvidenceRounds++
+		}
+	}
+
 	for i := range findings {
 		if findings[i].FindingID == "" {
 			findings[i].FindingID = uuid.NewString()
@@ -281,14 +377,16 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		Findings:       findings,
 		Audit: AnomalyAudit{
 			LLMCallDurationS:    rep.LLMCallDurationS,
-			InputTokens:         resp.InputTokens,
-			CacheReadTokens:     resp.Usage.CacheReadInputTokens,
+			InputTokens:         rep.InputTokens,
+			CacheReadTokens:     rep.CacheReadTokens,
 			CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
-			OutputTokens:        resp.OutputTokens,
-			TotalCostUSD:        resp.TotalCostUSD,
+			OutputTokens:        rep.OutputTokens,
+			TotalCostUSD:        rep.TotalCostUSD,
 			StopReason:          resp.StopReason,
 			SessionID:           resp.SessionID,
+			EvidenceRounds:      rep.EvidenceRounds,
 		},
+		EvidenceFetches: evidenceSummaries,
 	}); err != nil {
 		return rep, fmt.Errorf("write anomaly report: %w", err)
 	}
@@ -427,10 +525,20 @@ below and nothing else.
 
 `
 
-func buildUserMessage(hctx llmContext, cacheEnabled bool) (string, error) {
-	var prelude string
-	if !cacheEnabled {
-		prelude = `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
+func buildUserMessage(hctx llmContext, cacheEnabled, evidenceEnabled bool) (string, error) {
+	prelude := arrayPrelude
+	if cacheEnabled || evidenceEnabled {
+		prelude = objectPrelude(cacheEnabled, evidenceEnabled)
+	}
+	body, err := json.MarshalIndent(hctx, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return outputAuthorityNote + prelude + string(body), nil
+}
+
+// arrayPrelude is the v0.1 bare-array contract (no cache, no evidence fetch).
+const arrayPrelude = `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
 Apply the lenses defined in your system prompt. Return ONLY a JSON array of
 finding objects with this shape:
 
@@ -449,16 +557,23 @@ Constraints:
 
 AnomalyContext:
 `
-	} else {
-		prelude = `Below is the AnomalyContext for your Tier 1.5 anomaly scan.
+
+// objectPrelude builds the {findings, proposed_queries?, requested_files?}
+// contract. proposed_queries appears only with the skill SQL cache on;
+// requested_files only with on-demand evidence extraction enabled.
+func objectPrelude(cacheEnabled, evidenceEnabled bool) string {
+	var b strings.Builder
+	b.WriteString(`Below is the AnomalyContext for your Tier 1.5 anomaly scan.
 Apply the lenses defined in your system prompt. Return ONLY a JSON OBJECT
-with two keys, no markdown fences, no prose outside the object:
+with these keys, no markdown fences, no prose outside the object:
 
   {
     "findings": [
 ` + findingShapeDoc + `,
       ...
-    ],
+    ]`)
+	if cacheEnabled {
+		b.WriteString(`,
     "proposed_queries": [
       {
         "intent": "<short reusable-lens label, e.g. 'rare service install off-hours'>",
@@ -466,7 +581,20 @@ with two keys, no markdown fences, no prose outside the object:
         "sql": "<a single DuckDB SELECT against unified_events>"
       },
       ...
-    ]
+    ]`)
+	}
+	if evidenceEnabled {
+		b.WriteString(`,
+    "requested_files": [
+      {
+        "path": "<file path seen in an event — Windows 'C:\\..\\x.ps1' or NTFS-relative>",
+        "evidence_id": "<optional: which disk image, only if the case has several>",
+        "rationale": "<1-line: what reading this file would tell you>"
+      },
+      ...
+    ]`)
+	}
+	b.WriteString(`
   }
 
 findings rules:
@@ -474,7 +602,9 @@ findings rules:
 - Do NOT duplicate findings already covered by existing_audit_ids.
 - Use [] if no genuine anomalies stand out — false positives are worse
   than gaps at this layer.
-
+`)
+	if cacheEnabled {
+		b.WriteString(`
 proposed_queries rules (OPTIONAL — use [] if nothing generalises):
 - existing_skill_intents lists lenses the cache ALREADY runs every case
   (their hits appear in events tagged lens "S0"). Do NOT re-propose those.
@@ -485,15 +615,54 @@ proposed_queries rules (OPTIONAL — use [] if nothing generalises):
   "case_id = ?"; contain exactly one ? placeholder; lead its output columns
   with audit_id, ts_utc, artifact_id; end with LIMIT N (N≤500); no trailing
   semicolon. Use json_extract_string(payload_json, '$.Key') for fields.
+`)
+	}
+	if evidenceEnabled {
+		b.WriteString(`
+requested_files rules (OPTIONAL — use [] if you don't need any file's contents):
+- Use this ONLY when an event references a file whose CONTENTS would change
+  your verdict: a dropped script (.ps1/.bat/.vbs/.hta/.js), a config, a
+  suspicious binary you want to read strings from, a staged archive, etc.
+- The file is extracted READ-ONLY from the case's disk image and its contents
+  are returned to you for a bounded follow-up pass — so you investigate it
+  directly instead of guessing from the event alone.
+- Request only a few of the most decision-relevant files. Do NOT request files
+  already fully represented by the events above.
+`)
+	}
+	b.WriteString("\nAnomalyContext:\n")
+	return b.String()
+}
 
-AnomalyContext:
+// finalizeNote steers the follow-up pass after the extracted-file previews:
+// conclude from what was read; request more files only if a round remains.
+func finalizeNote(remainingRounds int) string {
+	if remainingRounds > 0 {
+		return fmt.Sprintf(`
+
+Use the file contents above to finalize. Return the SAME JSON object shape and
+put your conclusions in findings (cite audit_ids; reference what the files
+contained). You MAY request more files via requested_files ONLY if essential —
+%d more round(s) will be honoured.
+`, remainingRounds)
+	}
+	return `
+
+Use the file contents above to finalize. Return the SAME JSON object shape and
+put your conclusions in findings (cite audit_ids; reference what the files
+contained). This is the LAST round — do NOT request more files; set
+requested_files to [].
 `
+}
+
+func countOK(s []evidencex.FetchSummary) int {
+	n := 0
+	for _, x := range s {
+		if x.Status == "ok" {
+			n++
+		}
 	}
-	body, err := json.MarshalIndent(hctx, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return outputAuthorityNote + prelude + string(body), nil
+	return n
 }
 
 // claudeOutput captures the fields we use from `claude --output-format json`.

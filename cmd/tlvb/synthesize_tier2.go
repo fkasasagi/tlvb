@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tlvb/tlvb/internal/common"
 	"github.com/tlvb/tlvb/internal/tier2"
 )
 
@@ -38,8 +39,22 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	dryRun := fs.Bool("dry-run", false, "skip LLM calls")
 	overallOnly := fs.Bool("overall-only", false,
 		"regenerate ONLY the case-wide executive summary (overall_story) in an existing synthesis.json and write it back in place — cheap refresh after a prompt/timeout change, no re-clustering / per-cluster / active-search")
+	evidenceFetch := fs.Bool("evidence-fetch", true,
+		"let the agent pull & read files from the disk image on demand while analysing a cluster "+
+			"(requested_files → bounded follow-up pass with the file contents)")
+	maxEvidenceRounds := fs.Int("max-evidence-rounds", 1,
+		"max fetch+reanalyse rounds per cluster when --evidence-fetch is on")
+	maxEvidenceFiles := fs.Int("max-evidence-files", 8,
+		"max files extracted per evidence round")
+	pythonBin := fs.String("python", "",
+		"python interpreter for on-demand extraction (default: $TLVB_PYTHON, then ./.venv/bin/python3, then python3)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	pyBin := *pythonBin
+	if pyBin == "" {
+		pyBin = common.ResolvePython()
 	}
 
 	if *findingsBase == "" {
@@ -73,6 +88,10 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		MaxSelfCorrect:     msc,
 		DemoInjectSQLFault: *demoInjectFault,
 		DryRun:             *dryRun,
+		EvidenceFetch:      *evidenceFetch,
+		MaxEvidenceRounds:  *maxEvidenceRounds,
+		MaxEvidenceFiles:   *maxEvidenceFiles,
+		PythonBin:          pyBin,
 		ProgressFn: func(ev tier2.Event) {
 			fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)
 		},
@@ -111,6 +130,10 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		fmt.Printf("  active-search:     %d attempted / %d ok / %d self-corrected (%d correction rounds)\n",
 			rep.ActiveSQLAttempted, rep.ActiveSQLSucceeded,
 			rep.ActiveSQLSelfCorrected, rep.ActiveSQLCorrectionRounds)
+	}
+	if rep.FilesRequested > 0 {
+		fmt.Printf("  evidence fetch:    %d requested / %d extracted (%d round(s))\n",
+			rep.FilesRequested, rep.FilesExtracted, rep.EvidenceRounds)
 	}
 	if rep.OutputPath != "" {
 		fmt.Printf("  output:            %s\n", rep.OutputPath)

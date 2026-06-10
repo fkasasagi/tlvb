@@ -44,6 +44,7 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		activeSearch     bool
 		maxSelfCorrect   string // forwarded verbatim to synthesize; "" = synthesize default
 		demoInjectFault  bool
+		noEvidenceFetch  bool // disable on-demand file extraction in Tier 1B/2
 		includeInfoLevel bool
 		format           = "html,csv,json"
 		language         = "ja"
@@ -135,6 +136,8 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 			maxSelfCorrect = strings.TrimPrefix(a, "--max-self-correct=")
 		case a == "--demo-inject-sql-fault":
 			demoInjectFault = true
+		case a == "--no-evidence-fetch":
+			noEvidenceFetch = true
 		case a == "--include-info-level":
 			includeInfoLevel = true
 		default:
@@ -206,6 +209,9 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		if model != "" {
 			args1B = append(args1B, "--model", model)
 		}
+		if noEvidenceFetch {
+			args1B = append(args1B, "--evidence-fetch=false")
+		}
 		if err := runAnalyze(args1B); err != nil {
 			fmt.Fprintf(os.Stderr, "Tier 1B error (continuing): %v\n", err)
 		}
@@ -228,6 +234,9 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		}
 		if model != "" {
 			args2 = append(args2, "--model", model)
+		}
+		if noEvidenceFetch {
+			args2 = append(args2, "--evidence-fetch=false")
 		}
 		if err := runSynthesize(args2); err != nil {
 			fmt.Fprintf(os.Stderr, "Tier 2 error (continuing): %v\n", err)

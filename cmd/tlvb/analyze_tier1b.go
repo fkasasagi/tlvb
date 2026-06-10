@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/common"
 	"github.com/tlvb/tlvb/internal/tier1b"
 )
 
@@ -36,8 +37,22 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 		"comma-separated skills to run in sequence (overrides --skill). e.g. "+
 			"anomaly_hunter,persistence,credential_access — each gets its own "+
 			"skill_sql_cache namespace and findings/by-skill/<skill>.json")
+	evidenceFetch := fs.Bool("evidence-fetch", true,
+		"let the agent pull & read files from the disk image on demand "+
+			"(requested_files → bounded follow-up pass with the file contents)")
+	maxEvidenceRounds := fs.Int("max-evidence-rounds", 1,
+		"max fetch+reanalyse rounds when --evidence-fetch is on")
+	maxEvidenceFiles := fs.Int("max-evidence-files", 8,
+		"max files extracted per evidence round")
+	pythonBin := fs.String("python", "",
+		"python interpreter for on-demand extraction (default: $TLVB_PYTHON, then ./.venv/bin/python3, then python3)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	pyBin := *pythonBin
+	if pyBin == "" {
+		pyBin = common.ResolvePython()
 	}
 
 	if *outDir == "" {
@@ -71,6 +86,11 @@ func runAnalyzeTier1B(caseID string, args []string) error {
 			NoSkillCache:    *noSkillCache,
 			SchemaVersion:   casedb.SchemaVersion(),
 			ModelID:         modelID,
+
+			EvidenceFetch:     *evidenceFetch,
+			MaxEvidenceRounds: *maxEvidenceRounds,
+			MaxEvidenceFiles:  *maxEvidenceFiles,
+			PythonBin:         pyBin,
 		}
 		fmt.Fprintf(os.Stderr, "tier 1B (Skills-driven Anomaly) — case=%s skill=%s findings_base=%s\n",
 			caseID, sk, *outDir)
@@ -121,6 +141,10 @@ func printTier1BReport(rep *tier1b.Report, skill string, dryRun bool) {
 	fmt.Printf("  tokens:                   in %d / cache_read %d / out %d  (cost $%.4f)\n",
 		rep.InputTokens, rep.CacheReadTokens, rep.OutputTokens, rep.TotalCostUSD)
 	fmt.Printf("  new findings:             %d\n", len(rep.NewFindings))
+	if rep.FilesRequested > 0 {
+		fmt.Printf("  evidence fetch:           %d requested / %d extracted (%d round(s))\n",
+			rep.FilesRequested, rep.FilesExtracted, rep.EvidenceRounds)
+	}
 	if rep.OutputPath != "" {
 		fmt.Printf("  output:                   %s\n", rep.OutputPath)
 	}

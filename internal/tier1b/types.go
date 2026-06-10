@@ -25,7 +25,11 @@
 // proposed_queries}) regardless of any output format the .md describes.
 package tier1b
 
-import "time"
+import (
+	"time"
+
+	"github.com/tlvb/tlvb/internal/evidencex"
+)
 
 // Config drives Run().
 type Config struct {
@@ -50,6 +54,19 @@ type Config struct {
 	NoSkillCache  bool
 	SchemaVersion string // cache validity signature; defaults to "unknown" if empty
 	ModelID       string // cache validity signature; defaults to Model or "claude-code-default"
+
+	// --- On-demand evidence extraction (agent-driven file fetch) ---
+	// When enabled the LLM may list files in `requested_files`; the runner
+	// extracts them read-only from the case's disk image and runs a bounded
+	// follow-up pass with their contents so the agent can inspect a file
+	// directly (not just its normalized event). Requires mountable image
+	// evidence + SIFT mount tools; degrades to a single pass when unavailable.
+	EvidenceFetch     bool          // master switch (default off; CLI defaults it on)
+	MaxEvidenceRounds int           // fetch+reanalyse rounds (default 1)
+	MaxEvidenceFiles  int           // files fetched per round (default 8)
+	EvidenceTimeout   time.Duration // per-fetch wall-clock budget (default 10m)
+	PythonBin         string        // interpreter for parsers.evidence_fetch
+	RepoDir           string        // module root for the import (default: cwd)
 }
 
 // Event is the progress hook callback.
@@ -87,6 +104,11 @@ type Report struct {
 	CandidatesProposed int  // new queries the LLM proposed this run
 	CandidatesAppended int  // newly stored (deduped) candidates
 	Promoted           int  // candidate→canonical promotions + canonical re-hits
+
+	// --- On-demand evidence extraction accounting ---
+	EvidenceRounds int // fetch+reanalyse rounds actually performed
+	FilesRequested int // files the LLM asked to inspect (across rounds)
+	FilesExtracted int // files successfully pulled from the image
 }
 
 // FindingSummary mirrors tier1a.FindingSummary so the CLI report printer
@@ -138,6 +160,10 @@ type AnomalyReport struct {
 	PriorFindings  int              `json:"prior_findings"`
 	Findings       []AnomalyFinding `json:"findings"`
 	Audit          AnomalyAudit     `json:"audit"`
+
+	// EvidenceFetches records every file the agent pulled from the disk image
+	// during this run (the audit trail for Review Gate 1B / the Web Audit tab).
+	EvidenceFetches []evidencex.FetchSummary `json:"evidence_fetches,omitempty"`
 }
 
 type AnomalyAudit struct {
@@ -153,4 +179,5 @@ type AnomalyAudit struct {
 	TotalCostUSD        float64 `json:"total_cost_usd,omitempty"`
 	StopReason          string  `json:"stop_reason,omitempty"`
 	SessionID           string  `json:"session_id,omitempty"`
+	EvidenceRounds      int     `json:"evidence_rounds,omitempty"`
 }

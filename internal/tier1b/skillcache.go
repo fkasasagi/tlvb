@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/tlvb/tlvb/internal/evidencex"
 )
 
 // skillSQLPlan is one reusable query the LLM proposes when it judges that a
@@ -201,11 +203,12 @@ func promotableHashes(findings []AnomalyFinding, auditToSQL map[string][]string)
 
 // parseAnomalyOutput accepts either the v0.2 object shape
 //
-//	{"findings": [...], "proposed_queries": [...]}
+//	{"findings": [...], "proposed_queries": [...], "requested_files": [...]}
 //
 // or the v0.1 bare findings array (back-compat — also what the no-cache path
-// still emits). The array branch reuses parseAnomalyFindings.
-func parseAnomalyOutput(text string) ([]AnomalyFinding, []skillSQLPlan, error) {
+// still emits). The array branch reuses parseAnomalyFindings. requested_files
+// (on-demand evidence extraction) is only honoured in the object shape.
+func parseAnomalyOutput(text string) ([]AnomalyFinding, []skillSQLPlan, []evidencex.RequestedFile, error) {
 	s := strings.TrimSpace(text)
 	s = strings.TrimPrefix(s, "```json")
 	s = strings.TrimPrefix(s, "```")
@@ -220,17 +223,18 @@ func parseAnomalyOutput(text string) ([]AnomalyFinding, []skillSQLPlan, error) {
 			s = s[:j+1]
 		}
 		var obj struct {
-			Findings        []AnomalyFinding `json:"findings"`
-			ProposedQueries []skillSQLPlan   `json:"proposed_queries"`
+			Findings        []AnomalyFinding          `json:"findings"`
+			ProposedQueries []skillSQLPlan            `json:"proposed_queries"`
+			RequestedFiles  []evidencex.RequestedFile `json:"requested_files"`
 		}
 		if err := json.Unmarshal([]byte(s), &obj); err != nil {
-			return nil, nil, fmt.Errorf("unmarshal object: %w (head: %s)", err, truncate(text, 200))
+			return nil, nil, nil, fmt.Errorf("unmarshal object: %w (head: %s)", err, truncate(text, 200))
 		}
-		return sanitizeFindings(obj.Findings), obj.ProposedQueries, nil
+		return sanitizeFindings(obj.Findings), obj.ProposedQueries, obj.RequestedFiles, nil
 	}
 	// Array fallback — delegate to the well-tested v0.1 parser.
 	fs, err := parseAnomalyFindings(s, nil)
-	return fs, nil, err
+	return fs, nil, nil, err
 }
 
 // sanitizeFindings trims/normalises fields and drops entries without a

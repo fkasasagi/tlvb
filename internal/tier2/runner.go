@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/auditlog"
+	"github.com/tlvb/tlvb/internal/evidencex"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -43,6 +44,18 @@ type Config struct {
 	DemoInjectSQLFault bool
 	DryRun             bool
 	ProgressFn         func(Event)
+
+	// --- On-demand evidence extraction (agent-driven file fetch) ---
+	// When enabled, a cluster analysis may list files in `requested_files`; the
+	// runner extracts them read-only from the case's disk image and re-analyses
+	// the cluster with their contents. Degrades to a single pass when there's no
+	// mountable image or the mount tools are unavailable.
+	EvidenceFetch     bool
+	MaxEvidenceRounds int           // fetch+reanalyse rounds per cluster (default 1)
+	MaxEvidenceFiles  int           // files fetched per round (default 8)
+	EvidenceTimeout   time.Duration // per-fetch wall-clock budget (default 10m)
+	PythonBin         string        // interpreter for parsers.evidence_fetch
+	RepoDir           string        // module root for the import (default: cwd)
 
 	// al is the unified execution-log writer (outputs/cases/<id>/actions.jsonl).
 	// Set internally by Run(); nil in unit tests (a nil *Logger is a no-op).
@@ -77,6 +90,11 @@ type Report struct {
 	ActiveSQLSucceeded        int
 	ActiveSQLSelfCorrected    int
 	ActiveSQLCorrectionRounds int
+
+	// On-demand evidence extraction accounting.
+	EvidenceRounds int
+	FilesRequested int
+	FilesExtracted int
 }
 
 // Run executes the Tier 2 MVP. Reads Tier 1 findings, clusters them
@@ -183,7 +201,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	audit := SynthAudit{ClustersAnalysed: 0, SkillSHA256: skillSHAHex}
 	for i := range clusters {
-		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit); err != nil {
+		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit, db); err != nil {
 			// graceful: skip the cluster but keep going
 			audit.ClustersSkippedNoLLM++
 			emit(cfg, Event{Phase: "llm",
@@ -240,6 +258,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	rep.ActiveSQLSucceeded = audit.ActiveSQLSucceeded
 	rep.ActiveSQLSelfCorrected = audit.ActiveSQLSelfCorrected
 	rep.ActiveSQLCorrectionRounds = audit.ActiveSQLCorrectionRounds
+	rep.EvidenceRounds = audit.EvidenceRounds
+	rep.FilesRequested = audit.EvidenceFilesRequest
+	rep.FilesExtracted = audit.EvidenceFilesGot
 	emit(cfg, Event{Phase: "done",
 		Message: fmt.Sprintf("done in %.1fs (%d clusters, %d LLM calls)",
 			rep.Duration, len(clusters), audit.LLMCallsTotal),
@@ -346,12 +367,99 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 // ----------------------------------------------------------------------------
 
 func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt string,
-	audit *SynthAudit) error {
+	audit *SynthAudit, db *sql.DB) error {
 
-	userMsg, err := buildClusterUserMessage(c, cfg.Language)
+	evidenceEnabled := cfg.EvidenceFetch && db != nil
+	userMsg, err := buildClusterUserMessage(c, cfg.Language, evidenceEnabled)
 	if err != nil {
 		return err
 	}
+
+	resp, err := clusterPass(ctx, cfg, c, systemPrompt, userMsg, audit, true)
+	if err != nil {
+		return err
+	}
+
+	// --- On-demand evidence extraction (agent-driven file fetch) ---
+	// If the analysis asked to read specific files, extract them read-only from
+	// the case's disk image and re-analyse this cluster with their contents so
+	// the narrative is grounded in what the files contain. Bounded by
+	// MaxEvidenceRounds; every step degrades gracefully (CLAUDE.md #4).
+	if evidenceEnabled && len(resp.RequestedFiles) > 0 {
+		maxRounds := cfg.MaxEvidenceRounds
+		if maxRounds <= 0 {
+			maxRounds = 1
+		}
+		evTimeout := cfg.EvidenceTimeout
+		if evTimeout <= 0 {
+			evTimeout = 10 * time.Minute
+		}
+		rc := evidencex.RoundConfig{
+			Config: evidencex.Config{
+				PythonBin: cfg.PythonBin, RepoDir: cfg.RepoDir, Timeout: evTimeout,
+			},
+			CaseID:     cfg.CaseID,
+			OutBaseDir: filepath.Join(filepath.Dir(cfg.FindingsBaseDir), "extractions", "on-demand"),
+			MaxFiles:   cfg.MaxEvidenceFiles,
+		}
+		curUserMsg := userMsg
+		requested := resp.RequestedFiles
+		rounds := 0
+		for rounds < maxRounds && len(requested) > 0 {
+			audit.EvidenceFilesRequest += len(requested)
+			round, rerr := evidencex.RunRound(ctx, db, rc, requested)
+			if rerr != nil {
+				emit(cfg, Event{Phase: "evidence",
+					Message: fmt.Sprintf("cluster %d fetch failed: %v", c.ID, rerr)})
+				break
+			}
+			if !round.Available {
+				emit(cfg, Event{Phase: "evidence",
+					Message: "no mountable disk image in this case — skipping file fetch"})
+				break
+			}
+			summaries := round.Summaries()
+			c.EvidenceFetches = append(c.EvidenceFetches, summaries...)
+			for _, s := range summaries {
+				ok := s.Status == "ok"
+				if ok {
+					audit.EvidenceFilesGot++
+				}
+				cfg.al.Append(auditlog.Action{Actor: "tier2", Kind: "evidence_fetch",
+					Detail: s.Target, Success: auditlog.BoolPtr(ok), Error: s.Error})
+			}
+			remaining := maxRounds - rounds - 1
+			curUserMsg = curUserMsg + "\n\n" + round.PreviewBlock + clusterFinalizeNote(remaining)
+			emit(cfg, Event{Phase: "evidence",
+				Message: fmt.Sprintf("cluster %d: extracted %d/%d file(s), re-analysing",
+					c.ID, countOKSummaries(summaries), len(summaries))})
+
+			resp2, perr := clusterPass(ctx, cfg, c, systemPrompt, curUserMsg, audit, false)
+			if perr != nil {
+				emit(cfg, Event{Phase: "evidence",
+					Message: fmt.Sprintf("cluster %d re-analysis failed, keeping prior: %v", c.ID, perr)})
+				break
+			}
+			resp = resp2
+			requested = resp2.RequestedFiles
+			rounds++
+			audit.EvidenceRounds++
+		}
+	}
+
+	c.Narrative = resp.Narrative
+	c.AttackPhase = resp.AttackPhase
+	c.MITRETechniques = mergeUnique(c.MITRETechniques, resp.MITRETechniques)
+	c.OpenQuestions = resp.OpenQuestions
+	return nil
+}
+
+// clusterPass runs one cluster LLM call + parse + audit. On a parse error
+// during the FIRST pass it persists the raw output and sets a degraded
+// narrative so the operator still gets something; on a follow-up (evidence)
+// pass it returns the error and lets the caller keep the prior response.
+func clusterPass(ctx context.Context, cfg Config, c *Cluster, systemPrompt, userMsg string,
+	audit *SynthAudit, first bool) (*clusterAnalysisResp, error) {
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 	defer cancel()
 
@@ -360,27 +468,55 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	dur := time.Since(startedAt)
 	audit.LLMDurationS += dur.Seconds()
 	audit.LLMCallsTotal++
-	auditLLMCall(cfg, "cluster_analysis", c.ID, dur, out, err)
+	label := "cluster_analysis"
+	if !first {
+		label = "cluster_analysis_evidence"
+	}
+	auditLLMCall(cfg, label, c.ID, dur, out, err)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	audit.addUsage(out)
 
-	resp, err := parseClusterAnalysis(out.Result)
-	if err != nil {
-		// Persist the raw LLM output for triage and degrade gracefully:
-		// keep the raw text as the cluster's narrative so the operator
-		// still gets the analysis instead of an empty cluster.
-		dumpRawResponse(cfg, c.ID, "cluster_analysis", out.Result)
-		c.Narrative = "(LLM returned non-JSON output; raw text follows)\n\n" +
-			strings.TrimSpace(out.Result)
-		return err
+	resp, perr := parseClusterAnalysis(out.Result)
+	if perr != nil {
+		dumpRawResponse(cfg, c.ID, label, out.Result)
+		if first {
+			c.Narrative = "(LLM returned non-JSON output; raw text follows)\n\n" +
+				strings.TrimSpace(out.Result)
+		}
+		return nil, perr
 	}
-	c.Narrative = resp.Narrative
-	c.AttackPhase = resp.AttackPhase
-	c.MITRETechniques = mergeUnique(c.MITRETechniques, resp.MITRETechniques)
-	c.OpenQuestions = resp.OpenQuestions
-	return nil
+	return resp, nil
+}
+
+// clusterFinalizeNote steers the cluster's follow-up pass after the
+// extracted-file previews are appended to its user message.
+func clusterFinalizeNote(remaining int) string {
+	if remaining > 0 {
+		return fmt.Sprintf(`
+
+Use the file contents above to finalize this cluster's analysis. Return the SAME
+JSON object (same language). You MAY request more files via requested_files ONLY
+if essential — %d more round(s) will be honoured.
+`, remaining)
+	}
+	return `
+
+Use the file contents above to finalize this cluster's analysis. Return the SAME
+JSON object (same language). This is the LAST round — do NOT request more files;
+omit requested_files or set it to [].
+`
+}
+
+func countOKSummaries(s []evidencex.FetchSummary) int {
+	n := 0
+	for _, x := range s {
+		if x.Status == "ok" {
+			n++
+		}
+	}
+	return n
 }
 
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
@@ -573,10 +709,11 @@ func temporalOutlierClusters(clusters []Cluster) []bool {
 }
 
 type clusterAnalysisResp struct {
-	Narrative       string   `json:"narrative"`
-	AttackPhase     string   `json:"attack_phase"`
-	MITRETechniques []string `json:"mitre_techniques"`
-	OpenQuestions   []string `json:"open_questions"`
+	Narrative       string                    `json:"narrative"`
+	AttackPhase     string                    `json:"attack_phase"`
+	MITRETechniques []string                  `json:"mitre_techniques"`
+	OpenQuestions   []string                  `json:"open_questions"`
+	RequestedFiles  []evidencex.RequestedFile `json:"requested_files,omitempty"`
 }
 
 func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
@@ -587,7 +724,7 @@ func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
 	return &out, nil
 }
 
-func buildClusterUserMessage(c *Cluster, lang string) (string, error) {
+func buildClusterUserMessage(c *Cluster, lang string, evidenceEnabled bool) (string, error) {
 	type fLite struct {
 		Source          string   `json:"source"`
 		RuleID          string   `json:"rule_id"`
@@ -642,6 +779,28 @@ func buildClusterUserMessage(c *Cluster, lang string) (string, error) {
 	if strings.ToLower(lang) == "en" {
 		langInst = "Output language: English. Write ALL prose fields in English."
 	}
+	reqFilesKey := ""
+	reqFilesRule := ""
+	if evidenceEnabled {
+		reqFilesKey = `,
+    "requested_files": [
+      {
+        "path": "<file path seen in the findings/timeline — Windows 'C:\\..\\x.ps1' or NTFS-relative>",
+        "evidence_id": "<optional: which disk image, only if the case has several>",
+        "rationale": "<1-line: what reading this file would confirm about the attack chain>"
+      }
+    ]`
+		reqFilesRule = `
+
+requested_files (OPTIONAL — use [] or omit if no file's contents are needed):
+- Use ONLY when reading a file referenced in this cluster would resolve an
+  open_question or confirm the chain: a dropped script, a config, a staged
+  archive, a suspicious binary you want strings from.
+- The file is extracted READ-ONLY from the case's disk image and its contents
+  are returned to you for a bounded follow-up pass, so you can ground the
+  narrative in what the file actually contains instead of inferring.
+- Request only the few most decision-relevant files.`
+	}
 	prelude := `Below is one TEMPORAL CLUSTER of Tier 1 findings from a Windows
 forensic case, plus the raw timeline events from unified_events that fall
 in the same ±5 min window. Reconstruct the attack-chain story for this
@@ -658,10 +817,10 @@ Return ONLY a single JSON object:
     "open_questions": [
       "(specific evidence gap or unresolved question — same language as narrative)",
       ...
-    ]
+    ]` + reqFilesKey + `
   }
 
-No markdown fences, no text outside the JSON.
+No markdown fences, no text outside the JSON.` + reqFilesRule + `
 
 ClusterContext:
 `
@@ -840,6 +999,7 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 			MITRETechniques: clusterTechniqueUnion(c),
 			OpenQuestions:   c.OpenQuestions,
 			ActiveSearch:    c.ActiveSearch,
+			EvidenceFetches: c.EvidenceFetches,
 		}
 		for _, f := range c.Findings {
 			prov, conf := ProvenanceForSource(f.Source)
