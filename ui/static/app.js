@@ -1615,13 +1615,24 @@ async function renderFindings(pane, caseID) {
     groups.get(tactic).findings.push(f);
   }
 
+  // Preserve UI state (search / filter / sort / expanded groups / selection)
+  // across re-renders so changing the sort doesn't reset the examiner's view.
+  const prev = pane._findings || {};
   pane._findings = {
     caseID,
     findingsById: Object.fromEntries(findings.map((f) => [f.finding_id, f])),
-    selected: new Set(),
-    filter: "all",         // all | pending | reviewed | auto-approved
-    sourceFilter: "all",   // all | tier1a | tier1b
+    selected: prev.selected instanceof Set ? prev.selected : new Set(),
+    filter: prev.filter || "all",             // all | pending | reviewed | auto-approved
+    sourceFilter: prev.sourceFilter || "all", // all | tier1a | tier1b
+    query: prev.query || "",                  // free-text search
+    sort: prev.sort || "severity",            // severity | time | matches
+    expanded: prev.expanded instanceof Set ? prev.expanded : null, // open tactic names
   };
+  const state = pane._findings;
+  // Drop any selected ids that no longer exist after a re-fetch.
+  for (const id of [...state.selected]) {
+    if (!state.findingsById[id]) state.selected.delete(id);
+  }
 
   pane.innerHTML = "";
 
@@ -1629,17 +1640,33 @@ async function renderFindings(pane, caseID) {
   pane.appendChild(toolbar);
   refreshFindingsToolbar(pane);
 
+  // Shown when the search/filter hides every finding.
+  pane.appendChild(h("div", { class: "findings-nomatch hidden", id: "fnd-nomatch" },
+    "No findings match the current search / filter."));
+
+  // On the first render (no carried-over expand state) auto-open tactic groups
+  // that contain a critical/high finding so the important clusters are visible
+  // immediately; lower-severity groups stay collapsed.
+  const firstRender = state.expanded === null;
+  if (firstRender) state.expanded = new Set();
+
   // Tactic groups in the order they first appear (backend sort already
   // surfaces highest-severity tactic first because findings are sorted
   // severity-desc before grouping).
   const groupOrder = [...groups.values()];
   for (const g of groupOrder) {
-    const list = h("div", { class: "findings hidden" }); // collapsed by default
-    const visibleSubset = g.findings.filter((f) =>
-      findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter));
+    let expanded;
+    if (firstRender) {
+      expanded = g.findings.some((f) => f.severity === "critical" || f.severity === "high");
+      if (expanded) state.expanded.add(g.tactic);
+    } else {
+      expanded = state.expanded.has(g.tactic);
+    }
+
+    const list = h("div", { class: expanded ? "findings" : "findings hidden" });
     const sevSummary = severitySummary(g.findings);
     const header = h("div", { class: "tactic-header" }, [
-      h("span", { class: "tactic-toggle" }, "▸"),
+      h("span", { class: "tactic-toggle" }, expanded ? "▾" : "▸"),
       h("span", { class: "name" }, g.tactic),
       h("span", { class: "spacer" }),
       ...sevSummary,
@@ -1649,6 +1676,8 @@ async function renderFindings(pane, caseID) {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
       const collapsed = list.classList.toggle("hidden");
       header.querySelector(".tactic-toggle").textContent = collapsed ? "▸" : "▾";
+      if (collapsed) state.expanded.delete(g.tactic);
+      else state.expanded.add(g.tactic);
     };
 
     const groupCheck = h("input", {
@@ -1659,9 +1688,9 @@ async function renderFindings(pane, caseID) {
         ev.stopPropagation();
         const checked = ev.target.checked;
         for (const f of g.findings) {
-          if (!findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter)) continue;
-          if (checked) pane._findings.selected.add(f.finding_id);
-          else pane._findings.selected.delete(f.finding_id);
+          if (!findingMatchesFilter(f, state)) continue;
+          if (checked) state.selected.add(f.finding_id);
+          else state.selected.delete(f.finding_id);
           const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(f.finding_id)}"]`);
           if (cb) cb.checked = checked;
         }
@@ -1687,11 +1716,14 @@ async function renderFindings(pane, caseID) {
     }, "Approve cluster");
     header.appendChild(bulkApprove);
 
-    g.findings.forEach((f) => list.appendChild(findingRow(caseID, f, pane)));
+    sortFindings(g.findings, state.sort).forEach((f) => list.appendChild(findingRow(caseID, f, pane)));
 
-    const group = h("div", { class: "tactic-group" }, [header, list]);
+    const group = h("div", { class: "tactic-group", "data-tactic": g.tactic }, [header, list]);
     pane.appendChild(group);
   }
+
+  // Apply the current search/filter to row + group visibility + counts.
+  applyVisibilityFilter(pane);
 }
 
 // severitySummary renders compact severity-count chips for the tactic header.
@@ -1709,12 +1741,62 @@ function severitySummary(findings) {
   return out;
 }
 
-function findingMatchesFilter(f, mode, sourceMode) {
+// findingMatchesFilter decides whether a finding is visible under the current
+// review-state filter, source filter, AND free-text search query. Takes the
+// whole pane._findings state so callers don't thread each field separately.
+function findingMatchesFilter(f, state) {
+  const mode = state.filter, sourceMode = state.sourceFilter, query = state.query;
   if (sourceMode && sourceMode !== "all" && f.source !== sourceMode) return false;
-  if (mode === "pending")        return !f.approved && !f.rejected;
-  if (mode === "reviewed")       return (f.approved || f.rejected) && !f.auto_approved;
-  if (mode === "auto-approved")  return f.auto_approved;
-  return true; // "all"
+  if (mode === "pending"       && (f.approved || f.rejected)) return false;
+  if (mode === "reviewed"      && !((f.approved || f.rejected) && !f.auto_approved)) return false;
+  if (mode === "auto-approved" && !f.auto_approved) return false;
+  if (query && !findingMatchesQuery(f, query)) return false;
+  return true;
+}
+
+// findingMatchesQuery does a case-insensitive substring match across every
+// human-meaningful field, so the examiner can grep by rule name, technique id,
+// command fragment, file path, etc. while eyeballing the list.
+function findingMatchesQuery(f, q) {
+  const needle = q.toLowerCase();
+  const hay = [
+    f.title, f.description, f.rule_id, f.rule_source, f.source,
+    f.lens, f.source_path, f.finding_id,
+    ...(f.mitre_techniques || []),
+    ...(f.mitre_tactics || []),
+  ].filter(Boolean).join("  ").toLowerCase();
+  return hay.includes(needle);
+}
+
+// findingFirstTs returns the earliest evidence timestamp (ISO UTC string) on a
+// finding, or null. UTC ISO strings sort lexically, so a plain string compare
+// is safe. Used for the per-row time label and time-sorting.
+function findingFirstTs(f) {
+  let best = null;
+  for (const ev of f.evidence_preview || []) {
+    if (!ev.ts_utc) continue;
+    if (best === null || ev.ts_utc < best) best = ev.ts_utc;
+  }
+  return best;
+}
+
+// sortFindings orders a tactic group's findings for display. "severity" keeps
+// the backend order (severity-desc + pending-first); the others re-sort.
+function sortFindings(list, sort) {
+  if (sort === "severity") return list;
+  const arr = [...list];
+  if (sort === "time") {
+    arr.sort((a, b) => {
+      const ta = findingFirstTs(a) || "", tb = findingFirstTs(b) || "";
+      if (ta && tb) return ta < tb ? -1 : ta > tb ? 1 : 0;
+      if (ta) return -1;
+      if (tb) return 1;
+      return 0;
+    });
+  } else if (sort === "matches") {
+    arr.sort((a, b) => (b.match_count || 0) - (a.match_count || 0));
+  }
+  return arr;
 }
 
 function refreshFindingsToolbar(pane) {
@@ -1726,11 +1808,42 @@ function refreshFindingsToolbar(pane) {
   const rejected = findings.filter((f) => f.rejected).length;
   const pending = findings.filter((f) => !f.approved && !f.rejected).length;
   const selectedCount = state.selected.size;
-  const visibleCount = findings.filter((f) =>
-    findingMatchesFilter(f, state.filter, state.sourceFilter)).length;
+  const visibleCount = findings.filter((f) => findingMatchesFilter(f, state)).length;
 
   const toolbar = pane.querySelector(".findings-toolbar");
   toolbar.innerHTML = "";
+
+  // Row 0: free-text search + sort + expand/collapse-all. Search filters rows
+  // live (no re-render → input keeps focus); sort triggers a re-render.
+  const sortSelect = h("select", {
+    title: "order findings within each tactic",
+    onchange: (ev) => { state.sort = ev.target.value; renderFindings(pane, state.caseID); },
+  }, [
+    h("option", { value: "severity" }, "severity"),
+    h("option", { value: "time" }, "time"),
+    h("option", { value: "matches" }, "matches"),
+  ]);
+  sortSelect.value = state.sort || "severity";
+  const searchRow = h("div", { class: "row", style: "gap: 8px; align-items: center; margin-bottom: 6px;" }, [
+    h("input", {
+      type: "search",
+      class: "findings-search",
+      placeholder: "search title / rule / technique / path / command…",
+      value: state.query || "",
+      oninput: (ev) => { state.query = ev.target.value.trim(); applyVisibilityFilter(pane); },
+    }),
+    h("span", { class: "muted", style: "font-size: 11px;" }, "Sort:"),
+    sortSelect,
+    h("button", {
+      class: "ghost", style: "padding: 4px 10px; font-size: 11px;",
+      title: "expand every tactic group", onclick: () => expandAllGroups(pane, true),
+    }, "Expand all"),
+    h("button", {
+      class: "ghost", style: "padding: 4px 10px; font-size: 11px;",
+      title: "collapse every tactic group", onclick: () => expandAllGroups(pane, false),
+    }, "Collapse all"),
+  ]);
+  toolbar.appendChild(searchRow);
 
   // Filter row 1: review state.
   const filterRow = h("div", { class: "row", style: "gap: 6px; align-items: center;" }, [
@@ -1747,9 +1860,10 @@ function refreshFindingsToolbar(pane) {
       }, mode);
     }),
     h("span", { class: "spacer" }),
-    h("span", { class: "muted", style: "font-size: 11px;" },
-      `Total ${total} · pending ${pending} · reviewed ${approved} · auto ${autoApproved} · rejected ${rejected}` +
-      (state.filter !== "all" || state.sourceFilter !== "all" ? ` · showing ${visibleCount}` : "")),
+    h("span", { class: "muted", style: "font-size: 11px;" }, [
+      `Total ${total} · pending ${pending} · reviewed ${approved} · auto ${autoApproved} · rejected ${rejected} · showing `,
+      h("span", { id: "fnd-showing" }, String(visibleCount)),
+    ]),
   ]);
   toolbar.appendChild(filterRow);
 
@@ -1800,7 +1914,7 @@ function refreshFindingsToolbar(pane) {
       onclick: async () => {
         if (!confirm(`Approve all ${visibleCount} visible finding(s)?`)) return;
         const ids = findings
-          .filter((f) => findingMatchesFilter(f, state.filter, state.sourceFilter))
+          .filter((f) => findingMatchesFilter(f, state))
           .map((f) => f.finding_id);
         await runBulk(pane, ids, "approve", "");
       },
@@ -1810,15 +1924,55 @@ function refreshFindingsToolbar(pane) {
 }
 
 // applyVisibilityFilter toggles per-row visibility based on the current
-// state/source filters without rebuilding the DOM (preserves scroll).
+// state/source/search filters without rebuilding the DOM (preserves scroll +
+// search-input focus), then syncs group visibility and the "showing N" count.
 function applyVisibilityFilter(pane) {
   const state = pane._findings;
+  let visibleCount = 0;
   for (const f of Object.values(state.findingsById)) {
     const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
     if (!row) continue;
-    const visible = findingMatchesFilter(f, state.filter, state.sourceFilter);
+    const visible = findingMatchesFilter(f, state);
     row.classList.toggle("filtered-out", !visible);
+    if (visible) visibleCount++;
   }
+  updateGroupVisibility(pane);
+  const showing = pane.querySelector("#fnd-showing");
+  if (showing) showing.textContent = String(visibleCount);
+  const noMatch = pane.querySelector("#fnd-nomatch");
+  if (noMatch) noMatch.classList.toggle("hidden", visibleCount > 0);
+}
+
+// updateGroupVisibility hides tactic groups whose findings are all filtered
+// out, and rewrites the per-group count to "visible/total" while filtered so
+// the header still reflects what's on screen.
+function updateGroupVisibility(pane) {
+  for (const group of pane.querySelectorAll(".tactic-group")) {
+    const rows = group.querySelectorAll(".finding");
+    let vis = 0;
+    rows.forEach((r) => { if (!r.classList.contains("filtered-out")) vis++; });
+    group.classList.toggle("group-empty", vis === 0);
+    const cnt = group.querySelector(".tactic-header .count");
+    if (cnt) cnt.textContent = (vis < rows.length) ? `${vis}/${rows.length} findings` : `${rows.length} findings`;
+  }
+}
+
+// setGroupExpanded / expandAllGroups drive the collapse arrow + state.expanded
+// (so the open/closed set survives a sort re-render).
+function setGroupExpanded(pane, group, expanded) {
+  const list = group.querySelector(".findings");
+  const toggle = group.querySelector(".tactic-toggle");
+  if (!list) return;
+  list.classList.toggle("hidden", !expanded);
+  if (toggle) toggle.textContent = expanded ? "▾" : "▸";
+  const tactic = group.getAttribute("data-tactic");
+  if (tactic && pane._findings && pane._findings.expanded) {
+    if (expanded) pane._findings.expanded.add(tactic);
+    else pane._findings.expanded.delete(tactic);
+  }
+}
+function expandAllGroups(pane, expanded) {
+  for (const group of pane.querySelectorAll(".tactic-group")) setGroupExpanded(pane, group, expanded);
 }
 
 async function bulkAction(pane, action) {
@@ -1913,11 +2067,11 @@ function updateFindingRowDOM(pane, f) {
 }
 
 function findingRowClass(f, pane) {
-  let cls = "finding";
+  let cls = "finding sevrow-" + (f.severity || "info");
   if (f.approved && f.auto_approved) cls += " auto-approved";
   else if (f.approved) cls += " approved";
   else if (f.rejected) cls += " rejected";
-  if (!findingMatchesFilter(f, pane._findings.filter, pane._findings.sourceFilter)) {
+  if (!findingMatchesFilter(f, pane._findings)) {
     cls += " filtered-out";
   }
   return cls;
@@ -1978,6 +2132,7 @@ function findingRow(caseID, f, pane) {
     ? "1B/" + (f.rule_id || "skill")
     : "1A/" + (f.rule_source || "rule");
   const stateLbl = reviewStateLabel(f);
+  const firstTs = findingFirstTs(f);
 
   const headerLine = h("div", { class: "header" }, [
     h("input", {
@@ -2009,6 +2164,10 @@ function findingRow(caseID, f, pane) {
         onclick: (ev) => ev.stopPropagation(),
       }, t)
     ),
+    ...(firstTs
+      ? [h("span", { class: "finding-ts", title: "earliest evidence: " + firstTs },
+          fmtTS(firstTs))]
+      : []),
     h("span", { class: "badge state-badge " + stateLbl.cls }, stateLbl.label),
   ]);
   row.appendChild(headerLine);
