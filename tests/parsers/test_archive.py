@@ -278,3 +278,15 @@ def test_disabled_when_max_depth_zero(tmp_path: pathlib.Path, monkeypatch) -> No
     monkeypatch.setitem(_archive.DEFAULTS, "max_depth", 0)
     records, _ = _run(root, tmp_path / "ws")
     assert records == []
+
+
+def test_load_config_broken_yaml_warns_and_uses_defaults(
+    tmp_path: pathlib.Path, capsys
+) -> None:
+    bad = tmp_path / "staging.yaml"
+    bad.write_bytes(b"\x00\xff\x00 not yaml")
+    cfg = _archive.load_config(bad)
+    assert cfg == dict(_archive.DEFAULTS)
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "staging defaults" in err
