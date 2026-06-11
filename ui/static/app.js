@@ -154,6 +154,10 @@ const escapeHTML = (s) => String(s ?? "")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+// errMsg: safe, bounded rendering of an Error (or anything) for innerHTML.
+// Truncates to keep long server payloads from blowing up the layout, then
+// HTML-escapes so a hostile message can't inject markup.
+function errMsg(e) { return escapeHTML(String((e && e.message) || e).slice(0, 200)); }
 
 // ----- display timezone -----------------------------------------------------
 // Events are stored in canonical UTC. The examiner picks how timestamps are
@@ -1120,23 +1124,54 @@ function pollPipeline(caseID, kinds) {
   }
   pipelinePolls.clear();
   const id = "pipeline:" + caseID;
+  // Polling resilience: a transient server hiccup shouldn't spam the console
+  // or wedge the UI. Count *consecutive* fully-failed ticks (every kind threw);
+  // any success resets the counter. After FAIL_LIMIT we back the cadence off
+  // from 2s to 15s, warn once, and surface an inline notice — but keep polling
+  // so the view recovers automatically when the server comes back.
+  const FAST_MS = 2000, SLOW_MS = 15000, FAIL_LIMIT = 5;
+  let fails = 0, degraded = false, lastReason = "";
+  const reschedule = (ms) => {
+    const old = pipelinePolls.get(id);
+    if (old) clearInterval(old);
+    pipelinePolls.set(id, setInterval(tick, ms));
+  };
   const tick = async () => {
-    let anyRunning = false;
+    let anyRunning = false, anyOK = false;
     for (const k of kinds) {
       try {
         const subpath = k === "synthesize" ? "synthesize" : k;
         const st = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/${subpath}/status`);
+        anyOK = true;
         const el = document.getElementById("prog_" + k);
         if (el) renderProgressBlock(el, st);
         if (st.state === "running") anyRunning = true;
-      } catch (_) {}
+      } catch (e) { lastReason = String((e && e.message) || e); }
+    }
+    if (anyOK) {
+      // Recovered (or never broke): reset and restore fast cadence + clear notice.
+      fails = 0;
+      if (degraded) {
+        degraded = false;
+        reschedule(FAST_MS);
+      }
+    } else {
+      fails++;
+      if (fails === FAIL_LIMIT && !degraded) {
+        degraded = true;
+        console.warn(`pipeline poll degraded after ${FAIL_LIMIT} failures: ${lastReason}`);
+        const host = document.getElementById("prog_" + kinds[0]);
+        if (host) host.innerHTML =
+          `<div class="empty">live updates degraded: ${errMsg(lastReason)}</div>`;
+        reschedule(SLOW_MS);
+      }
     }
     if (!anyRunning) {
       // slow poll when nothing running
     }
   };
   tick();
-  pipelinePolls.set(id, setInterval(tick, 2000));
+  pipelinePolls.set(id, setInterval(tick, FAST_MS));
 }
 
 // startParse opens the multi-evidence Parse modal (★v0.3 #1).
@@ -2224,7 +2259,7 @@ function findingRow(caseID, f, pane) {
         try { pretty = JSON.stringify(JSON.parse(row.payload_json), null, 2); } catch (_) {}
         payloadBox.textContent = pretty;
       } catch (e) {
-        meta.textContent = "load failed: " + e.message;
+        meta.textContent = "load failed: " + String((e && e.message) || e).slice(0, 200);
       }
     }));
   }
@@ -2475,7 +2510,7 @@ async function renderTimeline(pane, caseID) {
             try { pretty = JSON.stringify(JSON.parse(row.payload_json), null, 2); } catch (_) {}
             evPre.textContent = pretty || "(empty payload)";
           } catch (e) {
-            evMeta.textContent = "load failed: " + e.message;
+            evMeta.textContent = "load failed: " + String((e && e.message) || e).slice(0, 200);
           }
         })();
       }
@@ -2643,7 +2678,7 @@ async function renderReport(pane, caseID) {
     const url = URL.createObjectURL(blob);
     pane.appendChild(h("iframe", { class: "report-frame", src: url }));
   } catch (e) {
-    pane.appendChild(h("div", { class: "empty" }, "Report not available: " + e.message));
+    pane.appendChild(h("div", { class: "empty" }, "Report not available: " + String((e && e.message) || e).slice(0, 200)));
   }
 }
 
@@ -2976,6 +3011,12 @@ async function renderStatus(pane, caseID) {
 
   pane.innerHTML = "";
 
+  // Dedicated host for the poll-resilience notice. Kept separate from the
+  // overview / detail / event-log hosts because those are repainted every tick
+  // and would clobber an inline notice. Empty (zero layout) until degraded.
+  const pollNotice = h("div", { id: "status_poll_notice" });
+  pane.appendChild(pollNotice);
+
   // Case-state snapshot — fetched once on tab open; refreshed alongside
   // pipeline polling so newly-finished jobs surface within ~2 s.
   const snapshotHost = h("div", { class: "case-snapshot", id: "case_snapshot" });
@@ -3006,19 +3047,49 @@ async function renderStatus(pane, caseID) {
   // Previous JobStatus snapshot, used by statusPushEvent for delta detection.
   const lastByKind = {};
 
+  // Polling resilience (mirrors pollPipeline): per-phase fetches are caught
+  // individually and fall back to "idle", so tick() never throws even when the
+  // server is unreachable. Track whether *any* phase fetch succeeded this tick
+  // so we can detect a sustained outage, slow the cadence, and notify once.
+  const FAST_MS = 2000, SLOW_MS = 15000, FAIL_LIMIT = 5;
+  let pollFails = 0, pollDegraded = false, pollReason = "";
+  const reschedulePoll = (ms) => {
+    if (statusTabPollID !== null) clearInterval(statusTabPollID);
+    statusTabPollID = setInterval(pollOnce, ms);
+  };
+
   async function tick() {
-    let anyRunning = false;
+    let anyRunning = false, anyOK = false;
     const results = {};
     for (const phase of STATUS_PHASES) {
       try {
         const st = await api("GET",
           `/api/cases/${encodeURIComponent(caseID)}/${phase.subpath}/status`);
+        anyOK = true;
         results[phase.kind] = st;
         statusPushEvent(caseID, phase.kind, lastByKind[phase.kind], st);
         lastByKind[phase.kind] = st;
         if (st.state === "running") anyRunning = true;
-      } catch (_) {
+      } catch (e) {
+        pollReason = String((e && e.message) || e);
         results[phase.kind] = { state: "idle" };
+      }
+    }
+    if (anyOK) {
+      pollFails = 0;
+      if (pollDegraded) {
+        pollDegraded = false;
+        pollNotice.innerHTML = "";
+        reschedulePoll(FAST_MS);
+      }
+    } else {
+      pollFails++;
+      if (pollFails === FAIL_LIMIT && !pollDegraded) {
+        pollDegraded = true;
+        console.warn(`status poll degraded after ${FAIL_LIMIT} failures: ${pollReason}`);
+        pollNotice.innerHTML =
+          `<div class="empty">live updates degraded: ${errMsg(pollReason)}</div>`;
+        reschedulePoll(SLOW_MS);
       }
     }
     // JobStatus is in-memory and resets on server restart, so an "idle" phase
@@ -3034,14 +3105,18 @@ async function renderStatus(pane, caseID) {
     return anyRunning;
   }
 
-  await tick();
-  // Poll every 2 s. Same cadence as pipelinePolls so the two views agree.
-  statusTabPollID = setInterval(async () => {
+  // One poll iteration: tick + opportunistic snapshot refresh. Named so the
+  // resilience reschedule can re-register the same body at a slower cadence.
+  const pollOnce = async () => {
     const anyRun = await tick();
     // Refresh case snapshot when a job just transitioned to a terminal state,
     // so the summary picks up new findings / synthesis / reports.
     if (!anyRun) await paintCaseSnapshot(snapshotHost, caseID);
-  }, 2000);
+  };
+
+  await tick();
+  // Poll every 2 s. Same cadence as pipelinePolls so the two views agree.
+  statusTabPollID = setInterval(pollOnce, FAST_MS);
 }
 
 async function paintCaseSnapshot(host, caseID) {
@@ -3049,7 +3124,7 @@ async function paintCaseSnapshot(host, caseID) {
   try {
     sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
   } catch (e) {
-    host.innerHTML = `<div class="empty">summary unavailable: ${e.message}</div>`;
+    host.innerHTML = `<div class="empty">summary unavailable: ${errMsg(e)}</div>`;
     return;
   }
   host.innerHTML = "";
@@ -3944,7 +4019,7 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
     data = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/events?${q.toString()}`);
   } catch (e) {
     resultsBox.innerHTML = "";
-    resultsBox.appendChild(h("div", { class: "empty" }, "Query failed: " + e.message));
+    resultsBox.appendChild(h("div", { class: "empty" }, "Query failed: " + String((e && e.message) || e).slice(0, 200)));
     return;
   }
 
