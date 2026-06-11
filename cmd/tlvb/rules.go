@@ -428,6 +428,16 @@ func runRulesImport(args []string) error {
 		return fmt.Errorf("no valid rows parsed from %s", *inDir)
 	}
 
+	// The Tier 1A loader only loads rows whose (schema_version, model_id)
+	// match the running binary, so importing a stale vendored JSONL would
+	// otherwise succeed yet silently produce zero hits at runtime.
+	if n, vers := staleSchemaRows(rows, casedb.SchemaVersion()); n > 0 {
+		fmt.Fprintf(os.Stderr,
+			"WARNING: %d/%d rule(s) have schema_version %s != current %s — "+
+				"they will be imported but IGNORED at Tier 1A runtime until rebuilt (tlvb rules build)\n",
+			n, len(rows), strings.Join(vers, ","), casedb.SchemaVersion())
+	}
+
 	srcs := make([]string, 0, len(perSource))
 	for s := range perSource {
 		srcs = append(srcs, s)
@@ -485,6 +495,25 @@ func runRulesImport(args []string) error {
 // parseImportFile reads one <source>.sql.jsonl into CacheRows. Malformed lines
 // (bad JSON, or missing rule_id/rule_source/sql) are warned about and skipped
 // so one bad row can't abort a whole import; the count is returned.
+// staleSchemaRows counts rows whose schema_version differs from the running
+// binary's, returning the count and the sorted set of stale versions seen.
+func staleSchemaRows(rows []rulesdb.CacheRow, current string) (int, []string) {
+	seen := map[string]bool{}
+	n := 0
+	for _, r := range rows {
+		if r.SchemaVersion != current {
+			n++
+			seen[r.SchemaVersion] = true
+		}
+	}
+	vers := make([]string, 0, len(seen))
+	for v := range seen {
+		vers = append(vers, v)
+	}
+	sort.Strings(vers)
+	return n, vers
+}
+
 func parseImportFile(path string) ([]rulesdb.CacheRow, int, error) {
 	f, err := os.Open(path)
 	if err != nil {

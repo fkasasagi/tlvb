@@ -48,12 +48,23 @@ func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment,
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+	// Render to a temp file and rename so a template error mid-execute can
+	// never leave a truncated, unopenable report.html behind.
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return tpl.Execute(f, view)
+	if err := tpl.Execute(f, view); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // reportView is the full view model handed to the template.
@@ -176,9 +187,10 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		}
 	}
 
-	// Detect a fallback executive summary by the warning prefix tier2 prepends
-	// (kept in sync with tier2's fallbackOverallStory).
-	v.IsExecutiveSummaryFallback = strings.HasPrefix(cs.OverallStory, "[NOTE:") ||
+	// tier2 flags a fallback executive summary explicitly; the banner-prefix
+	// sniff remains only for synthesis.json written before that field existed.
+	v.IsExecutiveSummaryFallback = cs.OverallStoryFallback ||
+		strings.HasPrefix(cs.OverallStory, "[NOTE:") ||
 		strings.HasPrefix(cs.OverallStory, "【注意:")
 	for _, c := range cs.Clusters {
 		cv := clusterView{

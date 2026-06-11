@@ -152,8 +152,13 @@ type CaseSynthesis struct {
 	ExecBrief string `json:"exec_brief,omitempty"`
 	// TechSummary is the DFIR-analyst layer of the executive summary (Layer 2)
 	// — the existing 4-5 paragraph technical prose. Equal to OverallStory.
-	TechSummary  string       `json:"tech_summary,omitempty"`
-	MITREMapping []MITREEntry `json:"mitre_mapping"`
+	TechSummary string `json:"tech_summary,omitempty"`
+	// OverallStoryFallback is true when OverallStory is the deterministic
+	// per-cluster stitch used because the LLM overall synthesis failed.
+	// Tier 3 renders its warning banner from this flag; the banner-prefix
+	// sniff remains only for synthesis.json written before this field.
+	OverallStoryFallback bool         `json:"overall_story_fallback,omitempty"`
+	MITREMapping         []MITREEntry `json:"mitre_mapping"`
 	// OpenQuestions is the flat, deduplicated union of every cluster's open
 	// questions (kept for backward compatibility and as the fallback view).
 	OpenQuestions []string `json:"open_questions,omitempty"`
