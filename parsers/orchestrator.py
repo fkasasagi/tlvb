@@ -117,6 +117,11 @@ _DETECTORS: list[tuple[str, str, str]] = [
     # no map for, generating spurious FAIL rows on every TANAKA case.
     ("yara",            "**/triage-yara",                                         "dir"),   # operator-explicit
     ("volatility3",     "**/*.dmp",                                               "file"),
+    # IIS applicationHost.config — registered HTTP modules (T1505.004 persistence).
+    # The file path is fixed by IIS (System32\inetsrv\config), so a path detector
+    # is exact. Two casings cover collectors that lowercase the basename.
+    ("iis_module",      "**/inetsrv/config/applicationHost.config",               "file"),
+    ("iis_module",      "**/inetsrv/config/applicationhost.config",               "file"),
     # NOTE: w3c_iis is intentionally NOT a path-pattern detector — IIS log
     # output dirs are admin-configurable, so it is content-sniffed in detect()
     # (every *.log whose first lines look like W3C/IIS-native/NCSA is routed).
