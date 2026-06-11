@@ -127,6 +127,57 @@ FIXTURE = [
      {"FileName": "ntds.dit", "ParentPath": r".\Windows\NTDS"}),
     ("ntds_neg_winsxs", "mft",  # the install template under WinSxS
      {"FileName": "ntds.dit", "ParentPath": r".\Windows\WinSxS\amd64_microsoft-windows-d..rvices-domain-files"}),
+    # --- w3c_iis: executable web script in an upload/writable directory (web shell) ---
+    ("webshell_a_pos1", "w3c_iis",  # .aspx under /uploads/ = classic web shell
+     {"cs-uri-stem": "/kintai/uploads/shell.aspx", "cs-uri-query": "cmd=whoami",
+      "cs-method": "GET", "c-ip": "192.168.50.1", "sc-status": "200"}),
+    ("webshell_a_pos2_php", "w3c_iis",  # .php under /images/ (a static dir never serves code)
+     {"cs-uri-stem": "/images/thumb.php", "cs-uri-query": "-",
+      "cs-method": "GET", "c-ip": "10.0.0.5", "sc-status": "200"}),
+    ("webshell_a_neg_app", "w3c_iis",  # .aspx but the legit app page, not an upload dir
+     {"cs-uri-stem": "/kintai/dashboard.aspx", "cs-uri-query": "-",
+      "cs-method": "GET", "c-ip": "10.0.0.5", "sc-status": "200"}),
+    ("webshell_a_neg_staticupload", "w3c_iis",  # in /uploads/ but a non-executable file
+     {"cs-uri-stem": "/uploads/photo.jpg", "cs-uri-query": "-",
+      "cs-method": "GET", "c-ip": "10.0.0.5", "sc-status": "200"}),
+    # --- w3c_iis: exec of a dropped binary/script from a web-writable path / potato tool ---
+    ("webexec_b_pos_exe", "w3c_iis",  # cmd= invokes PrintSpoofer64.exe under inetpub
+     {"cs-uri-stem": "/app/cmd.aspx",
+      "cs-uri-query": r"cmd=C:\inetpub\wwwroot\app\PrintSpoofer64.exe -i -c whoami",
+      "cs-method": "GET", "c-ip": "1.2.3.4", "sc-status": "200"}),
+    ("webexec_b_pos_ps1", "w3c_iis",  # powershell -File run_godpotato.ps1 under inetpub
+     {"cs-uri-stem": "/handler.ashx",
+      "cs-uri-query": r"c=powershell -ExecutionPolicy Bypass -File C:\inetpub\wwwroot\run_godpotato.ps1",
+      "cs-method": "POST", "c-ip": "1.2.3.4", "sc-status": "200"}),
+    ("webexec_b_neg_recon", "w3c_iis",  # webshell recon but no tool/binary path
+     {"cs-uri-stem": "/portal/cmd.aspx", "cs-uri-query": "cmd=whoami",
+      "cs-method": "GET", "c-ip": "1.2.3.4", "sc-status": "200"}),
+    ("webexec_b_neg_download", "w3c_iis",  # benign .pdf download param (no inetpub/wwwroot, no tool)
+     {"cs-uri-stem": "/portal/download.aspx", "cs-uri-query": "file=quarterly.pdf",
+      "cs-method": "GET", "c-ip": "1.2.3.4", "sc-status": "200"}),
+    # --- iis_module: native module whose image= path is outside the standard IIS dirs ---
+    ("iismod_c_pos", "iis_module",  # rogue module dropped into System32 root (T1505.004)
+     {"module_name": "KintaiLogModule", "module_kind": "native",
+      "image": r"C:\Windows\System32\kintai_log.dll",
+      "image_expanded": r"C:\Windows\System32\kintai_log.dll", "config_path": "applicationHost.config"}),
+    ("iismod_c_neg_inetsrv", "iis_module",  # stock native module under inetsrv
+     {"module_name": "StaticFileModule", "module_kind": "native",
+      "image": r"%windir%\System32\inetsrv\static.dll",
+      "image_expanded": r"C:\Windows\System32\inetsrv\static.dll", "config_path": "applicationHost.config"}),
+    ("iismod_c_neg_dotnet", "iis_module",  # managed engine under Microsoft.NET (legit)
+     {"module_name": "ManagedEngineV4.0_64bit", "module_kind": "native",
+      "image": r"%windir%\Microsoft.NET\Framework64\v4.0.30319\webengine4.dll",
+      "image_expanded": r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\webengine4.dll",
+      "config_path": "applicationHost.config"}),
+    ("iismod_c_neg_managed", "iis_module",  # managed (type-based) module — image policy is native-only
+     {"module_name": "Session", "module_kind": "managed",
+      "image": "System.Web.SessionState.SessionStateModule",
+      "image_expanded": "System.Web.SessionState.SessionStateModule", "config_path": "applicationHost.config"}),
+    ("iismod_c_neg_arr", "iis_module",  # legit 3rd-party native module under Program Files (ARR)
+     {"module_name": "ApplicationRequestRouting", "module_kind": "native",
+      "image": r"C:\Program Files\IIS\Application Request Routing\requestRouter.dll",
+      "image_expanded": r"C:\Program Files\IIS\Application Request Routing\requestRouter.dll",
+      "config_path": "applicationHost.config"}),
 ]
 
 EXPECTED = {
@@ -140,6 +191,9 @@ EXPECTED = {
     "tlvb-hacktool-self-deletion": {"tool_pos_procdump", "tool_pos_mimi"},
     "tlvb-run-key-system-process-masquerade": {"runkey_pos"},
     "tlvb-admin-share-access-shellbags": {"share_pos"},
+    "tlvb-web-shell-in-upload-dir": {"webshell_a_pos1", "webshell_a_pos2_php"},
+    "tlvb-web-exec-tool-from-writable-path": {"webexec_b_pos_exe", "webexec_b_pos_ps1"},
+    "tlvb-iis-native-module-nonstandard-image": {"iismod_c_pos"},
 }
 
 

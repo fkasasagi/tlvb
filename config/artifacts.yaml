@@ -356,6 +356,30 @@ artifacts:
     caveats:
       - "Apache/nginx/Tomcat diagnostic logs (non-NCSA); content-sniffed, server-local time"
 
+  - id: iis_module
+    name: "IIS applicationHost.config registered modules"
+    tier: P2
+    safety_tier: SAFE
+    parser: parsers.iis_module_parser
+    tool:
+      name: "(in-process)"
+      version: "0.1.0"
+      binary: "(none — pure Python)"
+    input:
+      mode: file
+      pattern: "**/inetsrv/config/applicationHost.config"
+    command_template: "(in-process applicationHost.config parser)"
+    output:
+      format: jsonl
+      default_csv_name: iis_module.jsonl
+    unified_event_mapping:
+      timestamp: "config-mtime"
+      event_type: "iis_module_registration"
+      source_artifact: "iis_module"
+    caveats:
+      - "T1505.004 IIS-component persistence: native module image= path outside %windir%\\System32\\inetsrv\\ or %windir%\\Microsoft.NET\\ is the rogue-module signal"
+      - "ts_utc = config file mtime (advisory; extraction may not preserve original mtimes)"
+
 # ============================================================================
 # P1 (MVP+) — EZ Tools 拡張パーサ群
 # ============================================================================
