@@ -204,5 +204,10 @@ log per case spanning the whole investigation.
 | MCP | `internal/mcp/` | read-only tool surface |
 | Web UI | `internal/web/`, `ui/` | dashboard + Review Gates + Audit tab |
 
+**Legacy packages.** `internal/agents/`, `internal/synthesizer/` and
+`internal/reporter/` are the shared-foundation predecessors of Tiers 1B/2/3
+(see `NEW_CONTRIBUTIONS.md`). They remain only to serve the legacy `--tactic`
+analysis path and are not part of the TLVB pipeline described above.
+
 See `NEW_CONTRIBUTIONS.md` for what is new hackathon work vs. reused foundation,
 and `docs/STATUS.md` for per-feature implementation status.

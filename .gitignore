@@ -63,3 +63,6 @@ libSQLite.Interop.so
 # Neither belongs in this tree.
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# Internal hackathon planning notes — never commit (kept locally in outputs/).
+docs/HACKATHON_GAP.md

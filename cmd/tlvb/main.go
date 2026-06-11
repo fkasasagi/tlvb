@@ -1,11 +1,7 @@
 // Command tlvb is the TLVB CLI / MCP server entry point.
 //
-// Subcommands (Phase 1 — only mcp-serve is functional):
-//
-//	tlvb mcp-serve     run the Tier 0 MCP server over stdio
-//	tlvb case init     (TODO Phase 2.x)
-//	tlvb parse <id>    (TODO Phase 2.x)
-//	tlvb version       print build info
+// Run `tlvb help` for the full subcommand list (case / parse / analyze /
+// synthesize / report / review / run / serve / mcp-serve / rules / version).
 package main
 
 import (

@@ -32,16 +32,16 @@ checked against the intended scenario rather than asserted.
 
 | Dataset | Form | Ground truth | TLVB result |
 |---|---|---|---|
-| `WINDEV2407EVAL_C` | triage collection | 8-step scenario | **All detectable steps covered** — strong on S1/S2/S3/S5/S7/S8, S6 corroborated (medium). Only miss **S4 (C2)**: the DNS-Client / PowerShell-Operational channels **were never collected** → physically undetectable (a data gap, not a logic gap). |
-| `findevil-win11-20260520.E01` | full disk image | 8-step scenario | **12 / 13 under a strict scoring criterion.** S1–S3, S5, S7, S8 all ✅; S4 (C2) detected here via a new reserved-TLD PowerShell rule (the E01 retained the DNS NXDOMAIN + PowerShell-4104 C2 traces the triage lacked); scheduled-task masquerade raised to high. 101 Tier 1A findings (sigma 53 + hayabusa 42 + custom 7). |
-| `findevil_ad` (DC01 + WS01) | 2 split-EWF images | 12 detection points (LNK → full domain compromise) | **11 / 12 (92 %).** 126 Tier 1A findings (sigma 68 + hayabusa 54 + custom). Two gaps closed during testing with new rules (hidden-PowerShell scheduled task; NTDS.dit exfil to a writable path), each **FP 0**. Remaining miss **#5 (loot.txt)** is a *file-only* artefact; the credential-access it stages is itself caught by #4/#7. |
+| `WINDEV triage` (WinDev2407Eval) | triage collection | 8-step scenario | **All detectable steps covered** — strong on S1/S2/S3/S5/S7/S8, S6 corroborated (medium). Only miss **S4 (C2)**: the DNS-Client / PowerShell-Operational channels **were never collected** → physically undetectable (a data gap, not a logic gap). |
+| `findevil-win11.E01` | full disk image | 8-step scenario | **12 / 13 under a strict scoring criterion.** S1–S3, S5, S7, S8 all ✅; S4 (C2) detected here via a new reserved-TLD PowerShell rule (the E01 retained the DNS NXDOMAIN + PowerShell-4104 C2 traces the triage lacked); scheduled-task masquerade raised to high. 101 Tier 1A findings (sigma 53 + hayabusa 42 + custom 7). |
+| `findevil-ad` (DC01 + WS01) | 2 split-EWF images | 12 detection points (LNK → full domain compromise) | **11 / 12 (92 %).** 126 Tier 1A findings (sigma 68 + hayabusa 54 + custom). Two gaps closed during testing with new rules (hidden-PowerShell scheduled task; NTDS.dit exfil to a writable path), each **FP 0**. Remaining miss **#5 (loot.txt)** is a *file-only* artefact; the credential-access it stages is itself caught by #4/#7. |
 
 **Why the misses are honest, not hidden:**
 - **`WINDEV` S4** — the C2 evidence lives in EVTX channels that the triage tool
   never captured. TLVB's `internal/completeness` check surfaces exactly this:
   it reports PowerShell-Operational / DNS-Client as **MISSING**, so the absence
   reads as *"could not look"*, not *"looked and found nothing."*
-- **`findevil_ad` DC01** — Process Creation (4688), File Share (5140) and
+- **`findevil-ad` DC01** — Process Creation (4688), File Share (5140) and
   Directory-Service-Change (5136) auditing were **disabled** on the DC, and no
   Golden Ticket was used (so no 4769). Those events do not exist in the
   evidence; the scenario's own answer key marks them undetectable. This is an
