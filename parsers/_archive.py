@@ -39,6 +39,7 @@ import gzip
 import hashlib
 import pathlib
 import shutil
+import sys
 import tarfile
 import time
 import zipfile
@@ -89,10 +90,15 @@ def load_config(config_path: pathlib.Path | None) -> dict[str, Any]:
         # Tiny YAML reader — we only need flat key:value + a single list.
         # Importing PyYAML would add a runtime dep just for this file.
         cfg.update(_read_simple_yaml(config_path))
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Defaults are safe; an operator with a broken yaml shouldn't
-        # block parsing entirely.
-        pass
+        # block parsing entirely — but they should be able to see why
+        # their override was ignored.
+        print(
+            f"[archive] WARNING: failed to read {config_path}: {exc} — "
+            "using staging defaults",
+            file=sys.stderr,
+        )
     return cfg
 
 

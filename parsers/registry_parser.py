@@ -137,6 +137,20 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
+    # Check the toolchain up front so a missing install yields an actionable
+    # message instead of a cryptic "RECmd exit=1" + stderr tail.
+    for required in (DLL, KROLL_BATCH):
+        if not pathlib.Path(required).is_file():
+            return fail(
+                artifact_id=ARTIFACT_ID, command=cmd_str, started=started,
+                error=(
+                    f"required file not found: {required} — install Eric "
+                    "Zimmerman's RECmd (incl. BatchExamples/Kroll_Batch.reb) "
+                    "under /opt/zimmermantools"
+                ),
+                parser_version=PARSER_VERSION,
+            )
+
     rc, stdout, stderr, elapsed = run_command(cmd, timeout=req.timeout_seconds)
     if rc != 0:
         return fail(
