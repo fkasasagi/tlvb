@@ -241,9 +241,22 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		overall = fallbackOverallStory(clusters, cfg.Language)
 	}
 
+	// Consolidate the per-cluster open questions into the prioritised
+	// three-tier view (critical / needs-collection / supplementary). Runs after
+	// every cluster's questions exist; best-effort, so a failure just leaves the
+	// flat OpenQuestions list for the report to fall back to.
+	oqSynth, oqErr := analyseOpenQuestionsLLM(ctx, cfg, clusters, &audit)
+	if oqErr != nil {
+		emit(cfg, Event{Phase: "llm",
+			Message: fmt.Sprintf("open-questions synthesis failed (%v) — using flat list", oqErr)})
+	}
+
 	emit(cfg, Event{Phase: "writing",
 		Message: fmt.Sprintf("writing %s", cfg.OutputPath)})
 	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit)
+	if !oqSynth.IsEmpty() {
+		cs.OpenQuestionsSynth = oqSynth
+	}
 	if err := writeSynthesis(cfg.OutputPath, cs); err != nil {
 		return rep, err
 	}
@@ -321,6 +334,7 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 			AttackPhase:     sc.AttackPhase,
 			Narrative:       sc.Narrative,
 			MITRETechniques: sc.MITRETechniques,
+			OpenQuestions:   sc.OpenQuestions,
 			Findings:        make([]Finding, len(sc.FindingRefs)),
 		})
 	}
@@ -350,7 +364,22 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 		rep.Fallback = true
 	}
 
-	cs.OverallStory = overall
+	execBrief, techSummary := splitExecBrief(overall)
+	cs.OverallStory = techSummary
+	cs.ExecBrief = execBrief
+	cs.TechSummary = techSummary
+
+	// Consolidate the per-cluster open questions into the prioritised
+	// three-tier view as well, so the cheap "refresh executive summary" path
+	// also refreshes the Open Questions section. Best-effort: a failure leaves
+	// the existing flat OpenQuestions list (and prior synthesis) untouched.
+	if oq, oqErr := analyseOpenQuestionsLLM(ctx, cfg, clusters, &audit); oqErr == nil && !oq.IsEmpty() {
+		cs.OpenQuestionsSynth = oq
+	} else if oqErr != nil {
+		emit(cfg, Event{Phase: "llm",
+			Message: fmt.Sprintf("open-questions synthesis failed (%v) — keeping flat list", oqErr)})
+	}
+
 	if err := writeSynthesis(cfg.OutputPath, cs); err != nil {
 		return nil, err
 	}
@@ -582,6 +611,120 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 		}
 	}
 	return "", fmt.Errorf("analyseOverallLLM: exhausted retries")
+}
+
+// execBriefMarker separates the non-technical Executive Brief (Layer 1) from
+// the technical summary (Layer 2) in the overall-synthesis LLM output. Kept in
+// sync with skills/overall_synthesis.md.
+const execBriefMarker = "---EXEC---"
+
+// splitExecBrief splits the overall-synthesis raw output on execBriefMarker into
+// (execBrief, techSummary). When the marker is absent (older prompt, or the
+// deterministic fallback stitch), execBrief is empty and techSummary is the
+// whole text — so the report degrades to a single-layer executive summary.
+func splitExecBrief(raw string) (execBrief, techSummary string) {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, execBriefMarker); i >= 0 {
+		execBrief = strings.TrimSpace(raw[:i])
+		techSummary = strings.TrimSpace(raw[i+len(execBriefMarker):])
+		// A marker with nothing after it is useless — treat the brief as the
+		// whole story rather than dropping the technical layer.
+		if techSummary == "" {
+			return "", execBrief
+		}
+		return execBrief, techSummary
+	}
+	return "", raw
+}
+
+// analyseOpenQuestionsLLM consolidates the per-cluster open questions into the
+// prioritised three-tier view via skills/open_questions_synthesis.md. Questions
+// from likely-noise clusters are dropped first (their narratives are demoted in
+// the report, so their questions are off-topic). Returns an empty synthesis and
+// NO error when there is nothing to consolidate or the skill is absent; returns
+// an error only on a genuine LLM call/parse failure so the caller can log it and
+// fall back to the flat OpenQuestions list.
+func analyseOpenQuestionsLLM(ctx context.Context, cfg Config, clusters []Cluster,
+	audit *SynthAudit) (OpenQuestionsSynthesis, error) {
+
+	var empty OpenQuestionsSynthesis
+
+	questions := collectAttackOpenQuestions(clusters)
+	if len(questions) == 0 {
+		return empty, nil
+	}
+
+	skillPath := filepath.Join(cfg.SkillsDir, "open_questions_synthesis.md")
+	skill, err := os.ReadFile(skillPath)
+	if err != nil {
+		return empty, nil // skill not installed → silently skip
+	}
+	if ctx.Err() == context.Canceled {
+		return empty, ctx.Err()
+	}
+
+	userMsg := buildOpenQuestionsUserMessage(questions, cfg.Language)
+	timeout := cfg.PerClusterTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	subCtx, cancel := detachedDeadlineContext(ctx, timeout)
+	defer cancel()
+
+	startedAt := time.Now()
+	out, err := callClaude(subCtx, cfg, string(skill), userMsg)
+	dur := time.Since(startedAt)
+	audit.LLMDurationS += dur.Seconds()
+	audit.LLMCallsTotal++
+	auditLLMCall(cfg, "open_questions_synthesis", 0, dur, out, err)
+	if err != nil {
+		return empty, err
+	}
+	audit.addUsage(out)
+
+	var synth OpenQuestionsSynthesis
+	if perr := decodeFirstJSON(out.Result, &synth); perr != nil {
+		dumpRawResponse(cfg, 0, "open_questions_synthesis", out.Result)
+		return empty, fmt.Errorf("parse open-questions JSON: %w", perr)
+	}
+	return synth, nil
+}
+
+// collectAttackOpenQuestions gathers the deduplicated open questions of the
+// non-noise clusters, in cluster order.
+func collectAttackOpenQuestions(clusters []Cluster) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range clusters {
+		if IsNoiseCluster(c.AttackPhase, c.Narrative) {
+			continue
+		}
+		for _, q := range c.OpenQuestions {
+			q = strings.TrimSpace(q)
+			if q == "" || seen[q] {
+				continue
+			}
+			seen[q] = true
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+func buildOpenQuestionsUserMessage(questions []string, lang string) string {
+	langInst := "出力する各論点は日本語で記述してください（入力の言語に合わせる）。"
+	if strings.ToLower(lang) == "en" {
+		langInst = "Write every output question in English."
+	}
+	body, _ := json.MarshalIndent(questions, "", "  ")
+	return langInst + `
+
+Below is the flat list of per-cluster open questions from one Windows forensic
+investigation. Consolidate and prioritise them into the three-tier JSON object
+described in your instructions. Return ONLY the JSON object.
+
+OpenQuestions:
+` + string(body)
 }
 
 // detachedDeadlineContext returns a context for the overall-synthesis LLM call
@@ -1018,12 +1161,15 @@ func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (
 func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 	overall string, audit SynthAudit) CaseSynthesis {
 
+	execBrief, techSummary := splitExecBrief(overall)
 	cs := CaseSynthesis{
 		CaseID:        caseID,
 		GeneratedAt:   time.Now().UTC(),
 		TotalFindings: countFindings(clusters),
 		ClusterCount:  len(clusters),
-		OverallStory:  overall,
+		OverallStory:  techSummary,
+		ExecBrief:     execBrief,
+		TechSummary:   techSummary,
 		Audit:         audit,
 	}
 

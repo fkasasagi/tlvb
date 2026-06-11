@@ -132,12 +132,16 @@ func renderIOCCSV(path string, en *enrichment) error {
 	}
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	if err := w.Write([]string{"type", "value", "artifact", "count"}); err != nil {
+	if err := w.Write([]string{"type", "value", "artifact", "count", "confidence"}); err != nil {
 		return err
 	}
 	for _, r := range en.IOCs {
+		conf := r.Confidence
+		if conf == "" {
+			conf = "confirmed"
+		}
 		if err := w.Write([]string{
-			r.Type, r.Value, r.Artifact, fmt.Sprintf("%d", r.Count),
+			r.Type, r.Value, r.Artifact, fmt.Sprintf("%d", r.Count), conf,
 		}); err != nil {
 			return err
 		}

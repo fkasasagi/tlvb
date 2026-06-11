@@ -100,6 +100,9 @@ func deriveAffectedScope(cs tier2.CaseSynthesis, en *enrichment, lang string) *s
 	ja := lang != "en"
 	sv := &scopeView{}
 	for _, ioc := range en.IOCs {
+		if ioc.Confidence == "noise" {
+			continue // a parser artifact (e.g. "LogonType 3") is not an affected host/account
+		}
 		switch ioc.Type {
 		case "host":
 			sv.Hosts = appendUniq(sv.Hosts, ioc.Value)

@@ -40,6 +40,7 @@ func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment,
 		"sevClass":   severityClass,
 		"sevLabel":   d.sevLabel,
 		"para":       splitParagraphs,
+		"bullets":    splitBullets,
 		"truncate":   truncateForTooltip,
 		"phaseLabel": d.phaseLabel,
 		"humanBytes": humanBytes,
@@ -69,8 +70,22 @@ type reportView struct {
 	Meta           *CaseMeta
 	Severity       []sevCount
 	Timeline       []timelineRow
-	IOCs           []iocRow
-	Clusters       []clusterView
+
+	// Executive summary, two layers. ExecBrief is the non-technical "key
+	// findings" box (Layer 1); TechSummary is the analyst prose (Layer 2),
+	// falling back to OverallStory for synthesis.json predating the split.
+	ExecBrief   string
+	TechSummary string
+
+	// IOCs split into the three report tiers (report improvement Vol.2).
+	ConfirmedIOCs []iocRow
+	SuspectedIOCs []iocRow
+	NoiseIOCs     []iocRow
+
+	// Clusters split into genuine attack activity (rendered open) and likely
+	// noise (rendered collapsed at the end of the findings section).
+	AttackClusters []clusterArticleCtx
+	NoiseClusters  []clusterArticleCtx
 
 	// Rule-derived IR narrative (best-effort, not LLM).
 	IntrusionPath string
@@ -81,6 +96,15 @@ type reportView struct {
 	// by tier2's deterministic fallback (LLM overall synthesis failed) rather
 	// than the LLM. Drives a warning banner in the Executive Summary.
 	IsExecutiveSummaryFallback bool
+}
+
+// clusterArticleCtx wraps one clusterView with the label dict so the shared
+// {{define "clusterArticle"}} template can render both the attack and noise
+// cluster lists. (A named template's $ is its own argument, not the page root,
+// so the dict has to travel with the cluster.)
+type clusterArticleCtx struct {
+	Dict labelDict
+	C    clusterView
 }
 
 type clusterView struct {
@@ -126,11 +150,32 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		Meta:           cfg.CaseMeta,
 		Severity:       en.SeverityCounts,
 		Timeline:       en.Timeline,
-		IOCs:           en.IOCs,
 		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language),
 		Scope:          deriveAffectedScope(cs, en, cfg.Language),
 		Reco:           deriveRecommendations(cs, cfg.Language),
 	}
+
+	// Executive summary layers. TechSummary falls back to OverallStory for
+	// synthesis.json written before the two-layer split.
+	v.ExecBrief = cs.ExecBrief
+	v.TechSummary = cs.TechSummary
+	if v.TechSummary == "" {
+		v.TechSummary = cs.OverallStory
+	}
+
+	// IOC three-tier split: confirmed (signature) / suspected (anomaly) / noise
+	// (parser artifact, hidden by default).
+	for _, ioc := range en.IOCs {
+		switch ioc.Confidence {
+		case "noise":
+			v.NoiseIOCs = append(v.NoiseIOCs, ioc)
+		case "inferred":
+			v.SuspectedIOCs = append(v.SuspectedIOCs, ioc)
+		default: // confirmed or unset
+			v.ConfirmedIOCs = append(v.ConfirmedIOCs, ioc)
+		}
+	}
+
 	// Detect a fallback executive summary by the warning prefix tier2 prepends
 	// (kept in sync with tier2's fallbackOverallStory).
 	v.IsExecutiveSummaryFallback = strings.HasPrefix(cs.OverallStory, "[NOTE:") ||
@@ -168,7 +213,12 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 			}
 			cv.Findings = append(cv.Findings, row)
 		}
-		v.Clusters = append(v.Clusters, cv)
+		ctx := clusterArticleCtx{Dict: d, C: cv}
+		if cv.IsLikelyNoise {
+			v.NoiseClusters = append(v.NoiseClusters, ctx)
+		} else {
+			v.AttackClusters = append(v.AttackClusters, ctx)
+		}
 	}
 	return v
 }
@@ -293,6 +343,21 @@ type labelDict struct {
 	CaseOpenQuestions      string
 	None                   string
 
+	// executive summary two-layer (report improvement Vol.2)
+	ExecBriefHeading  string
+	TechDetailHeading string
+	// findings section: noise-cluster grouping
+	AttackActivity       string
+	NoiseClustersSummary string
+	// open questions three-tier
+	OQCritical        string
+	OQNeedsCollection string
+	OQSupplementary   string
+	// IOC three-tier
+	IOCConfirmed   string
+	IOCSuspected   string
+	IOCNoiseHidden string
+
 	// intrusion path / affected scope / recommendations
 	IntrusionPathSec   string
 	AffectedScopeSec   string
@@ -400,6 +465,17 @@ var dictJA = labelDict{
 	CaseOpenQuestions:      "10. 未解決の論点 (ケース全体)",
 	None:                   "該当なし",
 
+	ExecBriefHeading:     "要点 (意思決定者向け)",
+	TechDetailHeading:    "技術的詳細 (アナリスト向け)",
+	AttackActivity:       "7. 検出された攻撃活動 (攻撃クラスタ別)",
+	NoiseClustersSummary: "ノイズ候補 / 誤検知判定済みクラスタ",
+	OQCritical:           "🔴 根本原因に直結するクリティカル論点",
+	OQNeedsCollection:    "🟡 追加アーティファクト収集で解決可能",
+	OQSupplementary:      "🟢 補足確認事項",
+	IOCConfirmed:         "確定 IOC (シグネチャ由来)",
+	IOCSuspected:         "要精査 IOC (異常検知・推論由来)",
+	IOCNoiseHidden:       "パーサノイズ / 除外済み",
+
 	IntrusionPathSec:   "2. 侵入経路 (Intrusion Path)",
 	AffectedScopeSec:   "3. 影響範囲 (Affected Scope)",
 	ScopeHosts:         "影響を受けたホスト",
@@ -505,6 +581,17 @@ var dictEN = labelDict{
 	HitsCol:                "Hits",
 	CaseOpenQuestions:      "10. Open Questions (case-wide)",
 	None:                   "None",
+
+	ExecBriefHeading:     "Key Findings (for decision-makers)",
+	TechDetailHeading:    "Technical Detail (for analysts)",
+	AttackActivity:       "7. Detected Attack Activity (by cluster)",
+	NoiseClustersSummary: "Noise candidates / false-positive clusters",
+	OQCritical:           "🔴 Critical — directly affects root cause",
+	OQNeedsCollection:    "🟡 Resolvable by collecting more artifacts",
+	OQSupplementary:      "🟢 Supplementary",
+	IOCConfirmed:         "Confirmed IOC (signature-derived)",
+	IOCSuspected:         "Suspected IOC (anomaly / inferred)",
+	IOCNoiseHidden:       "Parser noise / excluded",
 
 	IntrusionPathSec:   "2. Intrusion Path",
 	AffectedScopeSec:   "3. Affected Scope",
@@ -623,6 +710,22 @@ func splitParagraphs(s string) []string {
 	return out
 }
 
+// splitBullets turns the Executive Brief (one bullet per line, each starting
+// with "- "/"•"/"*"/"・") into a clean []string for an <ul>. Blank lines and
+// leading bullet glyphs are stripped; a single-paragraph brief degrades to one
+// item per non-blank line.
+func splitBullets(s string) []string {
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		ln = strings.TrimLeft(ln, "-*•・ \t")
+		if ln = strings.TrimSpace(ln); ln != "" {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
 func truncateForTooltip(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -693,6 +796,21 @@ const htmlTemplate = `<!DOCTYPE html>
   .active .q { font-weight: 600; }
   .active pre { background: #0d111720; padding: 0.4rem 0.6rem; border-radius: 4px;
                 overflow-x: auto; margin: 0.3rem 0; }
+  .exec-brief { background: #ddf4ff; border-left: 4px solid #0969da;
+                border-radius: 0 6px 6px 0; padding: 0.8rem 1.1rem; margin: 0.6rem 0 1rem; }
+  .exec-brief h3 { margin: 0 0 0.6rem; font-size: 0.92rem; color: #0969da;
+                   border-left: none; padding-left: 0; margin-top: 0;
+                   text-transform: uppercase; letter-spacing: 0.04em; }
+  .exec-brief ul { margin: 0; padding-left: 1.2rem; }
+  .exec-brief li { margin-bottom: 0.35rem; }
+  details > summary { cursor: pointer; color: #57606a; font-weight: 600;
+                      padding: 0.25rem 0; }
+  details.noise-group { margin: 1rem 0; }
+  details.noise-group > summary { font-size: 1.05rem; padding: 0.4rem 0; }
+  details.ioc-noise { margin: 0.6rem 0; }
+  .oq-critical { border-left: 4px solid #cf222e; padding-left: 0.6rem; }
+  .oq-needs    { border-left: 4px solid #d4a72c; padding-left: 0.6rem; }
+  .oq-supp     { color: #57606a; }
   .empty, .muted { color: #57606a; font-style: italic; }
   footer.audit { background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
                  padding: 0.8rem 1rem; margin-top: 1rem;
@@ -710,6 +828,8 @@ const htmlTemplate = `<!DOCTYPE html>
     h3 { border-left-color: #58a6ff; }
     .note { background: #0c2d4a; border-color: #1f6feb; }
     .disclaimer { background: #3a2d00; border-color: #9e6a03; }
+    .exec-brief { background: #0c2d4a; border-left-color: #1f6feb; }
+    .exec-brief h3 { color: #58a6ff; }
   }
 </style>
 </head>
@@ -745,15 +865,30 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 
 {{if .Case.OverallStory}}
-<!-- Executive Summary -->
+<!-- Executive Summary (two layers: non-technical brief + technical detail) -->
 <section>
   <h2>{{.Dict.ExecutiveSummary}}</h2>
   {{if .IsExecutiveSummaryFallback}}
   <div class="disclaimer">{{.Dict.ExecSummaryFallbackWarning}}</div>
   {{end}}
-  <div class="narrative">
-    {{range para .Case.OverallStory}}<p>{{.}}</p>{{end}}
+  {{if .ExecBrief}}
+  <div class="exec-brief">
+    <h3>{{.Dict.ExecBriefHeading}}</h3>
+    <ul>
+      {{range bullets .ExecBrief}}<li>{{.}}</li>{{end}}
+    </ul>
   </div>
+  <details open>
+    <summary>{{.Dict.TechDetailHeading}}</summary>
+    <div class="narrative">
+      {{range para .TechSummary}}<p>{{.}}</p>{{end}}
+    </div>
+  </details>
+  {{else}}
+  <div class="narrative">
+    {{range para .TechSummary}}<p>{{.}}</p>{{end}}
+  </div>
+  {{end}}
 </section>
 {{end}}
 
@@ -881,73 +1016,82 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 7. Findings by cluster -->
+{{define "clusterArticle"}}
+<article class="cluster{{if .C.IsLikelyNoise}} cluster-noise{{end}}" id="cluster-{{.C.ID}}">
+  <h3>#{{.C.ID}} — {{phaseLabel .C.AttackPhase}}
+    {{if .C.IsLikelyNoise}}<span class="badge sev-info">{{.Dict.NoiseBadge}}</span>{{end}}
+  </h3>
+  <header>
+    <span><strong>{{.Dict.Window}}:</strong> {{fmtTS .C.StartTS}} ~ {{fmtTS .C.EndTS}}</span>
+    <span>{{.Dict.FindingCount}}: {{len .C.Findings}}</span>
+    {{if .C.MITRETechniques}}<span>MITRE: {{join .C.MITRETechniques}}</span>{{end}}
+  </header>
+
+  {{if .C.Narrative}}
+  <h4>{{.Dict.Narrative}}</h4>
+  <div class="narrative">
+    {{range para .C.Narrative}}<p>{{.}}</p>{{end}}
+  </div>
+  {{end}}
+
+  {{if .C.Findings}}
+  <h4>{{.Dict.Findings}}</h4>
+  <table>
+    <thead>
+      <tr><th>{{.Dict.Severity}}</th><th>{{.Dict.Source}}</th><th>{{.Dict.ConfidenceCol}}</th><th>{{.Dict.RuleID}}</th>
+          <th>{{.Dict.Title}}</th><th>{{.Dict.FirstSeen}}</th>
+          <th>{{.Dict.Artifacts}}</th><th>{{.Dict.EvidenceCountCol}}</th></tr>
+    </thead>
+    <tbody>
+      {{range .C.Findings}}
+      <tr>
+        <td><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></td>
+        <td>{{.Source}}</td>
+        <td>{{if .Confidence}}<span class="badge conf-{{.Confidence}}">{{.ConfidenceLabel}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td><code>{{.RuleID}}</code></td>
+        <td>{{.Title}}</td>
+        <td>{{if .HasTS}}{{fmtTS .FirstSeen}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .Artifacts}}{{join .Artifacts}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .EvidenceCount}}{{.EvidenceCount}}{{else}}<span class="muted">—</span>{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{if .C.ActiveSearch}}
+  <h4>{{.Dict.ActiveSearch}}</h4>
+  {{range .C.ActiveSearch}}
+  <div class="active">
+    <div class="q">{{.Question}}</div>
+    {{if .SQL}}<pre><code>{{.SQL}}</code></pre>{{end}}
+    <div><strong>{{$.Dict.HitsCol}}:</strong> {{.Hits}}</div>
+    {{if .Answer}}<div><strong>{{$.Dict.AnswerCol}}:</strong> {{.Answer}}</div>{{end}}
+    {{if .Error}}<div class="muted">{{.Error}}</div>{{end}}
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if .C.OpenQuestions}}
+  <h4>{{.Dict.OpenQuestions}}</h4>
+  <ul class="open-q">
+    {{range .C.OpenQuestions}}<li>{{.}}</li>{{end}}
+  </ul>
+  {{end}}
+</article>
+{{end}}
+
+<!-- 7. Findings by cluster — genuine attack activity open, noise collapsed at end -->
 <section>
-  <h2>7. {{.Dict.Cluster}}</h2>
-  {{if not .Clusters}}<p class="empty">{{.Dict.None}}</p>{{end}}
-  {{range .Clusters}}
-  <article class="cluster{{if .IsLikelyNoise}} cluster-noise{{end}}" id="cluster-{{.ID}}">
-    <h3>#{{.ID}} — {{phaseLabel .AttackPhase}}
-      {{if .IsLikelyNoise}}<span class="badge sev-info">{{$.Dict.NoiseBadge}}</span>{{end}}
-    </h3>
-    <header>
-      <span><strong>{{$.Dict.Window}}:</strong> {{fmtTS .StartTS}} ~ {{fmtTS .EndTS}}</span>
-      <span>{{$.Dict.FindingCount}}: {{len .Findings}}</span>
-      {{if .MITRETechniques}}<span>MITRE: {{join .MITRETechniques}}</span>{{end}}
-    </header>
+  <h2>{{.Dict.AttackActivity}}</h2>
+  {{if not .AttackClusters}}<p class="empty">{{.Dict.None}}</p>{{end}}
+  {{range .AttackClusters}}{{template "clusterArticle" .}}{{end}}
 
-    {{if .Narrative}}
-    <h4>{{$.Dict.Narrative}}</h4>
-    <div class="narrative">
-      {{range para .Narrative}}<p>{{.}}</p>{{end}}
-    </div>
-    {{end}}
-
-    {{if .Findings}}
-    <h4>{{$.Dict.Findings}}</h4>
-    <table>
-      <thead>
-        <tr><th>{{$.Dict.Severity}}</th><th>{{$.Dict.Source}}</th><th>{{$.Dict.ConfidenceCol}}</th><th>{{$.Dict.RuleID}}</th>
-            <th>{{$.Dict.Title}}</th><th>{{$.Dict.FirstSeen}}</th>
-            <th>{{$.Dict.Artifacts}}</th><th>{{$.Dict.EvidenceCountCol}}</th></tr>
-      </thead>
-      <tbody>
-        {{range .Findings}}
-        <tr>
-          <td><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></td>
-          <td>{{.Source}}</td>
-          <td>{{if .Confidence}}<span class="badge conf-{{.Confidence}}">{{.ConfidenceLabel}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-          <td><code>{{.RuleID}}</code></td>
-          <td>{{.Title}}</td>
-          <td>{{if .HasTS}}{{fmtTS .FirstSeen}}{{else}}<span class="muted">—</span>{{end}}</td>
-          <td>{{if .Artifacts}}{{join .Artifacts}}{{else}}<span class="muted">—</span>{{end}}</td>
-          <td>{{if .EvidenceCount}}{{.EvidenceCount}}{{else}}<span class="muted">—</span>{{end}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-    {{end}}
-
-    {{if .ActiveSearch}}
-    <h4>{{$.Dict.ActiveSearch}}</h4>
-    {{range .ActiveSearch}}
-    <div class="active">
-      <div class="q">{{.Question}}</div>
-      {{if .SQL}}<pre><code>{{.SQL}}</code></pre>{{end}}
-      <div><strong>{{$.Dict.HitsCol}}:</strong> {{.Hits}}</div>
-      {{if .Answer}}<div><strong>{{$.Dict.AnswerCol}}:</strong> {{.Answer}}</div>{{end}}
-      {{if .Error}}<div class="muted">{{.Error}}</div>{{end}}
-    </div>
-    {{end}}
-    {{end}}
-
-    {{if .OpenQuestions}}
-    <h4>{{$.Dict.OpenQuestions}}</h4>
-    <ul class="open-q">
-      {{range .OpenQuestions}}<li>{{.}}</li>{{end}}
-    </ul>
-    {{end}}
-  </article>
+  {{if .NoiseClusters}}
+  <details class="noise-group">
+    <summary>{{.Dict.NoiseClustersSummary}} ({{len .NoiseClusters}})</summary>
+    {{range .NoiseClusters}}{{template "clusterArticle" .}}{{end}}
+  </details>
   {{end}}
 </section>
 
@@ -973,16 +1117,43 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-<!-- 8. Indicators of Compromise -->
+<!-- 8. Indicators of Compromise (three tiers: confirmed / suspected / noise) -->
 <section>
   <h2>{{.Dict.IOCSection}}</h2>
-  {{if .IOCs}}
+  {{if or .ConfirmedIOCs .SuspectedIOCs .NoiseIOCs}}
+
+  {{if .ConfirmedIOCs}}
+  <h3>✅ {{.Dict.IOCConfirmed}}</h3>
   <table>
     <thead><tr><th>{{.Dict.IOCType}}</th><th>{{.Dict.IOCValue}}</th><th>{{.Dict.ArtifactName}}</th><th>{{.Dict.IOCCount}}</th></tr></thead>
     <tbody>
-      {{range .IOCs}}<tr><td>{{.Type}}</td><td class="mono">{{.Value}}</td><td>{{.Artifact}}</td><td>{{.Count}}</td></tr>{{end}}
+      {{range .ConfirmedIOCs}}<tr><td>{{.Type}}</td><td class="mono">{{.Value}}</td><td>{{.Artifact}}</td><td>{{.Count}}</td></tr>{{end}}
     </tbody>
   </table>
+  {{end}}
+
+  {{if .SuspectedIOCs}}
+  <h3>⚠️ {{.Dict.IOCSuspected}}</h3>
+  <table>
+    <thead><tr><th>{{.Dict.IOCType}}</th><th>{{.Dict.IOCValue}}</th><th>{{.Dict.ArtifactName}}</th><th>{{.Dict.IOCCount}}</th></tr></thead>
+    <tbody>
+      {{range .SuspectedIOCs}}<tr><td>{{.Type}}</td><td class="mono">{{.Value}}</td><td>{{.Artifact}}</td><td>{{.Count}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{if .NoiseIOCs}}
+  <details class="ioc-noise">
+    <summary>🔇 {{.Dict.IOCNoiseHidden}} ({{len .NoiseIOCs}})</summary>
+    <table>
+      <thead><tr><th>{{.Dict.IOCType}}</th><th>{{.Dict.IOCValue}}</th><th>{{.Dict.ArtifactName}}</th><th>{{.Dict.IOCCount}}</th></tr></thead>
+      <tbody>
+        {{range .NoiseIOCs}}<tr><td>{{.Type}}</td><td class="mono">{{.Value}}</td><td>{{.Artifact}}</td><td>{{.Count}}</td></tr>{{end}}
+      </tbody>
+    </table>
+  </details>
+  {{end}}
+
   {{else}}<p class="empty">{{.Dict.NoIOC}}</p>{{end}}
 </section>
 
@@ -1006,13 +1177,30 @@ const htmlTemplate = `<!DOCTYPE html>
 </section>
 {{end}}
 
-{{if .Case.OpenQuestions}}
-<!-- 10. Case-wide open questions -->
+{{if or (not .Case.OpenQuestionsSynth.IsEmpty) .Case.OpenQuestions}}
+<!-- 10. Case-wide open questions (three tiers when consolidated, else flat) -->
 <section>
   <h2>{{.Dict.CaseOpenQuestions}}</h2>
+  {{if not .Case.OpenQuestionsSynth.IsEmpty}}
+    {{if .Case.OpenQuestionsSynth.Critical}}
+    <h3 class="oq-critical">{{.Dict.OQCritical}}</h3>
+    <ol class="open-q">{{range .Case.OpenQuestionsSynth.Critical}}<li>{{.}}</li>{{end}}</ol>
+    {{end}}
+    {{if .Case.OpenQuestionsSynth.NeedsCollection}}
+    <h3 class="oq-needs">{{.Dict.OQNeedsCollection}}</h3>
+    <ul class="open-q">{{range .Case.OpenQuestionsSynth.NeedsCollection}}<li>{{.}}</li>{{end}}</ul>
+    {{end}}
+    {{if .Case.OpenQuestionsSynth.Supplementary}}
+    <details>
+      <summary class="oq-supp">{{.Dict.OQSupplementary}} ({{len .Case.OpenQuestionsSynth.Supplementary}})</summary>
+      <ul class="open-q">{{range .Case.OpenQuestionsSynth.Supplementary}}<li>{{.}}</li>{{end}}</ul>
+    </details>
+    {{end}}
+  {{else}}
   <ul class="open-q">
     {{range .Case.OpenQuestions}}<li>{{.}}</li>{{end}}
   </ul>
+  {{end}}
 </section>
 {{end}}
 
