@@ -233,12 +233,14 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		overallSkillBytes = skillBytes // fall back to the cluster skill if absent
 	}
 	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit)
+	overallFallback := false
 	if err != nil {
 		// Fall back to a deterministic per-cluster stitch so the report
 		// still has SOMETHING in the Executive Summary slot.
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
 		overall = fallbackOverallStory(clusters, cfg.Language)
+		overallFallback = true
 	}
 
 	// Consolidate the per-cluster open questions into the prioritised
@@ -254,6 +256,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	emit(cfg, Event{Phase: "writing",
 		Message: fmt.Sprintf("writing %s", cfg.OutputPath)})
 	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit)
+	cs.OverallStoryFallback = overallFallback
 	if !oqSynth.IsEmpty() {
 		cs.OpenQuestionsSynth = oqSynth
 	}
@@ -368,6 +371,7 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 	cs.OverallStory = techSummary
 	cs.ExecBrief = execBrief
 	cs.TechSummary = techSummary
+	cs.OverallStoryFallback = rep.Fallback
 
 	// Consolidate the per-cluster open questions into the prioritised
 	// three-tier view as well, so the cheap "refresh executive summary" path

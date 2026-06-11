@@ -229,6 +229,9 @@ func TestRegenerateOverallFallbackWriteback(t *testing.T) {
 	if !strings.HasPrefix(got.OverallStory, fallbackOverallStoryPrefixJA) {
 		t.Errorf("expected fallback banner prefix, got %q", got.OverallStory)
 	}
+	if !got.OverallStoryFallback {
+		t.Error("overall_story_fallback flag not set on the regenerated synthesis")
+	}
 	if strings.Contains(got.OverallStory, "VM first boot") {
 		t.Error("noise narrative must be dropped from the fallback summary")
 	}
