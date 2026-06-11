@@ -130,7 +130,7 @@ TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 } | ./bin/tlvb mcp-serve --log-level error 2>/dev/null | python3 -m json.tool
 ```
 
-公開ツール (10):
+公開ツール (全 19 — 主要 10 個を抜粋。全リストは上の `tools/list` 出力で確認):
 
 | Tool | 用途 |
 |---|---|
