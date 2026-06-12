@@ -343,10 +343,14 @@ func (m *Manager) CountEvidenceByCase(ctx context.Context) (map[string]int, erro
 }
 
 type CaseStatus struct {
-	Case            CaseRow          `json:"case"`
-	EvidenceCount   int              `json:"evidence_count"`
-	ParseResults    []ParseResultRow `json:"parse_results"`
-	UnifiedRowCount int64            `json:"unified_event_rows"`
+	Case          CaseRow          `json:"case"`
+	EvidenceCount int              `json:"evidence_count"`
+	ParseResults  []ParseResultRow `json:"parse_results"`
+	// UnifiedRowCount is the total ingested-event count for the case, derived
+	// scan-free from SUM(parse_results.row_count) — it is NOT a live COUNT(*)
+	// over unified_events. See GetCaseStatus for the rationale. The JSON field
+	// name is kept as "unified_event_rows" for wire compatibility.
+	UnifiedRowCount int64 `json:"unified_event_rows"`
 }
 
 func (m *Manager) GetCaseStatus(ctx context.Context, caseID string) (*CaseStatus, error) {
@@ -368,8 +372,17 @@ func (m *Manager) GetCaseStatus(ctx context.Context, caseID string) (*CaseStatus
 		Scan(&out.EvidenceCount); err != nil {
 		return nil, err
 	}
+	// UnifiedRowCount is the SUM of the parser-reported row_count in
+	// parse_results, NOT a COUNT(*) over unified_events. Same rationale as
+	// EventCountsByCase (used by the Dashboard listing): a COUNT over the
+	// multi-GB fact table makes the go-duckdb driver hang for minutes on
+	// large DBs / un-checkpointed WALs, which froze the case-detail view.
+	// parse_results carries one row per (case, artifact) with the row_count
+	// recorded at ingest, so the SUM is the same total without ever touching
+	// unified_events. COALESCE handles a case with no parse rows (→ 0).
 	if err := m.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM unified_events WHERE case_id = ?`, caseID).
+		`SELECT CAST(COALESCE(SUM(row_count), 0) AS BIGINT)
+		   FROM parse_results WHERE case_id = ?`, caseID).
 		Scan(&out.UnifiedRowCount); err != nil {
 		return nil, err
 	}
