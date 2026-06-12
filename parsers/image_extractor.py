@@ -154,6 +154,25 @@ _PER_USER_TRIAGE: list[tuple[str, str]] = [
     (r"AppData/Local/ConnectedDevicesPlatform",                  "AppData/Local/ConnectedDevicesPlatform"),
 ]
 
+# Volume-level artifacts that live on any NTFS volume regardless of whether it
+# hosts a Windows install. Everything ELSE in _TRIAGE_PATHS is Windows-specific
+# and is only pulled from partitions that actually have a Windows/ directory.
+# Without this gate the System-Reserved / recovery partition (no Windows/) would
+# emit a full set of NOT_FOUND rows that read as duplicates of the real OS
+# volume's targets in Review Gate 0 (Issue: duplicated/odd extract targets).
+_VOLUME_LEVEL_TARGETS: frozenset[str] = frozenset({
+    "$MFT", "$J", "$LogFile", "$Recycle.Bin",
+})
+
+# Pseudo-profiles under Users/ that are never real interactive users: junctions
+# to legacy locations (All Users, Default User) or shared dirs with no per-user
+# hive (Public). Expanding them only yields NOT_FOUND rows like
+# "NTUSER.DAT#All Users" that clutter Review Gate 0. (Default is intentionally
+# NOT excluded — it carries the real NTUSER.DAT template hive.)
+_PSEUDO_USER_DIRS: frozenset[str] = frozenset({
+    "All Users", "Default User", "Public",
+})
+
 
 @dataclasses.dataclass
 class ExtractRecord:
@@ -375,16 +394,29 @@ def extract(
         for part_idx, offset_bytes in partitions:
             staging_for_part = staging_root / f"part{part_idx:02d}"
             staging_for_part.mkdir(exist_ok=True)
-            # Static targets — pull each.
+            # Only the OS volume carries the Windows-specific triage list. On a
+            # System-Reserved / recovery partition (no Windows/ dir) pull just
+            # the volume-level artifacts ($MFT etc.) and skip the rest, so it
+            # doesn't duplicate the real OS volume with a wall of NOT_FOUND rows.
+            has_windows = _partition_has_windows(
+                raw_device, offset_bytes, timeout_seconds)
+            # Static targets — pull each (Windows-specific only on the OS volume).
             for ntfs_path, label in target_paths:
+                if not has_windows and label not in _VOLUME_LEVEL_TARGETS:
+                    continue
                 rec = _extract_one(
                     raw_device, offset_bytes, ntfs_path,
                     staging_for_part / label, label, part_idx,
                     timeout_seconds,
                 )
                 records.append(rec)
-            # Per-user expansion under Users/.
+            # The per-user / IIS / web passes below are all Windows-OS specific.
+            if not has_windows:
+                continue
+            # Per-user expansion under Users/ (skip non-interactive pseudo-profiles).
             for user_dir in _list_dir(raw_device, offset_bytes, "Users", timeout_seconds):
+                if user_dir in _PSEUDO_USER_DIRS:
+                    continue
                 for sub_path, sub_label in _PER_USER_TRIAGE:
                     full = f"Users/{user_dir}/{sub_path}"
                     full_label = f"{sub_label}#{user_dir}"
@@ -726,6 +758,28 @@ def _ifind(raw_device: str, offset_bytes: int, ntfs_path: str,
     if not line or line.startswith("File not found"):
         return None
     return line
+
+
+def _partition_has_windows(raw_device: str, offset_bytes: int,
+                           timeout: int) -> bool:
+    """True when this partition hosts a Windows install (has a ``Windows/``
+    directory). Used to skip the Windows-specific triage list + per-user/web
+    passes on non-OS volumes (System-Reserved / recovery), which otherwise
+    emit a full set of NOT_FOUND rows in Review Gate 0.
+
+    Fails SAFE: only a clean ifind miss (rc==0, "File not found") marks the
+    volume as non-OS. A probe that errors out (rc!=0, e.g. a transient TSK
+    failure) returns True so a flaky ifind never causes us to silently skip
+    the real OS volume's hive triage — we'd rather over-extract than lose it.
+    """
+    if not raw_device:
+        return True
+    cmd = ["ifind", "-n", "Windows", "-o", str(offset_bytes // 512), raw_device]
+    rc, out, _, _ = run_command(cmd, timeout=timeout)
+    if rc != 0:
+        return True
+    line = out.strip().splitlines()[0] if out.strip() else ""
+    return bool(line) and not line.startswith("File not found")
 
 
 # Matches istat's `Type: $DATA (128-87)   Name: $J ...` attribute table line.
