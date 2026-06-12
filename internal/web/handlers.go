@@ -253,10 +253,10 @@ func (s *Server) handleGetCase(w http.ResponseWriter, r *http.Request) {
 		"evidence":      evidence,
 		"parse_results": st.ParseResults,
 		"jobs": map[string]JobStatus{
-			"parse":      s.jobs.Status(id, JobParse),
-			"analyze":    s.jobs.Status(id, JobAnalyze),
-			"synthesize": s.jobs.Status(id, JobSynthesize),
-			"report":     s.jobs.Status(id, JobReport),
+			"parse":      s.jobStatusOrDerived(r.Context(), id, JobParse),
+			"analyze":    s.jobStatusOrDerived(r.Context(), id, JobAnalyze),
+			"synthesize": s.jobStatusOrDerived(r.Context(), id, JobSynthesize),
+			"report":     s.jobStatusOrDerived(r.Context(), id, JobReport),
 		},
 	})
 }
@@ -332,19 +332,15 @@ func (s *Server) handleSetEvidenceTimezone(w http.ResponseWriter, r *http.Reques
 
 func (sm *caseSummary) populateArtifactStatus(outputsRoot string) {
 	dir := filepath.Join(outputsRoot, sm.CaseID)
-	findings := filepath.Join(dir, "findings")
-	if entries, err := os.ReadDir(findings); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-				sm.FindingsCount++
-			}
-		}
-		sm.HasFindings = sm.FindingsCount > 0
-	}
-	if _, err := os.Stat(filepath.Join(dir, "synthesis.json")); err == nil {
+	// Findings live under findings/by-rule/<source>/*.json and
+	// findings/by-skill/*.json — count recursively (a top-level-only count
+	// always returned 0 once findings moved into those subdirectories).
+	sm.FindingsCount = countFindingsJSON(filepath.Join(dir, "findings"))
+	sm.HasFindings = sm.FindingsCount > 0
+	if fileExists(filepath.Join(dir, "synthesis.json")) {
 		sm.HasSynthesis = true
 	}
-	if _, err := os.Stat(filepath.Join(dir, "reports", "report.html")); err == nil {
+	if fileExists(filepath.Join(dir, "reports", "report.html")) {
 		sm.HasReport = true
 	}
 }
@@ -691,7 +687,7 @@ func readParseReport(path string) (succeeded, failed int, ok bool) {
 }
 
 func (s *Server) handleParseStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobParse))
+	writeJSON(w, 200, s.jobStatusOrDerived(r.Context(), r.PathValue("id"), JobParse))
 }
 
 // handleParseProgressEvent translates one PROGRESS|<json> event from the
@@ -1041,7 +1037,7 @@ func (s *Server) handleStartAnalyzeArtifact(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleAnalyzeStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobAnalyze))
+	writeJSON(w, 200, s.jobStatusOrDerived(r.Context(), r.PathValue("id"), JobAnalyze))
 }
 
 func firstEvidenceID(ctx context.Context, dbPath, caseID string) (string, error) {
@@ -1227,7 +1223,7 @@ func (s *Server) handleStartSynthesize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSynthesizeStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobSynthesize))
+	writeJSON(w, 200, s.jobStatusOrDerived(r.Context(), r.PathValue("id"), JobSynthesize))
 }
 
 func (s *Server) handleGetSynthesis(w http.ResponseWriter, r *http.Request) {
@@ -1323,7 +1319,7 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReportStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobReport))
+	writeJSON(w, 200, s.jobStatusOrDerived(r.Context(), r.PathValue("id"), JobReport))
 }
 
 // reportCaseMeta mirrors the CLI's loadReportCaseMeta (cmd/tlvb/report_tier3.go):

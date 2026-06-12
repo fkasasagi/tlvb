@@ -160,7 +160,7 @@ func (s *Server) handleStartAutopilot(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/cases/{id}/autopilot/status (Wave 34)
 func (s *Server) handleAutopilotStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.jobs.Status(r.PathValue("id"), JobAutopilot))
+	writeJSON(w, 200, s.jobStatusOrDerived(r.Context(), r.PathValue("id"), JobAutopilot))
 }
 
 func lastNonEmptyLine(s string) string {
