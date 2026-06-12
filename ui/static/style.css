@@ -75,6 +75,12 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent-hi);
 }
+/* checkboxes must not inherit the form-field width: 100% above — inside a
+   flex row (cluster/finding rows) that would swallow the whole line */
+input[type="checkbox"] {
+  width: auto; padding: 0;
+  accent-color: var(--accent-hi);
+}
 
 /* ------- header ------- */
 .app-header {
@@ -287,7 +293,7 @@ h3 { font-size: 13px; color: #c0d0e8; }
   background: var(--card);
 }
 
-/* ------- findings toolbar (Issue #4 #5 #10) ------- */
+/* ------- findings toolbar (2026-06 redesign) ------- */
 .findings-toolbar {
   background: var(--card);
   border: 1px solid var(--border);
@@ -298,121 +304,16 @@ h3 { font-size: 13px; color: #c0d0e8; }
   top: 50px;        /* below the app-header */
   z-index: 5;
 }
-.findings-toolbar button[disabled] { opacity: 0.4; cursor: not-allowed; }
-
-/* row hidden by the filter — kept in the DOM so scroll position is
-   stable and the row's checkbox state survives toggling the filter */
-.finding.filtered-out { display: none; }
-
-/* per-row + per-tactic select checkboxes */
-.tactic-header .tactic-select-all {
-  margin-right: 6px;
-  cursor: pointer;
+.findings-toolbar .frow {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; flex-wrap: wrap;
 }
-.tactic-header .tactic-toggle {
-  color: var(--muted);
-  margin-right: 4px;
-}
-.finding .row-select {
-  margin-right: 8px;
-  cursor: pointer;
-}
-
-/* ------- findings list ------- */
-.tactic-group {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  margin-bottom: 12px;
-}
-.tactic-group .tactic-header {
-  padding: 10px 14px;
-  background: var(--card-hi);
-  border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 12px;
-  cursor: pointer;
-}
-.tactic-group .tactic-header .name { font-weight: bold; color: #fff; }
-.tactic-group .tactic-header .count { color: var(--muted); font-size: 11px; }
-.tactic-group .findings { padding: 6px 0; }
-.finding {
-  padding: 12px 16px 12px 13px;
-  border-bottom: 1px solid var(--border);
-  border-left: 3px solid transparent;  /* severity rail, coloured below */
-}
-.finding:last-child { border-bottom: none; }
-.finding .header {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
-}
-.finding .technique-id { font-weight: bold; color: #fff; }
-.finding .technique-name { color: var(--muted); }
-.finding .summary { margin: 6px 0 8px 0; }
-.finding .reasoning {
-  background: #0a1228; padding: 8px 12px; border-radius: 3px;
-  border-left: 3px solid var(--accent-hi);
-  color: var(--muted); font-size: 12px;
-  margin: 6px 0;
-  white-space: pre-wrap;
-}
-.finding .evidence-toggle {
-  cursor: pointer; color: var(--muted); font-size: 11px; user-select: none;
-}
-.finding .evidence-toggle:hover { color: var(--text); }
-.finding .evidence-list {
-  margin-top: 8px; padding-left: 16px;
-  border-left: 2px solid var(--border);
-}
-.finding .evidence-item {
-  margin-bottom: 10px; padding: 6px 0; font-size: 11px;
-  border-bottom: 1px dashed var(--border);
-}
-.finding .evidence-item:last-child { border-bottom: none; }
-.finding .evidence-item .evidence-head { display: flex; gap: 8px; align-items: baseline; }
-.finding .evidence-item .source { color: var(--accent-hi); font-weight: bold; }
-.finding .evidence-item .audit-id { color: var(--muted); }
-.finding .evidence-item .excerpt { color: var(--text); margin: 2px 0 4px 0; }
-.finding .evidence-item .evidence-meta {
-  color: var(--muted); font-size: 11px; margin: 4px 0 2px 0;
-}
-.finding .evidence-item .evidence-payload {
-  margin-top: 2px; max-width: none; min-width: 0; max-height: 360px;
-  white-space: pre-wrap; word-break: break-all;
-}
-.finding .actions {
-  margin-top: 10px; display: flex; gap: 8px; align-items: center;
-}
-.finding.approved      { background: #16291f; }
-.finding.auto-approved { background: #16201d; }
-.finding.rejected      { background: #2a1517; }
-
-/* Review Gate 1A — severity / source / state badges */
-.badge.sev-critical { background: #441322; color: #ff5e6c; font-weight: bold; }
-.badge.sev-high     { background: #3a1e1e; color: var(--conf-high); font-weight: bold; }
-.badge.sev-medium   { background: #3d2c14; color: var(--conf-medium); }
-.badge.sev-low      { background: #1e3a1e; color: var(--conf-low); }
-.badge.sev-info     { background: #2a3556; color: #8aa0c8; }
-.badge.source-tier1a { background: #1e2c44; color: #8ec5ff; }
-.badge.source-tier1b { background: #2c1e44; color: #c08eff; }
-.badge.conf-confirmed { background: #14321f; color: #5fd08a; }
-.badge.conf-inferred  { background: #3a2e14; color: #e0b85f; }
-.badge.state-badge.auto-approved { background: #1f2c2a; color: #6cd0b8; }
-
-.finding-title {
-  margin-left: 6px;
-  font-weight: 600;
-  color: var(--text);
-}
-.finding .technique-id {
-  font-weight: bold; color: #fff; padding: 0 4px;
-  text-decoration: none; border-bottom: 1px dotted var(--muted);
-}
-.finding .technique-id:hover { color: var(--accent-hi); }
-.tactic-header .tactic-toggle { color: var(--muted); }
-
-/* ------- findings: manual-review readability (search / sort / sev rail) ------- */
+.findings-toolbar .frow + .frow { margin-top: 6px; }
+.findings-toolbar .flabel { color: var(--muted); min-width: 52px; }
+.findings-toolbar .fcounts { color: var(--muted); }
 .findings-toolbar .findings-search {
   flex: 1; min-width: 160px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -423,25 +324,235 @@ h3 { font-size: 13px; color: #c0d0e8; }
 .findings-toolbar select {
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 4px;
-  padding: 4px 8px; font: inherit; font-size: 11px;
+  padding: 3px 8px; font: inherit; font-size: 11px; width: auto;
 }
-.tactic-group.group-empty { display: none; }
+
+/* compact flat buttons used across the findings tab */
+.fbtn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.fbtn:hover { background: var(--card-hi); }
+.fbtn.primary { background: var(--accent); border-color: var(--accent-hi); color: #cfe3ff; }
+.fbtn.danger { color: #ff8a93; border-color: #913040; background: transparent; }
+.fbtn.danger:hover { background: #2a1517; }
+.fbtn[disabled] { opacity: 0.4; cursor: not-allowed; }
+.fmenu-btn { padding: 3px 7px; color: var(--muted); border-color: transparent; }
+.fmenu-btn:hover { color: var(--text); }
+
+/* selection bar (master checkbox + bulk actions on ticked rows) */
+.selection-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: #0e1530;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.selection-bar .dot { color: #3a4566; }
+
 .findings-nomatch {
   padding: 24px; text-align: center; color: var(--muted);
   border: 1px dashed var(--border); border-radius: 4px; margin-bottom: 12px;
 }
-/* earliest-evidence time shown inline on each row for timeline-oriented review */
-.finding .finding-ts {
+
+/* ------- findings: cluster rows ------- */
+.tactic-group { margin-bottom: 6px; }
+.tactic-group.group-empty { display: none; }
+.cluster-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid #6b7280;
+  cursor: pointer;
+}
+.cluster-row:hover { background: var(--card-hi); }
+/* severity rail: red = contains critical/high, amber = medium max,
+   green = low/info only, grey = uncategorized (tactic unassigned) */
+.tactic-group.fc-crit > .cluster-row { border-left-color: #ef4444; }
+.tactic-group.fc-high > .cluster-row { border-left-color: #f87171; }
+.tactic-group.fc-med  > .cluster-row { border-left-color: #f59e0b; }
+.tactic-group.fc-low  > .cluster-row { border-left-color: #84cc16; }
+.tactic-group.fc-unc  > .cluster-row { border-left-color: #6b7280; }
+.cluster-row .name { font-weight: bold; color: #fff; min-width: 150px; font-size: 12px; }
+.cluster-row .count {
+  font-size: 11px; color: var(--muted); min-width: 52px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cluster-row .tactic-toggle { color: var(--muted); width: 14px; text-align: center; }
+.cluster-row .warn-ico { color: var(--conf-medium); }
+.tactic-select-all { cursor: pointer; }
+
+.sev-chips { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+.sevchip {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.sevchip.sev-critical { background: #441322; color: #ff5e6c; font-weight: bold; }
+.sevchip.sev-high     { background: #3a1e1e; color: var(--conf-high); font-weight: bold; }
+.sevchip.sev-medium   { background: #3d2c14; color: var(--conf-medium); }
+.sevchip.sev-low      { background: #1e3a1e; color: var(--conf-low); }
+.sevchip.sev-info     { background: #1e2c44; color: #8aa0c8; }
+
+/* cluster review status: 要確認 / 確認済 / 未割当 */
+.fstatus { font-size: 10px; padding: 2px 6px; border-radius: 3px; white-space: nowrap; }
+.fstatus.pending { background: #3d2c14; color: var(--conf-medium); }
+.fstatus.done    { background: #1e3a3a; color: var(--approved); }
+
+/* ------- findings: individual rows ------- */
+.findings { padding: 0; }
+.finding {
+  background: #121a33;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-left: 3px solid transparent;  /* severity rail, coloured below */
+  padding: 8px 14px 8px 12px;
+}
+.finding.sevrow-critical { border-left-color: #ef4444; }
+.finding.sevrow-high     { border-left-color: #f87171; }
+.finding.sevrow-medium   { border-left-color: #f59e0b; }
+.finding.sevrow-low      { border-left-color: #84cc16; }
+.finding.sevrow-info     { border-left-color: #3a4566; }
+/* reviewed rows recede so 未承認 rows draw the eye */
+.finding.approved, .finding.auto-approved { opacity: 0.65; }
+.finding.rejected { opacity: 0.55; }
+.finding.rejected .finding-title { text-decoration: line-through; }
+.finding.approved:hover, .finding.auto-approved:hover, .finding.rejected:hover { opacity: 1; }
+/* row hidden by the filter — kept in the DOM so scroll position is
+   stable and the row's checkbox state survives toggling the filter */
+.finding.filtered-out { display: none; }
+.finding .row-select { cursor: pointer; }
+
+.fhead { display: flex; align-items: center; gap: 8px; }
+.finding-title {
+  font-weight: 600; color: var(--text); font-size: 12px;
+  flex: 1; min-width: 0;
+}
+.mitre-link {
+  font-size: 11px; color: #5fa8ff; white-space: nowrap;
+  border-bottom: 1px dotted var(--muted); text-decoration: none;
+}
+.mitre-link:hover { color: #8ec5ff; text-decoration: none; }
+.mitre-link .ext-ico { font-size: 9px; }
+
+.fsub {
+  display: flex; align-items: center; gap: 8px;
+  margin: 4px 0 0 22px;
+  font-size: 11px; color: var(--muted); flex-wrap: wrap;
+}
+.fsub .dot { color: #3a4566; }
+.fnd-conf.ok { color: var(--approved); }
+.fnd-conf.inferred { color: #e0b85f; }
+.fnd-state.ok { color: var(--approved); }
+.fnd-state.bad { color: var(--rejected); }
+.fnd-actions { display: flex; gap: 6px; align-items: center; }
+.ev-toggle { cursor: pointer; color: #5fa8ff; user-select: none; }
+.ev-toggle:hover { color: #8ec5ff; }
+.finding-ts {
   color: #9fb4d8; font-size: 11px;
   font-variant-numeric: tabular-nums; white-space: nowrap;
-  margin-left: 4px;
 }
-/* severity rail — scan the list by criticality at a glance */
-.finding.sevrow-critical { border-left-color: #ff5e6c; }
-.finding.sevrow-high     { border-left-color: var(--conf-high); }
-.finding.sevrow-medium   { border-left-color: var(--conf-medium); }
-.finding.sevrow-low      { border-left-color: var(--conf-low); }
-.finding.sevrow-info     { border-left-color: #3a4566; }
+
+.fnd-desc {
+  margin: 4px 0 0 22px;
+  font-size: 11px; color: var(--muted);
+  cursor: pointer; white-space: pre-wrap;
+}
+.fnd-desc.clamped {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* "… ほか N 件" overflow row inside an expanded cluster */
+.fnd-more {
+  text-align: center; padding: 5px;
+  font-size: 11px; color: var(--muted);
+  cursor: pointer;
+  background: #0e1530;
+  border: 1px dashed var(--border); border-top: none;
+}
+.fnd-more:hover { color: var(--text); }
+
+/* ------- findings: structured evidence cards ------- */
+.evd-block {
+  background: #0a0f24;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0 0 22px;
+}
+.evd-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.evd-card:last-child { margin-bottom: 0; }
+.evd-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.evd-tag {
+  font-size: 10px; padding: 2px 6px;
+  background: #1e2c44; color: #8ec5ff;
+  border-radius: 3px; white-space: nowrap;
+}
+.evd-title { font-weight: 600; color: var(--text); min-width: 0; word-break: break-all; }
+.evd-idx { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.evd-grid {
+  display: grid; grid-template-columns: 90px 1fr;
+  gap: 4px 14px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.evd-k { color: var(--muted); font-weight: 600; font-size: 11px; word-break: break-all; }
+.evd-v { min-width: 0; word-break: break-all; }
+.evd-actions {
+  display: flex; gap: 6px; align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; flex-wrap: wrap;
+}
+.evd-actions a { cursor: pointer; }
+/* collapsed 1-line form for the 2nd+ evidence rows */
+.evd-summary {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 12px;
+  margin-bottom: 6px;
+  font-size: 11px; color: var(--muted);
+  cursor: pointer;
+}
+.evd-summary:hover { border-color: var(--accent-hi); color: var(--text); }
+.evd-summary .evd-summary-ident {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
+}
+.lvl-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.lvl-danger { background: #3a1e1e; color: var(--conf-high); }
+.lvl-warn   { background: #3d2c14; color: var(--conf-medium); }
+.lvl-info   { background: #1e2c44; color: #8ec5ff; }
+.copy-ico { cursor: pointer; color: var(--muted); padding: 0 2px; font-size: 11px; }
+.copy-ico:hover { color: var(--text); }
+.mono { font-family: inherit; font-variant-numeric: tabular-nums; }
+
+/* Review Gate 1A — severity badges (finding rows) */
+.badge.sev-critical { background: #441322; color: #ff5e6c; font-weight: bold; }
+.badge.sev-high     { background: #3a1e1e; color: var(--conf-high); font-weight: bold; }
+.badge.sev-medium   { background: #3d2c14; color: var(--conf-medium); }
+.badge.sev-low      { background: #1e3a1e; color: var(--conf-low); }
+.badge.sev-info     { background: #2a3556; color: #8aa0c8; }
 
 /* ------- timeline ------- */
 .timeline-table { width: 100%; border-collapse: collapse; font-size: 12px; }
