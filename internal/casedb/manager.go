@@ -593,12 +593,15 @@ func (m *Manager) QueryUnifiedEvents(ctx context.Context, q UnifiedEventQuery) (
 		sb.WriteString(` AND audit_id = ?`)
 		args = append(args, q.AuditID)
 	}
+	// CAST: the driver binds these as VARCHAR and DuckDB refuses an implicit
+	// TIMESTAMP vs VARCHAR comparison. CAST accepts both "2026-06-08 09:17:46"
+	// and ISO "2026-06-08T09:17:46Z" (ts_utc is stored as naive UTC).
 	if q.StartTime != "" {
-		sb.WriteString(` AND ts_utc >= ?`)
+		sb.WriteString(` AND ts_utc >= CAST(? AS TIMESTAMP)`)
 		args = append(args, q.StartTime)
 	}
 	if q.EndTime != "" {
-		sb.WriteString(` AND ts_utc < ?`)
+		sb.WriteString(` AND ts_utc < CAST(? AS TIMESTAMP)`)
 		args = append(args, q.EndTime)
 	}
 	if q.Computer != "" {

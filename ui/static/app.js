@@ -928,7 +928,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   try {
     switch (tab) {
       case "status":     await renderStatus(tabPane, caseID); break;
-      case "events":     await renderEvents(tabPane, caseID, detail); break;
+      case "events":     await renderEvents(tabPane, caseID, detail, params); break;
       case "findings":   await renderFindings(tabPane, caseID); break;
       case "timeline":   await renderTimeline(tabPane, caseID); break;
       case "iocs":       await renderIOCs(tabPane, caseID); break;
@@ -1626,13 +1626,20 @@ async function waitForJob(caseID, kind) {
 // Review Gate 1A — Findings tab
 // ============================================================================
 // Renders the unified Tier 1A (by-rule) + Tier 1B (by-skill) finding list.
-// Backend already returns severity-desc + pending-first order; the front-end
-// groups by MITRE tactic and exposes per-row + per-cluster bulk approve.
+// Layout follows the 2026-06 redesign mockup (tlvb_findings_redesign):
+//   - compact cluster rows with a severity rail + status badge
+//   - title-first finding rows; UUID and other verbosity behind the ⋯ menu
+//   - structured evidence cards (when/where/who/what/source/audit_id)
+//     with working pivots: ±5-min event window, EventID filter, raw JSON
 //
 // Per-pane state (pane._findings):
 //   filter:        all | pending | reviewed | auto-approved
 //   sourceFilter:  all | tier1a | tier1b
 //   selected:      Set of finding_ids the user has ticked
+//   expanded:      Set of open tactic names
+//   uncapped:      Set of tactics whose ">N more" rows were revealed
+const FND_CLUSTER_CAP = 8; // finding rows shown per cluster before the "…ほか" row
+
 async function renderFindings(pane, caseID) {
   pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading findings…</div>`;
   let findings;
@@ -1662,6 +1669,7 @@ async function renderFindings(pane, caseID) {
     query: prev.query || "",                  // free-text search
     sort: prev.sort || "severity",            // severity | time | matches
     expanded: prev.expanded instanceof Set ? prev.expanded : null, // open tactic names
+    uncapped: prev.uncapped instanceof Set ? prev.uncapped : new Set(),
   };
   const state = pane._findings;
   // Drop any selected ids that no longer exist after a re-fetch.
@@ -1688,8 +1696,7 @@ async function renderFindings(pane, caseID) {
   // Tactic groups in the order they first appear (backend sort already
   // surfaces highest-severity tactic first because findings are sorted
   // severity-desc before grouping).
-  const groupOrder = [...groups.values()];
-  for (const g of groupOrder) {
+  for (const g of [...groups.values()]) {
     let expanded;
     if (firstRender) {
       expanded = g.findings.some((f) => f.severity === "critical" || f.severity === "high");
@@ -1697,83 +1704,126 @@ async function renderFindings(pane, caseID) {
     } else {
       expanded = state.expanded.has(g.tactic);
     }
-
-    const list = h("div", { class: expanded ? "findings" : "findings hidden" });
-    const sevSummary = severitySummary(g.findings);
-    const header = h("div", { class: "tactic-header" }, [
-      h("span", { class: "tactic-toggle" }, expanded ? "▾" : "▸"),
-      h("span", { class: "name" }, g.tactic),
-      h("span", { class: "spacer" }),
-      ...sevSummary,
-      h("span", { class: "count" }, g.findings.length + " findings"),
-    ]);
-    header.onclick = (ev) => {
-      if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
-      const collapsed = list.classList.toggle("hidden");
-      header.querySelector(".tactic-toggle").textContent = collapsed ? "▸" : "▾";
-      if (collapsed) state.expanded.delete(g.tactic);
-      else state.expanded.add(g.tactic);
-    };
-
-    const groupCheck = h("input", {
-      type: "checkbox",
-      class: "tactic-select-all",
-      title: "select every visible finding in this tactic",
-      onclick: (ev) => {
-        ev.stopPropagation();
-        const checked = ev.target.checked;
-        for (const f of g.findings) {
-          if (!findingMatchesFilter(f, state)) continue;
-          if (checked) state.selected.add(f.finding_id);
-          else state.selected.delete(f.finding_id);
-          const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(f.finding_id)}"]`);
-          if (cb) cb.checked = checked;
-        }
-        refreshFindingsToolbar(pane);
-      },
-    });
-    header.insertBefore(groupCheck, header.firstChild);
-
-    // Per-cluster bulk-approve button (Review Gate 1A — DESIGN §6.5).
-    const bulkApprove = h("button", {
-      class: "ghost",
-      style: "padding: 2px 8px; font-size: 11px; margin-left: 8px;",
-      title: "approve every pending finding in this tactic",
-      onclick: async (ev) => {
-        ev.stopPropagation();
-        const pendingIds = g.findings
-          .filter((f) => !f.approved && !f.rejected)
-          .map((f) => f.finding_id);
-        if (pendingIds.length === 0) return;
-        if (!confirm(`Approve ${pendingIds.length} pending finding(s) in tactic "${g.tactic}"?`)) return;
-        await runBulk(pane, pendingIds, "approve", "");
-      },
-    }, "Approve cluster");
-    header.appendChild(bulkApprove);
-
-    sortFindings(g.findings, state.sort).forEach((f) => list.appendChild(findingRow(caseID, f, pane)));
-
-    const group = h("div", { class: "tactic-group", "data-tactic": g.tactic }, [header, list]);
-    pane.appendChild(group);
+    pane.appendChild(buildClusterGroup(pane, caseID, g, expanded));
   }
 
   // Apply the current search/filter to row + group visibility + counts.
   applyVisibilityFilter(pane);
 }
 
-// severitySummary renders compact severity-count chips for the tactic header.
+// buildClusterGroup renders one tactic cluster: a compact header row
+// (severity rail / chips / status badge) + the finding rows beneath it.
+function buildClusterGroup(pane, caseID, g, expanded) {
+  const state = pane._findings;
+  const unc = g.tactic === "uncategorized";
+
+  const list = h("div", { class: expanded ? "findings" : "findings hidden" });
+  sortFindings(g.findings, state.sort).forEach((f) => list.appendChild(findingRow(caseID, f, pane)));
+  // "… ほか N 件" overflow row — text + visibility managed by applyVisibilityFilter.
+  const moreRow = h("div", {
+    class: "fnd-more hidden",
+    title: "残りの finding を表示",
+    onclick: () => { state.uncapped.add(g.tactic); applyVisibilityFilter(pane); },
+  });
+  list.appendChild(moreRow);
+
+  const groupCheck = h("input", {
+    type: "checkbox",
+    class: "tactic-select-all",
+    title: "このクラスターの表示中 finding を全選択 / 解除",
+    onclick: (ev) => {
+      ev.stopPropagation();
+      const checked = ev.target.checked;
+      for (const f of g.findings) {
+        if (!findingMatchesFilter(f, state)) continue;
+        if (checked) state.selected.add(f.finding_id);
+        else state.selected.delete(f.finding_id);
+        const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(f.finding_id)}"]`);
+        if (cb) cb.checked = checked;
+      }
+      refreshFindingsToolbar(pane);
+    },
+  });
+
+  const toggleBtn = h("button", { class: "fbtn ftoggle-btn" }, expanded ? "折り畳む" : "展開");
+  const header = h("div", { class: "cluster-row" }, [
+    groupCheck,
+    unc
+      ? h("span", { class: "tactic-toggle warn-ico", title: "MITRE tactic 未割当の finding" }, "⚠")
+      : h("span", { class: "tactic-toggle" }, expanded ? "▾" : "▸"),
+    h("span", { class: "name" }, g.tactic),
+    h("span", { class: "sev-chips" }, severitySummary(g.findings)),
+    h("span", { class: "count" }, g.findings.length + " 件"),
+    h("span", { class: "fstatus" }, ""), // text/class filled by refreshClusterHeader
+    toggleBtn,
+  ]);
+  const onToggle = (ev) => {
+    if (ev.target.tagName === "INPUT") return;
+    ev.stopPropagation();
+    setGroupExpanded(pane, group, list.classList.contains("hidden"));
+  };
+  header.onclick = onToggle;
+  toggleBtn.onclick = onToggle;
+
+  const group = h("div", {
+    class: "tactic-group " + clusterSevClass(g.findings, g.tactic),
+    "data-tactic": g.tactic,
+  }, [header, list]);
+  refreshClusterHeader(pane, g.tactic, group);
+  return group;
+}
+
+// severitySummary renders compact severity-count chips for the cluster header.
 function severitySummary(findings) {
-  const counts = {critical:0, high:0, medium:0, low:0, info:0};
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   for (const f of findings) {
     if (counts[f.severity] !== undefined) counts[f.severity]++;
   }
+  const label = { critical: "CRIT", high: "HIGH", medium: "MED", low: "LOW", info: "INFO" };
   const out = [];
-  for (const sev of ["critical","high","medium","low","info"]) {
+  for (const sev of ["critical", "high", "medium", "low", "info"]) {
     if (counts[sev] === 0) continue;
-    out.push(h("span", { class: "badge sev-" + sev, style: "margin-right: 4px;" },
-      sev + ": " + counts[sev]));
+    out.push(h("span", { class: "sevchip sev-" + sev }, label[sev] + " " + counts[sev]));
   }
   return out;
+}
+
+// clusterSevClass picks the severity-rail color for a cluster: red when it
+// contains critical/high, amber when medium is the max, green for low/info,
+// grey for the uncategorized bucket (tactic not assigned by the rule).
+function clusterSevClass(findings, tactic) {
+  if (tactic === "uncategorized") return "fc-unc";
+  let best = 5;
+  for (const f of findings) best = Math.min(best, ["critical", "high", "medium", "low", "info"].indexOf(f.severity));
+  if (best <= 0) return "fc-crit";
+  if (best === 1) return "fc-high";
+  if (best === 2) return "fc-med";
+  return "fc-low";
+}
+
+// refreshClusterHeader recomputes the cluster's status badge ("要確認" while
+// any finding is pending, "確認済" once everything is reviewed, "未割当" for
+// the uncategorized bucket) — called after each approve/reject/reset.
+function refreshClusterHeader(pane, tactic, groupEl) {
+  const state = pane._findings;
+  const group = groupEl || pane.querySelector(`.tactic-group[data-tactic="${cssEscape(tactic)}"]`);
+  if (!group) return;
+  const badge = group.querySelector(".fstatus");
+  if (!badge) return;
+  let pending = 0;
+  for (const f of Object.values(state.findingsById)) {
+    const t = (f.mitre_tactics && f.mitre_tactics[0]) || "uncategorized";
+    if (t === tactic && !f.approved && !f.rejected) pending++;
+  }
+  if (pending > 0) {
+    badge.className = "fstatus pending";
+    badge.textContent = tactic === "uncategorized" ? "未割当" : "要確認";
+    badge.title = pending + " 件が未レビュー";
+  } else {
+    badge.className = "fstatus done";
+    badge.textContent = "確認済";
+    badge.title = "全件レビュー済";
+  }
 }
 
 // findingMatchesFilter decides whether a finding is visible under the current
@@ -1851,7 +1901,7 @@ function refreshFindingsToolbar(pane) {
   // Row 0: free-text search + sort + expand/collapse-all. Search filters rows
   // live (no re-render → input keeps focus); sort triggers a re-render.
   const sortSelect = h("select", {
-    title: "order findings within each tactic",
+    title: "クラスター内の finding の並び順",
     onchange: (ev) => { state.sort = ev.target.value; renderFindings(pane, state.caseID); },
   }, [
     h("option", { value: "severity" }, "severity"),
@@ -1859,7 +1909,7 @@ function refreshFindingsToolbar(pane) {
     h("option", { value: "matches" }, "matches"),
   ]);
   sortSelect.value = state.sort || "severity";
-  const searchRow = h("div", { class: "row", style: "gap: 8px; align-items: center; margin-bottom: 6px;" }, [
+  toolbar.appendChild(h("div", { class: "frow" }, [
     h("input", {
       type: "search",
       class: "findings-search",
@@ -1867,84 +1917,47 @@ function refreshFindingsToolbar(pane) {
       value: state.query || "",
       oninput: (ev) => { state.query = ev.target.value.trim(); applyVisibilityFilter(pane); },
     }),
-    h("span", { class: "muted", style: "font-size: 11px;" }, "Sort:"),
+    h("span", { class: "flabel", style: "min-width: 0;" }, "Sort:"),
     sortSelect,
-    h("button", {
-      class: "ghost", style: "padding: 4px 10px; font-size: 11px;",
-      title: "expand every tactic group", onclick: () => expandAllGroups(pane, true),
-    }, "Expand all"),
-    h("button", {
-      class: "ghost", style: "padding: 4px 10px; font-size: 11px;",
-      title: "collapse every tactic group", onclick: () => expandAllGroups(pane, false),
-    }, "Collapse all"),
-  ]);
-  toolbar.appendChild(searchRow);
+    h("button", { class: "fbtn", title: "全クラスターを展開", onclick: () => expandAllGroups(pane, true) }, "Expand all"),
+    h("button", { class: "fbtn", title: "全クラスターを折り畳む", onclick: () => expandAllGroups(pane, false) }, "Collapse all"),
+  ]));
 
-  // Filter row 1: review state.
-  const filterRow = h("div", { class: "row", style: "gap: 6px; align-items: center;" }, [
-    h("span", { class: "muted", style: "font-size: 11px;" }, "State:"),
-    ...["all","pending","reviewed","auto-approved"].map((mode) => {
-      return h("button", {
-        class: state.filter === mode ? "primary" : "ghost",
-        style: "padding: 4px 10px; font-size: 11px;",
+  // Row 1: review-state filter + roll-up counts.
+  toolbar.appendChild(h("div", { class: "frow" }, [
+    h("span", { class: "flabel" }, "State:"),
+    ...["all", "pending", "reviewed", "auto-approved"].map((mode) =>
+      h("button", {
+        class: "fbtn" + (state.filter === mode ? " primary" : ""),
         onclick: () => {
           state.filter = mode;
           applyVisibilityFilter(pane);
           refreshFindingsToolbar(pane);
         },
-      }, mode);
-    }),
+      }, mode)),
     h("span", { class: "spacer" }),
-    h("span", { class: "muted", style: "font-size: 11px;" }, [
+    h("span", { class: "fcounts" }, [
       `Total ${total} · pending ${pending} · reviewed ${approved} · auto ${autoApproved} · rejected ${rejected} · showing `,
       h("span", { id: "fnd-showing" }, String(visibleCount)),
     ]),
-  ]);
-  toolbar.appendChild(filterRow);
+  ]));
 
-  // Filter row 2: source (Tier 1A vs 1B).
-  const sourceRow = h("div", { class: "row", style: "gap: 6px; align-items: center; margin-top: 4px;" }, [
-    h("span", { class: "muted", style: "font-size: 11px;" }, "Source:"),
-    ...[["all","All"],["tier1a","Tier 1A (rules)"],["tier1b","Tier 1B (skills)"]].map(([mode,label]) => {
-      return h("button", {
-        class: state.sourceFilter === mode ? "primary" : "ghost",
-        style: "padding: 4px 10px; font-size: 11px;",
+  // Row 2: source filter (Tier 1A vs 1B) + approve-all-visible.
+  toolbar.appendChild(h("div", { class: "frow" }, [
+    h("span", { class: "flabel" }, "Source:"),
+    ...[["all", "All"], ["tier1a", "Tier 1A (rules)"], ["tier1b", "Tier 1B (skills)"]].map(([mode, label]) =>
+      h("button", {
+        class: "fbtn" + (state.sourceFilter === mode ? " primary" : ""),
         onclick: () => {
           state.sourceFilter = mode;
           applyVisibilityFilter(pane);
           refreshFindingsToolbar(pane);
         },
-      }, label);
-    }),
-  ]);
-  toolbar.appendChild(sourceRow);
-
-  // Bulk action row.
-  const bulkRow = h("div", { class: "row", style: "gap: 6px; align-items: center; margin-top: 6px;" }, [
-    h("span", { class: "muted", style: "font-size: 11px;" },
-      selectedCount > 0 ? `${selectedCount} selected` : "(no rows selected)"),
-    h("button", {
-      style: "padding: 4px 10px; font-size: 11px;",
-      disabled: selectedCount === 0 ? "disabled" : null,
-      onclick: () => bulkAction(pane, "approve"),
-    }, "Approve selected"),
-    h("button", {
-      class: "danger",
-      style: "padding: 4px 10px; font-size: 11px;",
-      disabled: selectedCount === 0 ? "disabled" : null,
-      onclick: () => bulkActionWithReason(pane, "reject"),
-    }, "Reject selected…"),
-    h("button", {
-      class: "ghost",
-      style: "padding: 4px 10px; font-size: 11px;",
-      disabled: selectedCount === 0 ? "disabled" : null,
-      onclick: () => bulkAction(pane, "reset"),
-    }, "Reset selected"),
+      }, label)),
     h("span", { class: "spacer" }),
     h("button", {
-      class: "primary",
-      style: "padding: 4px 10px; font-size: 11px;",
-      title: "Approve every finding currently visible (respects the filters above)",
+      class: "fbtn",
+      title: "表示中の finding をすべて承認 (上のフィルタが効きます)",
       disabled: visibleCount === 0 ? "disabled" : null,
       onclick: async () => {
         if (!confirm(`Approve all ${visibleCount} visible finding(s)?`)) return;
@@ -1954,52 +1967,110 @@ function refreshFindingsToolbar(pane) {
         await runBulk(pane, ids, "approve", "");
       },
     }, `Approve all visible (${visibleCount})`),
-  ]);
-  toolbar.appendChild(bulkRow);
+  ]));
+
+  // Row 3: selection bar — master checkbox + bulk actions on the ticked rows.
+  const master = h("input", {
+    type: "checkbox",
+    title: "表示中の finding を全選択 / 解除",
+    onclick: (ev) => {
+      const checked = ev.target.checked;
+      for (const f of findings) {
+        if (!findingMatchesFilter(f, state)) continue;
+        if (checked) state.selected.add(f.finding_id);
+        else state.selected.delete(f.finding_id);
+        const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(f.finding_id)}"]`);
+        if (cb) cb.checked = checked;
+      }
+      if (!checked) state.selected.clear();
+      refreshFindingsToolbar(pane);
+    },
+  });
+  master.checked = visibleCount > 0 && selectedCount >= visibleCount;
+  master.indeterminate = selectedCount > 0 && selectedCount < visibleCount;
+  toolbar.appendChild(h("div", { class: "selection-bar" }, [
+    master,
+    h("span", {}, selectedCount > 0 ? `${selectedCount} selected` : "(no rows selected)"),
+    h("span", { class: "dot" }, "·"),
+    h("button", {
+      class: "fbtn",
+      disabled: selectedCount === 0 ? "disabled" : null,
+      onclick: () => bulkAction(pane, "approve"),
+    }, "Approve selected"),
+    h("button", {
+      class: "fbtn danger",
+      disabled: selectedCount === 0 ? "disabled" : null,
+      onclick: () => rejectWithModal(pane, [...state.selected]),
+    }, "Reject selected…"),
+    h("button", {
+      class: "fbtn",
+      disabled: selectedCount === 0 ? "disabled" : null,
+      onclick: () => bulkAction(pane, "reset"),
+    }, "Reset selected"),
+  ]));
 }
 
 // applyVisibilityFilter toggles per-row visibility based on the current
 // state/source/search filters without rebuilding the DOM (preserves scroll +
-// search-input focus), then syncs group visibility and the "showing N" count.
+// search-input focus), then syncs group visibility, the per-cluster overflow
+// cap ("… ほか N 件") and the "showing N" count. The cap only applies while
+// no filter/search is active — an active filter must never hide its matches.
 function applyVisibilityFilter(pane) {
   const state = pane._findings;
+  const filterActive = !!state.query || state.filter !== "all" || state.sourceFilter !== "all";
   let visibleCount = 0;
-  for (const f of Object.values(state.findingsById)) {
-    const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
-    if (!row) continue;
-    const visible = findingMatchesFilter(f, state);
-    row.classList.toggle("filtered-out", !visible);
-    if (visible) visibleCount++;
+
+  for (const group of pane.querySelectorAll(".tactic-group")) {
+    const tactic = group.getAttribute("data-tactic");
+    const uncapped = filterActive || state.uncapped.has(tactic);
+    let matchIdx = 0, matchTotal = 0;
+    const capped = [];
+    for (const row of group.querySelectorAll(".finding")) {
+      const f = state.findingsById[row.getAttribute("data-fid")];
+      const matches = !!f && findingMatchesFilter(f, state);
+      let show = matches;
+      if (matches) {
+        matchTotal++;
+        if (!uncapped && matchIdx >= FND_CLUSTER_CAP) { show = false; capped.push(f); }
+        matchIdx++;
+      }
+      row.classList.toggle("filtered-out", !show);
+      if (show) visibleCount++;
+    }
+
+    const more = group.querySelector(".fnd-more");
+    if (more) {
+      if (capped.length > 0) {
+        const sevs = severitySummary(capped).map((c) => c.textContent).join(" · ");
+        more.textContent = `… ほか ${capped.length} 件` + (sevs ? ` (${sevs})` : "") + " — クリックで表示";
+        more.classList.remove("hidden");
+      } else {
+        more.classList.add("hidden");
+      }
+    }
+
+    group.classList.toggle("group-empty", matchTotal === 0);
+    const rowsAll = group.querySelectorAll(".finding").length;
+    const cnt = group.querySelector(".cluster-row .count");
+    if (cnt) cnt.textContent = (matchTotal < rowsAll) ? `${matchTotal}/${rowsAll} 件` : `${rowsAll} 件`;
   }
-  updateGroupVisibility(pane);
+
   const showing = pane.querySelector("#fnd-showing");
   if (showing) showing.textContent = String(visibleCount);
   const noMatch = pane.querySelector("#fnd-nomatch");
   if (noMatch) noMatch.classList.toggle("hidden", visibleCount > 0);
 }
 
-// updateGroupVisibility hides tactic groups whose findings are all filtered
-// out, and rewrites the per-group count to "visible/total" while filtered so
-// the header still reflects what's on screen.
-function updateGroupVisibility(pane) {
-  for (const group of pane.querySelectorAll(".tactic-group")) {
-    const rows = group.querySelectorAll(".finding");
-    let vis = 0;
-    rows.forEach((r) => { if (!r.classList.contains("filtered-out")) vis++; });
-    group.classList.toggle("group-empty", vis === 0);
-    const cnt = group.querySelector(".tactic-header .count");
-    if (cnt) cnt.textContent = (vis < rows.length) ? `${vis}/${rows.length} findings` : `${rows.length} findings`;
-  }
-}
-
 // setGroupExpanded / expandAllGroups drive the collapse arrow + state.expanded
 // (so the open/closed set survives a sort re-render).
 function setGroupExpanded(pane, group, expanded) {
   const list = group.querySelector(".findings");
-  const toggle = group.querySelector(".tactic-toggle");
   if (!list) return;
   list.classList.toggle("hidden", !expanded);
-  if (toggle) toggle.textContent = expanded ? "▾" : "▸";
+  const toggle = group.querySelector(".tactic-toggle");
+  if (toggle && !toggle.classList.contains("warn-ico")) toggle.textContent = expanded ? "▾" : "▸";
+  const btn = group.querySelector(".ftoggle-btn");
+  if (btn) btn.textContent = expanded ? "折り畳む" : "展開";
   const tactic = group.getAttribute("data-tactic");
   if (tactic && pane._findings && pane._findings.expanded) {
     if (expanded) pane._findings.expanded.add(tactic);
@@ -2018,21 +2089,21 @@ async function bulkAction(pane, action) {
   await runBulk(pane, ids, action, "");
 }
 
-async function bulkActionWithReason(pane, action) {
-  const ids = [...pane._findings.selected];
-  if (ids.length === 0) return;
-  let reason = null;
+// rejectWithModal asks for an optional reason, then rejects the given ids.
+// Shared by the single-row 却下 button and the bulk "Reject selected…" action.
+function rejectWithModal(pane, ids) {
+  if (!ids || ids.length === 0) return;
   const close = modal([
-    h("h3", {}, `Reject ${ids.length} finding(s)`),
+    h("h3", {}, ids.length === 1 ? "Finding を却下" : `${ids.length} 件の finding を却下`),
     h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
-      h("input", { id: "bulk_reason", placeholder: "why are these not true positives? (optional)" })]),
+      h("input", { id: "rej_reason", placeholder: "why is this not a true positive? (optional)" })]),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => closeModal() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
       h("button", { class: "danger", onclick: async () => {
-        reason = $("#bulk_reason").value.trim();
-        closeModal();
-        await runBulk(pane, ids, action, reason);
-      }}, "Reject all"),
+        const reason = $("#rej_reason").value.trim();
+        close();
+        await runBulk(pane, ids, "reject", reason);
+      }}, "Reject"),
     ]),
   ]);
 }
@@ -2048,6 +2119,7 @@ async function runBulk(pane, ids, action, reason) {
           "success");
     // Update local state + DOM rows in place — no scroll jump.
     const now = new Date().toISOString();
+    const touchedTactics = new Set();
     for (const id of ids) {
       const f = state.findingsById[id];
       if (!f) continue;
@@ -2061,13 +2133,14 @@ async function runBulk(pane, ids, action, reason) {
         f.reviewed_at = now; f.reviewed_by = "examiner-web";
       } else if (action === "reset") {
         // Restore severity-based default — mirrors AutoApproveByLevel in Go.
-        const autoOK = ["medium","low","info",""].includes(f.severity || "");
+        const autoOK = ["medium", "low", "info", ""].includes(f.severity || "");
         f.approved = autoOK; f.rejected = false; f.reject_reason = "";
         f.auto_approved = autoOK;
         f.approved_by = autoOK ? "auto:severity-rule" : "";
         f.reviewed_at = ""; f.reviewed_by = "";
       }
       updateFindingRowDOM(pane, f);
+      touchedTactics.add((f.mitre_tactics && f.mitre_tactics[0]) || "uncategorized");
       state.selected.delete(id);
     }
     // Uncheck the row checkboxes
@@ -2075,6 +2148,8 @@ async function runBulk(pane, ids, action, reason) {
       const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(id)}"]`);
       if (cb) cb.checked = false;
     }
+    for (const t of touchedTactics) refreshClusterHeader(pane, t);
+    applyVisibilityFilter(pane);
     refreshFindingsToolbar(pane);
   } catch (e) {
     toast(e.message, "error");
@@ -2088,17 +2163,8 @@ function updateFindingRowDOM(pane, f) {
   const row = pane.querySelector(`.finding[data-fid="${cssEscape(f.finding_id)}"]`);
   if (!row) return;
   row.className = findingRowClass(f, pane);
-  const stateBadge = row.querySelector(".state-badge");
-  if (stateBadge) {
-    const s = reviewStateLabel(f);
-    stateBadge.className = "badge state-badge " + s.cls;
-    stateBadge.textContent = s.label;
-  }
-  const actions = row.querySelector(".actions");
-  if (actions) {
-    actions.innerHTML = "";
-    rebuildActionButtons(pane, f, actions);
-  }
+  const actions = row.querySelector(".fnd-actions");
+  if (actions) rebuildActionButtons(pane, f, actions);
 }
 
 function findingRowClass(f, pane) {
@@ -2112,49 +2178,58 @@ function findingRowClass(f, pane) {
   return cls;
 }
 
-function reviewStateLabel(f) {
-  if (f.rejected)             return { cls: "rejected",      label: "rejected" };
-  if (f.approved && f.auto_approved) return { cls: "auto-approved", label: "auto" };
-  if (f.approved)             return { cls: "approved",      label: "approved" };
-  return { cls: "pending", label: "pending" };
-}
-
+// rebuildActionButtons renders the state-dependent right side of a finding's
+// sub-line: pending → 承認/却下, reviewed → reviewer info + 却下/承認/リセット.
 function rebuildActionButtons(pane, f, actions) {
+  actions.innerHTML = "";
   if (!f.approved && !f.rejected) {
     actions.appendChild(h("button", {
+      class: "fbtn",
       onclick: () => runBulk(pane, [f.finding_id], "approve", ""),
-    }, "Approve"));
+    }, "承認"));
     actions.appendChild(h("button", {
-      class: "danger",
-      onclick: () => {
-        modal([
-          h("h3", {}, "Reject finding " + f.finding_id),
-          h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
-            h("input", { id: "rej_reason", placeholder: "why is this not a true positive? (optional)" })]),
-          h("div", { class: "actions" }, [
-            h("button", { class: "ghost", onclick: () => closeModal() }, "Cancel"),
-            h("button", { class: "danger", onclick: () => {
-              const reason = $("#rej_reason").value.trim();
-              closeModal();
-              runBulk(pane, [f.finding_id], "reject", reason);
-            }}, "Reject"),
-          ]),
-        ]);
-      },
-    }, "Reject"));
-  } else {
-    const reviewedBy = f.auto_approved ? (f.approved_by || "auto:severity-rule") : (f.reviewed_by || "?");
-    const when = f.auto_approved ? "(severity default)" : fmtTS(f.reviewed_at);
-    actions.appendChild(h("span", { class: "muted" },
-      "Reviewed by " + reviewedBy + " · " + when +
-      (f.reject_reason ? " · reason: " + f.reject_reason : "")));
+      class: "fbtn danger",
+      onclick: () => rejectWithModal(pane, [f.finding_id]),
+    }, "却下"));
+  } else if (f.rejected) {
+    actions.appendChild(h("span", { class: "fnd-state bad", title: f.reject_reason ? "reason: " + f.reject_reason : "" },
+      "✕ 却下" + (f.reject_reason ? " · " + f.reject_reason : "")));
     actions.appendChild(h("button", {
-      class: "ghost",
-      style: "margin-left: 8px;",
-      title: "clear examiner decision and restore severity default",
+      class: "fbtn",
+      onclick: () => runBulk(pane, [f.finding_id], "approve", ""),
+    }, "承認"));
+    actions.appendChild(h("button", {
+      class: "fbtn",
+      title: "判断を取り消して severity 既定値に戻す",
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
-    }, "Reset"));
+    }, "リセット"));
+  } else {
+    const label = f.auto_approved
+      ? "✓ auto 承認 (severity 既定)"
+      : "✓ 承認済" + (f.reviewed_at ? " · " + fmtTS(f.reviewed_at) : "");
+    actions.appendChild(h("span", {
+      class: "fnd-state ok",
+      title: "reviewed by " + (f.auto_approved ? (f.approved_by || "auto:severity-rule") : (f.reviewed_by || "?")),
+    }, label));
+    actions.appendChild(h("button", {
+      class: "fbtn danger",
+      onclick: () => rejectWithModal(pane, [f.finding_id]),
+    }, "却下"));
+    actions.appendChild(h("button", {
+      class: "fbtn",
+      title: "判断を取り消して severity 既定値に戻す",
+      onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
+    }, "リセット"));
   }
+}
+
+// findingSourceLabel — "Sigma 1A" / "Custom 1A" / "Skill 1B · webserver_generic".
+function findingSourceLabel(f) {
+  if (f.source === "tier1b") {
+    return "Skill 1B" + (f.rule_id ? " · " + f.rule_id : "") + (f.lens ? " · " + f.lens : "");
+  }
+  const src = f.rule_source || "rule";
+  return src.charAt(0).toUpperCase() + src.slice(1) + " 1A";
 }
 
 function findingRow(caseID, f, pane) {
@@ -2163,125 +2238,396 @@ function findingRow(caseID, f, pane) {
     "data-fid": f.finding_id,
   });
   const sev = f.severity || "info";
-  const sourceLabel = f.source === "tier1b"
-    ? "1B/" + (f.rule_id || "skill")
-    : "1A/" + (f.rule_source || "rule");
-  const stateLbl = reviewStateLabel(f);
+  const sevLabel = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW", info: "INFO" }[sev] || sev;
   const firstTs = findingFirstTs(f);
 
-  const headerLine = h("div", { class: "header" }, [
+  // ---- head: checkbox / severity / title / MITRE links --------------------
+  row.appendChild(h("div", { class: "fhead" }, [
     h("input", {
       type: "checkbox",
       class: "row-select",
       "data-fid": f.finding_id,
+      ...(pane._findings.selected.has(f.finding_id) ? { checked: "checked" } : {}),
       onclick: (ev) => {
         if (ev.target.checked) pane._findings.selected.add(f.finding_id);
         else pane._findings.selected.delete(f.finding_id);
         refreshFindingsToolbar(pane);
       },
     }),
-    h("span", { class: "badge sev-" + sev }, sev),
-    h("span", { class: "badge source-" + f.source, title: f.rule_id || "" }, sourceLabel),
-    ...(f.confidence
-      ? [h("span", {
-          class: "badge conf-" + f.confidence,
-          title: "provenance: " + (f.provenance || ""),
-        }, f.confidence)]
-      : []),
-    h("span", { class: "finding-title" }, f.title || f.rule_id || "(untitled)"),
-    h("span", { class: "spacer" }),
+    h("span", { class: "badge sev-" + sev }, sevLabel),
+    h("span", { class: "finding-title", title: f.title || "" }, f.title || f.rule_id || "(untitled)"),
     ...(f.mitre_techniques || []).slice(0, 3).map((t) =>
       h("a", {
-        class: "technique-id",
+        class: "mitre-link",
         href: "https://attack.mitre.org/techniques/" + t.replace(/\./g, "/"),
         target: "_blank",
         rel: "noopener",
+        title: "attack.mitre.org で " + t + " を開く",
         onclick: (ev) => ev.stopPropagation(),
-      }, t)
+      }, [t + " ", h("span", { class: "ext-ico" }, "↗")])
     ),
-    ...(firstTs
-      ? [h("span", { class: "finding-ts", title: "earliest evidence: " + firstTs },
-          fmtTS(firstTs))]
-      : []),
-    h("span", { class: "badge state-badge " + stateLbl.cls }, stateLbl.label),
-  ]);
-  row.appendChild(headerLine);
+  ]));
 
-  if (f.description) row.appendChild(h("div", { class: "reasoning" }, f.description));
-
-  // Sub-line: lens (1B) / source path / match_count.
-  const subLine = h("div", { class: "muted", style: "font-size: 11px; margin-top: 4px;" }, [
-    f.lens ? "lens=" + f.lens + " · " : "",
-    "matches=" + (f.match_count || 0) + (f.truncated ? "+" : ""),
-    f.source_path ? " · " + f.source_path : "",
-    "  ·  " + f.finding_id,
-  ].filter(Boolean).join(""));
-  row.appendChild(subLine);
-
-  // Evidence preview — backend returns up to 3 preview rows.
-  const evList = h("div", { class: "evidence-list hidden" });
-  const evItems = [];
-  (f.evidence_preview || []).forEach((ev) => {
-    const item = h("div", { class: "evidence-item" });
-    item.appendChild(h("div", { class: "evidence-head" }, [
-      h("span", { class: "source" }, (ev.artifact_id || "?") + " "),
-      h("span", { class: "audit-id" }, ev.audit_id),
-      ev.event_type ? h("span", { class: "muted", style: "margin-left: 6px;" }, ev.event_type) : "",
-      ev.ts_utc ? h("span", { class: "muted", style: "margin-left: 6px;" }, fmtTS(ev.ts_utc, ev.evidence_id)) : "",
-    ]));
-    const meta = h("div", { class: "evidence-meta muted" }, "");
-    const payloadBox = h("pre", { class: "payload-pre evidence-payload" }, "");
-    item.appendChild(meta);
-    item.appendChild(payloadBox);
-    evList.appendChild(item);
-    evItems.push({ ev, meta, payloadBox });
-  });
+  // ---- evidence block (lazy) ----------------------------------------------
+  const previews = f.evidence_preview || [];
+  const evBlock = h("div", { class: "evd-block hidden" });
   let evLoaded = false;
-  async function loadEvidencePayloads() {
+  async function loadEvidence() {
     if (evLoaded) return;
     evLoaded = true;
-    await Promise.all(evItems.map(async ({ ev, meta, payloadBox }) => {
-      meta.textContent = "loading event…";
+    evBlock.innerHTML = "";
+    evBlock.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
+      h("span", {}, [h("span", { class: "spinner" }), "loading evidence…"])));
+    const results = await Promise.all(previews.map(async (pv) => {
       try {
         const res = await api("GET",
-          `/api/cases/${encodeURIComponent(caseID)}/events?audit_id=${encodeURIComponent(ev.audit_id)}&limit=1`);
-        const row = (res.events || [])[0];
-        if (!row) {
-          meta.textContent = "no event found for audit_id " + ev.audit_id;
-          payloadBox.textContent = "";
-          return;
-        }
-        meta.textContent =
-          `time: ${row.ts_utc || "?"} · event_type: ${row.event_type || "?"}` +
-          (row.computer ? ` · computer: ${row.computer}` : "") +
-          (row.evidence_id ? ` · evidence: ${row.evidence_id}` : "");
-        let pretty = row.payload_json || "";
-        try { pretty = JSON.stringify(JSON.parse(row.payload_json), null, 2); } catch (_) {}
-        payloadBox.textContent = pretty;
+          `/api/cases/${encodeURIComponent(caseID)}/events?audit_id=${encodeURIComponent(pv.audit_id)}&limit=1`);
+        return { pv, row: (res.events || [])[0] || null };
       } catch (e) {
-        meta.textContent = "load failed: " + String((e && e.message) || e).slice(0, 200);
+        return { pv, row: null, err: String((e && e.message) || e).slice(0, 200) };
       }
     }));
+    evBlock.innerHTML = "";
+    const total = f.match_count || previews.length;
+    results.forEach((r, i) => {
+      // 1 件目は展開、2 件目以降は 1 行サマリ (クリックで展開)。
+      if (i === 0) evBlock.appendChild(evidenceCard(caseID, f, r, i, results.length, total));
+      else evBlock.appendChild(evidenceSummaryRow(caseID, f, r, i, results.length, total));
+    });
+    if (total > previews.length) {
+      evBlock.appendChild(h("div", { class: "muted", style: "font-size: 11px; padding: 2px 4px;" },
+        `preview は先頭 ${previews.length} 件のみ — 全 ${total}${f.truncated ? "+" : ""} 件`));
+    }
   }
-  const previewCount = (f.evidence_preview || []).length;
-  const matchCount = f.match_count || 0;
-  const toggleLabel = previewCount < matchCount
-    ? `▸ ${previewCount} preview rows (of ${matchCount}${f.truncated ? "+" : ""})`
-    : `▸ ${previewCount} evidence rows`;
-  const toggle = h("div", { class: "evidence-toggle" }, toggleLabel);
-  toggle.onclick = () => {
-    const willOpen = evList.classList.contains("hidden");
-    evList.classList.toggle("hidden");
-    toggle.textContent = (willOpen ? "▾ " : "▸ ") + toggleLabel.slice(2);
-    if (willOpen) loadEvidencePayloads();
-  };
-  row.appendChild(toggle);
-  row.appendChild(evList);
 
-  const actions = h("div", { class: "actions" });
+  // ---- sub-line: source / confidence / matches / evidence toggle / actions
+  const evToggle = previews.length > 0
+    ? h("a", { class: "ev-toggle" }, "evidence を見る ▾")
+    : h("span", { class: "muted" }, "evidence なし");
+  if (previews.length > 0) {
+    evToggle.onclick = () => {
+      const willOpen = evBlock.classList.contains("hidden");
+      evBlock.classList.toggle("hidden");
+      evToggle.textContent = willOpen ? "evidence を閉じる ▴" : "evidence を見る ▾";
+      if (willOpen) loadEvidence();
+    };
+  }
+  const actions = h("span", { class: "fnd-actions" });
   rebuildActionButtons(pane, f, actions);
-  row.appendChild(actions);
+  const confSpan = f.confidence === "confirmed"
+    ? h("span", { class: "fnd-conf ok", title: "provenance: " + (f.provenance || "signature") }, "✓ confirmed")
+    : h("span", { class: "fnd-conf inferred", title: "provenance: " + (f.provenance || "anomaly-llm") }, "～ inferred");
+  const sub = h("div", { class: "fsub" }, [
+    h("span", { title: f.rule_id || "" }, findingSourceLabel(f)),
+    h("span", { class: "dot" }, "·"),
+    confSpan,
+    h("span", { class: "dot" }, "·"),
+    h("span", {}, (f.match_count || 0) + (f.truncated ? "+" : "") + (f.match_count === 1 ? " match" : " matches")),
+    h("span", { class: "dot" }, "·"),
+    evToggle,
+    ...(firstTs ? [
+      h("span", { class: "dot" }, "·"),
+      h("span", { class: "finding-ts", title: "earliest evidence: " + firstTs }, fmtTS(firstTs)),
+    ] : []),
+    h("span", { class: "spacer" }),
+    actions,
+    h("button", {
+      class: "fbtn fmenu-btn",
+      title: "詳細 (finding_id / rule / source path)",
+      onclick: () => findingDetailsModal(f),
+    }, "⋯"),
+  ]);
+  row.appendChild(sub);
+
+  // ---- description (2-line clamp, click to expand) -------------------------
+  if (f.description) {
+    const desc = h("div", { class: "fnd-desc clamped", title: "クリックで全文表示 / 折り畳み" }, f.description);
+    desc.onclick = () => desc.classList.toggle("clamped");
+    row.appendChild(desc);
+  }
+
+  row.appendChild(evBlock);
   return row;
+}
+
+// findingDetailsModal — the ⋯ menu. Verbose identifiers (UUID, rule path,
+// timestamps) live here instead of cluttering every row.
+function findingDetailsModal(f) {
+  const kv = (k, v, copyable) => h("div", { class: "form-row" }, [
+    h("label", {}, k),
+    h("span", { class: "mono", style: "font-size: 11px; word-break: break-all; flex: 1;" }, v || "—"),
+    ...(copyable && v ? [h("button", { class: "fbtn", onclick: () => copyText(v, k) }, "コピー")] : []),
+  ]);
+  const close = modal([
+    h("h3", {}, f.title || f.rule_id || "(untitled)"),
+    kv("finding_id", f.finding_id, true),
+    kv("rule_id", f.rule_id, true),
+    kv("rule_source", (f.source === "tier1b" ? "tier1b / " : "tier1a / ") + (f.rule_source || "—")),
+    ...(f.lens ? [kv("lens", f.lens)] : []),
+    kv("source_path", f.source_path, true),
+    kv("generated_at", f.generated_at ? fmtTS(f.generated_at) : ""),
+    ...(f.reviewed_by ? [kv("reviewed", (f.reviewed_by || "") + " · " + fmtTS(f.reviewed_at))] : []),
+    ...(f.reject_reason ? [kv("reject reason", f.reject_reason)] : []),
+    ...(f.description ? [h("div", { class: "muted", style: "font-size: 11px; white-space: pre-wrap; margin-top: 8px; max-height: 200px; overflow-y: auto;" }, f.description)] : []),
+    h("div", { class: "actions" }, [
+      h("button", { class: "ghost", onclick: () => copyText(JSON.stringify(f, null, 2), "finding JSON") }, "JSON をコピー"),
+      h("button", { onclick: () => close() }, "閉じる"),
+    ]),
+  ]);
+}
+
+// ----------------------------------------------------------------------------
+// Evidence cards — structured when/where/who/what/source/audit_id view
+// ----------------------------------------------------------------------------
+
+// ppick: case-insensitive lookup of the first non-empty payload field among
+// `names`. Returns [actualKey, value] or [null, ""].
+function ppick(p, names) {
+  const lower = {};
+  for (const k of Object.keys(p)) lower[k.toLowerCase()] = k;
+  for (const n of names) {
+    const k = lower[n.toLowerCase()];
+    if (k != null && p[k] !== "" && p[k] != null) return [k, p[k]];
+  }
+  return [null, ""];
+}
+
+// evdShortPath: "…/winevt/Logs/Application.evtx" — last 3 segments, hover for
+// the full path, copy icon for the whole string.
+function evdShortPath(path) {
+  const parts = String(path).split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 3) return path;
+  return "…/" + parts.slice(-3).join("/");
+}
+
+async function copyText(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    // http:// origins have no clipboard API — textarea fallback.
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast((label || "value") + " をコピーしました", "success");
+}
+
+function copyIcon(text, label) {
+  return h("span", {
+    class: "copy-ico",
+    title: (label || "") + " をコピー",
+    onclick: (ev) => { ev.stopPropagation(); copyText(text, label); },
+  }, "⧉");
+}
+
+function levelBadge(level) {
+  const l = String(level).toLowerCase();
+  let cls = "lvl-info";
+  if (["error", "critical", "crit", "high"].includes(l)) cls = "lvl-danger";
+  else if (["warning", "warn", "med", "medium"].includes(l)) cls = "lvl-warn";
+  return h("span", { class: "lvl-badge " + cls }, String(level));
+}
+
+// evidenceSummaryRow — collapsed 1-line form for the 2nd+ evidence rows
+// (時刻 + ホスト + 主要識別子). Click swaps in the full card.
+function evidenceSummaryRow(caseID, f, r, idx, previewCount, total) {
+  const ev = r.row;
+  const line = h("div", { class: "evd-summary", title: "クリックで展開" });
+  line.appendChild(h("span", { class: "evd-tag" }, (ev && ev.artifact_id) || r.pv.artifact_id || "?"));
+  if (ev) {
+    let p = {};
+    try { p = JSON.parse(ev.payload_json || "{}"); } catch (_) {}
+    const [, eid] = ppick(p, ["EventId", "EventID", "event_id"]);
+    const [, ident] = ppick(p, ["RuleTitle", "MapDescription", "executable", "ApplicationName", "FullPath",
+      "FileName", "cs-uri-stem", "module_name", "image", "Provider"]);
+    line.appendChild(h("span", { class: "mono" }, ev.ts_utc ? fmtTS(ev.ts_utc, ev.evidence_id) : "—"));
+    if (ev.computer) line.appendChild(h("span", {}, ev.computer));
+    if (eid) line.appendChild(h("span", { class: "mono" }, "EventID " + eid));
+    if (ident) line.appendChild(h("span", { class: "evd-summary-ident" }, String(ident)));
+  } else {
+    line.appendChild(h("span", {}, r.err ? "load failed: " + r.err : "no event for audit_id " + r.pv.audit_id));
+  }
+  line.appendChild(h("span", { class: "spacer" }));
+  line.appendChild(h("span", { class: "muted" }, `#${idx + 1} of ${previewCount} ▸`));
+  line.onclick = () => line.replaceWith(evidenceCard(caseID, f, r, idx, previewCount, total));
+  return line;
+}
+
+// evidenceCard — full structured card for one evidence event.
+function evidenceCard(caseID, f, r, idx, previewCount, total) {
+  const ev = r.row;
+  const card = h("div", { class: "evd-card" });
+  if (!ev) {
+    card.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
+      r.err ? "load failed: " + r.err : "no event found for audit_id " + r.pv.audit_id));
+    return card;
+  }
+
+  let p = null;
+  try { p = JSON.parse(ev.payload_json || "{}"); } catch (_) {}
+  if (p === null || typeof p !== "object") p = {};
+  const consumed = new Set(["raw"]);
+  const take = (names) => {
+    const [k, v] = ppick(p, names);
+    if (k) consumed.add(k);
+    return v;
+  };
+
+  const eventId = take(["EventId", "EventID", "event_id"]);
+  const level = take(["Level", "level"]);
+  const provider = take(["Provider", "provider"]);
+  const channel = take(["Channel", "channel"]);
+  const mapDesc = take(["MapDescription", "RuleTitle", "Details", "description"]);
+  const user = take(["UserName", "cs-username", "SubjectUserName", "TargetUserName", "UserId", "user", "username"]);
+  const srcFile = take(["SourceFile", "source_file", "source_filename", "log_path", "SourceName"]);
+  const chunk = take(["ChunkNumber"]);
+  const record = take(["RecordNumber", "EventRecordId", "RecordID"]);
+  const ident = take(["executable", "ApplicationName", "FullPath", "FileName",
+    "cs-uri-stem", "module_name", "image", "TaskName", "url", "title", "path"]);
+  // Timestamp/host fields already shown via the typed row columns.
+  for (const k of ["TimeCreated", "Timestamp", "Computer", "computer", "date", "time"]) consumed.add(k);
+
+  // ---- head ----------------------------------------------------------------
+  let headTitle;
+  if (channel || provider) {
+    headTitle = [channel || "?", provider || "?"].join(" / ") + (eventId ? ` · EventID ${eventId}` : "");
+  } else {
+    headTitle = ev.event_type + (ident ? " · " + ident : "") + (eventId ? ` · EventID ${eventId}` : "");
+  }
+  card.appendChild(h("div", { class: "evd-head" }, [
+    h("span", { class: "evd-tag" }, ev.artifact_id || "?"),
+    h("span", { class: "evd-title" }, headTitle),
+    h("span", { class: "spacer" }),
+    h("span", { class: "evd-idx" },
+      `#${idx + 1} of ${previewCount}` + (total > previewCount ? ` (全 ${total}${f.truncated ? "+" : ""} 件)` : "")),
+  ]));
+
+  // ---- when / where / who / what / source / audit_id grid -------------------
+  const grid = h("div", { class: "evd-grid" });
+  const addRow = (label, valueNode) => {
+    grid.appendChild(h("span", { class: "evd-k" }, label));
+    grid.appendChild(h("span", { class: "evd-v" }, valueNode));
+  };
+
+  addRow("when", ev.ts_utc
+    ? [h("span", { class: "mono" }, fmtTS(ev.ts_utc, ev.evidence_id)),
+       ...(chunk || record ? [h("span", { class: "muted", style: "font-size: 11px;" },
+         " · " + [chunk ? "chunk " + chunk : "", record ? "record " + record : ""].filter(Boolean).join(", "))] : [])]
+    : h("span", { class: "muted", style: "font-style: italic;" }, "(no timestamp on this artifact)"));
+
+  addRow("where", (ev.computer || channel)
+    ? [h("span", { class: "mono" }, ev.computer || "?"),
+       ...(channel ? [h("span", { class: "muted", style: "font-size: 11px;" }, " · channel: " + channel)] : []),
+       ...(ev.evidence_id ? [h("span", { class: "muted", style: "font-size: 11px;" }, " · evidence: " + ev.evidence_id)] : [])]
+    : h("span", { class: "muted", style: "font-style: italic;" }, "(no host context)"));
+
+  addRow("who", user
+    ? h("span", { class: "mono" }, String(user))
+    : h("span", { class: "muted", style: "font-style: italic;" }, "(no user / system context)"));
+
+  addRow("what", [
+    ...(eventId ? [h("span", { class: "mono" }, "EventID " + eventId), " "] : []),
+    ...(level ? [levelBadge(level), " "] : []),
+    h("span", { class: eventId || level ? "muted" : "" },
+      String(mapDesc || provider || ident || ev.event_type || "")),
+  ]);
+
+  if (srcFile) {
+    addRow("source", [
+      h("span", { class: "mono muted", style: "font-size: 11px;", title: String(srcFile) }, evdShortPath(srcFile)),
+      " ", copyIcon(String(srcFile), "フルパス"),
+    ]);
+  }
+
+  addRow("audit_id", [
+    h("span", { class: "mono muted", style: "font-size: 11px;", title: ev.audit_id }, ev.audit_id.slice(0, 12) + "…"),
+    " ", copyIcon(ev.audit_id, "audit_id"),
+  ]);
+
+  // ---- remaining non-empty payload fields + hidden-empties toggle -----------
+  const extras = [], empties = [];
+  for (const [k, v] of Object.entries(p)) {
+    if (consumed.has(k)) continue;
+    if (v === "" || v == null) { empties.push(k); continue; }
+    let s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    if (s.length > 280) s = s.slice(0, 280) + "…";
+    extras.push([k, s]);
+  }
+  for (const [k, s] of extras) {
+    grid.appendChild(h("span", { class: "evd-k", title: k }, k));
+    grid.appendChild(h("span", { class: "evd-v mono", style: "font-size: 11px;" }, s));
+  }
+  card.appendChild(grid);
+
+  // ---- actions ---------------------------------------------------------------
+  const actionsRow = h("div", { class: "evd-actions" });
+  if (ev.ts_utc) {
+    actionsRow.appendChild(h("button", {
+      class: "fbtn",
+      title: "Events タブでこの時刻の前後 ±5 分を表示",
+      onclick: () => {
+        const t = new Date(ev.ts_utc).getTime();
+        const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+        const q = new URLSearchParams({ start: iso(t - 300000), end: iso(t + 300000) });
+        if (ev.evidence_id) q.set("evidence", ev.evidence_id);
+        navigate(`/cases/${encodeURIComponent(caseID)}?tab=events&${q.toString()}`);
+      },
+    }, "⏱ 前後 ±5 分のイベント"));
+  }
+  if (eventId) {
+    // payload_json is stored minified ({"EventId":"105",…}) so an exact
+    // `"key":value` substring is a precise Events-browser contains filter.
+    const [k] = ppick(p, ["EventId", "EventID", "event_id"]);
+    const needle = `"${k}":${JSON.stringify(p[k])}`;
+    actionsRow.appendChild(h("button", {
+      class: "fbtn",
+      title: "Events タブを contains " + needle + " で絞る",
+      onclick: () => {
+        const q = new URLSearchParams({ contains: needle, artifact: ev.artifact_id || "" });
+        navigate(`/cases/${encodeURIComponent(caseID)}?tab=events&${q.toString()}`);
+      },
+    }, `EventID ${eventId} で絞る`));
+  }
+  actionsRow.appendChild(h("button", {
+    class: "fbtn",
+    onclick: () => {
+      let pretty = ev.payload_json || "";
+      try { pretty = JSON.stringify(JSON.parse(ev.payload_json), null, 2); } catch (_) {}
+      const close = modal([
+        h("h3", {}, "Raw event payload"),
+        h("div", { class: "muted mono", style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, ev.audit_id),
+        h("pre", { class: "payload-pre", style: "max-width: 100%; min-width: 0;" }, pretty),
+        h("div", { class: "actions" }, [
+          h("button", { class: "ghost", onclick: () => copyText(pretty, "payload JSON") }, "コピー"),
+          h("button", { onclick: () => close() }, "閉じる"),
+        ]),
+      ]);
+    },
+  }, "{ } 生 JSON を見る"));
+  actionsRow.appendChild(h("span", { class: "spacer" }));
+  if (empties.length > 0) {
+    const emptyToggle = h("a", {}, "表示");
+    const note = h("span", { class: "muted", style: "font-size: 11px;" },
+      [`空欄フィールド ${empties.length} 件 非表示 `, emptyToggle]);
+    let shown = false;
+    emptyToggle.onclick = () => {
+      shown = !shown;
+      emptyToggle.textContent = shown ? "隠す" : "表示";
+      grid.querySelectorAll(".evd-empty").forEach((el) => el.remove());
+      if (shown) {
+        for (const k of empties) {
+          grid.appendChild(h("span", { class: "evd-k evd-empty" }, k));
+          grid.appendChild(h("span", { class: "evd-v evd-empty muted", style: "font-style: italic; font-size: 11px;" }, "(empty)"));
+        }
+      }
+    };
+    actionsRow.appendChild(note);
+  }
+  card.appendChild(actionsRow);
+  return card;
 }
 
 // cssEscape replaces characters that have meaning in CSS attribute
@@ -3770,7 +4116,7 @@ function parseResultTable(caseID, detail, entries, review, countLabel) {
   return tbl;
 }
 
-async function renderEvents(pane, caseID, detail) {
+async function renderEvents(pane, caseID, detail, params) {
   pane.innerHTML = "";
 
   // Evidence metadata (host / type / path) — hoisted so both the Parse Results
@@ -3982,8 +4328,23 @@ async function renderEvents(pane, caseID, detail) {
 
   pane.appendChild(browserCard);
 
-  // Initial load: first 100 events with no filter — gives the user something
-  // immediate to look at instead of an empty table.
+  // Deep-link seeding: the Findings tab's evidence pivots (±5-min window /
+  // EventID filter) navigate here with hash params — pre-fill the filter
+  // inputs so the initial load below already applies them.
+  const seed = params || {};
+  const setVal = (sel, v) => {
+    const el = browserCard.querySelector(sel);
+    if (el && v) el.value = v;
+  };
+  setVal("#ev_evidence", seed.evidence);
+  setVal("#ev_artifact", seed.artifact);
+  setVal("#ev_computer", seed.computer);
+  setVal("#ev_contains", seed.contains);
+  setVal("#ev_start", seed.start);
+  setVal("#ev_end", seed.end);
+
+  // Initial load: first 100 events (with any deep-link filters applied) —
+  // gives the user something immediate to look at instead of an empty table.
   await loadEventsPage(caseID, browserCard, 0);
 }
 
