@@ -51,8 +51,18 @@ func seedCaseData(t *testing.T, s *Server, caseID string) {
 		}); err != nil {
 			return err
 		}
-		return m.BulkInsertUnifiedEvents(context.Background(), []casedb.UnifiedEventRow{
+		if err := m.BulkInsertUnifiedEvents(context.Background(), []casedb.UnifiedEventRow{
 			{CaseID: caseID, ArtifactID: "evtx", AuditID: "a", EventType: "e", PayloadJSON: "{}", TsUTC: time.Now().UTC()},
+		}); err != nil {
+			return err
+		}
+		// The real ingest path records a parse_results row alongside the events;
+		// the case-detail event count (GetCaseStatus.UnifiedRowCount) is derived
+		// scan-free from SUM(parse_results.row_count), so seed it too or the
+		// snapshot would report 0 events for this 1-event case.
+		rc := int64(1)
+		return m.BulkInsertParseResults(context.Background(), []casedb.ParseResultRow{
+			{CaseID: caseID, ArtifactID: "evtx", StartedAt: time.Now().UTC(), Command: "c", RowCount: &rc},
 		})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
