@@ -1,6 +1,6 @@
 // Package mcp — TLVB-native findings / synthesis / rule-cache tools.
 //
-// The legacy list_findings / get_finding tools (server.go) read the findevil
+// The legacy list_findings / get_finding tools (server.go) read the moai
 // TacticReport schema (findings/<tactic>.json), which the TLVB pipeline no
 // longer produces. These tools expose the TLVB-native layout instead:
 //

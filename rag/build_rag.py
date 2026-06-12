@@ -1,8 +1,8 @@
-"""Build the FindEvil MITRE ATT&CK RAG corpus.
+"""Build the TLVB MITRE ATT&CK RAG corpus.
 
 Fetches the **enterprise-attack** STIX bundle from MITRE's `cti` repo
 (per DESIGN v0.3 #11 — ICS / Mobile / Pre-attack are out of scope for
-the Windows-targeted FindEvil), parses it, and writes one Markdown
+the Windows-targeted TLVB), parses it, and writes one Markdown
 file per Tactic and per Technique under
 ``rag/mitre_attack/tactics/<TA000X>_<slug>/``.
 
@@ -253,7 +253,7 @@ def build(source: str, output_dir: pathlib.Path) -> int:
     # Top-level manifest so Tactic Agents can discover what's available
     manifest_path = output_dir.parent / "MANIFEST.json"
     manifest = {
-        "schema": "findevil/rag/mitre/v1",
+        "schema": "tlvb/rag/mitre/v1",
         "generated_at": datetime.datetime.now(datetime.timezone.utc)
             .replace(microsecond=0).isoformat(),
         "source": source,

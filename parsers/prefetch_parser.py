@@ -27,7 +27,7 @@ not suspicious. altpf and PECmd treat MAM-truncated files as partial
 records (ParseError field set); Plaso silently drops them.
 
 PECmd (Windows-only .NET) was dropped from the chain in Wave 12 because
-it cannot run on Linux (the standard FindEvil deploy target). The
+it cannot run on Linux (the standard TLVB deploy target). The
 binary still ships on dev boxes; it's just no longer in the fallback
 ladder for forensic correctness — the orchestrator's behaviour must
 not depend on whether a developer happens to have built PECmd.

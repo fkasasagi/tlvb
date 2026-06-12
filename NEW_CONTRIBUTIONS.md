@@ -14,13 +14,13 @@ substantially different from each of the Entrant's other Submissions."*
 
 ## 1. Two related submissions, one author
 
-The author is submitting **two distinct projects: `findevil` and `TLVB`.** Both
+The author is submitting **two distinct projects: `moai` and `TLVB`.** Both
 are the author's own work, both were private until submission, and **both were
-built during the hackathon window** — `findevil` is *not* a pre-existing
+built during the hackathon window** — `moai` is *not* a pre-existing
 third-party project. They were developed in parallel and share a common
 forensic-parsing/storage foundation, but they implement **fundamentally
 different agent architectures.** The rest of this document focuses on TLVB's
-novel contribution and its distinction from `findevil`.
+novel contribution and its distinction from `moai`.
 
 > If only one of the two is reviewed, TLVB stands on its own: every component in
 > §4 was authored during the window, on top of the openly-disclosed foundation
@@ -33,7 +33,7 @@ novel contribution and its distinction from `findevil`.
 The two projects answer "how should an LLM drive a Windows IR investigation?"
 in two genuinely different ways.
 
-| | **findevil** (sibling submission) | **TLVB** (this repo) |
+| | **moai** (sibling submission) | **TLVB** (this repo) |
 |---|---|---|
 | Organising idea | **Tactic agents** — one LLM agent per MITRE tactic | **Tiers** — signature → anomaly → timeline, separated by *when the LLM runs* |
 | Where the LLM runs | At **runtime**, repeatedly: each tactic agent sweeps a sliding window of events (`internal/agents/`), then a synthesiser reconciles them (`internal/synthesizer/`, consistency rules R1–R4) | **Split by design**: Tier 1A runs the LLM **only at build time** to pre-bake rules into SQL, and is **LLM-zero at runtime**; LLM reasoning is concentrated in Tier 1B (anomaly) and Tier 2 (timeline) |
@@ -41,9 +41,9 @@ in two genuinely different ways.
 | Cost / reproducibility | LLM cost scales with case size and tactic count | Tier 1A has a **fixed, LLM-free runtime cost**; the same case yields the same signature findings every run |
 | Self-correction | not a first-class loop | **runtime error-detection → revise → re-execute** loop in Tier 2 active-search (see §4.4) |
 
-This is not a rename or a refactor of `findevil` — it is a different control
+This is not a rename or a refactor of `moai` — it is a different control
 flow, a different cost model, and a different data substrate (a pre-baked SQL
-cache and a cross-case learning cache that `findevil` does not have).
+cache and a cross-case learning cache that `moai` does not have).
 
 ---
 
@@ -151,7 +151,7 @@ runtime**.
 
 ## 6. Summary
 
-`findevil` and `TLVB` are two of the author's own projects, both built in the
+`moai` and `TLVB` are two of the author's own projects, both built in the
 window, sharing a parsing/storage base but realising **different agent
 architectures** — tactic-agents vs. tiered build-time pre-bake with a learning
 SQL cache and runtime self-correction. The components in §4 constitute TLVB's

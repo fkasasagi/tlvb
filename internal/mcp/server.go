@@ -335,7 +335,7 @@ func (s *Server) registerTools() {
 	)
 
 	// TLVB-native findings / synthesis / rule-cache access (findings_tier.go).
-	// The legacy list_findings/get_finding above target the findevil
+	// The legacy list_findings/get_finding above target the moai
 	// TacticReport schema; these target findings/by-rule + by-skill +
 	// synthesis.json + rules.duckdb that the TLVB pipeline actually produces.
 	s.mcp.AddTool(
@@ -538,7 +538,7 @@ func (s *Server) handleGetFinding(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	// Legacy TacticReport findings (findevil schema) first.
+	// Legacy TacticReport findings (moai schema) first.
 	all, err := s.collectFindings(caseID, "")
 	if err == nil {
 		for _, f := range all {

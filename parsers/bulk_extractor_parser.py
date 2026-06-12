@@ -6,7 +6,7 @@ emails, URLs, IPs, credit card numbers, telephone numbers, base64 blobs,
 EXIF, etc. Each scanner emits its own histogram file under the output
 directory.
 
-For FindEvil we ingest a curated subset (`email.txt`, `url.txt`,
+For TLVB we ingest a curated subset (`email.txt`, `url.txt`,
 `domain.txt`, `ip.txt`) as UnifiedEvents of type `ioc` so the Tier 1
 agents and Tier 3 report can cross-reference them with timeline rows.
 

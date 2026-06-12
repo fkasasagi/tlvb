@@ -17,7 +17,7 @@
 //
 // Deferred to v0.2:
 //   - Active wide-range SQL generation (hypothesis-driven exploration)
-//   - Consistency rules R1-R4 (findevil-style)
+//   - Consistency rules R1-R4 (moai-style)
 //   - Cross-evidence correlation across multiple evidences in one case
 package tier2
 

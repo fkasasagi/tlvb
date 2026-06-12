@@ -35,7 +35,7 @@ type ClaudeCodeBuilder struct {
 	Timeout   time.Duration // per-rule timeout
 	SchemaDoc string
 
-	// CLI flags that match findevil's internal/agents/claude_code.go
+	// CLI flags that match moai's internal/agents/claude_code.go
 	// pattern. Exposed for testability — defaults are sane.
 	DisableTools                   bool
 	NoSessionPersistence           bool

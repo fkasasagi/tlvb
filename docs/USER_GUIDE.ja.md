@@ -690,7 +690,7 @@ tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 | **Review Gate** | 各 Tier の合間の人間レビュー。Gate 0 (parse) / **1A** (署名 findings、重要度で自動承認) / **1B** (異常 findings) / 2 (タイムライン) |
 | **Examiner** | 調査者(ユーザー自身)。承認/却下の操作は Examiner 名で記録される |
 | **Tier 0/1/2/3** | TLVB の処理層。**Tier 0**=パーサ / **Tier 1A**=署名 SQL (LLM=0) / **Tier 1B**=スキル異常 (LLM) / **Tier 2**=タイムライン解析+統合 (LLM) / **Tier 3**=レポート (LLM=0) |
-| **legacy (findevil)** | 旧実装の Tactic Agent / TacticReport / Synthesizer / Corrector。現在は `tlvb synthesize --legacy` / `report --legacy` で opt-in (既定は tier2/tier3) |
+| **legacy (moai)** | 旧実装の Tactic Agent / TacticReport / Synthesizer / Corrector。現在は `tlvb synthesize --legacy` / `report --legacy` で opt-in (既定は tier2/tier3) |
 | **audit_id** | 個々のログイベントのID(ハッシュ値)。finding が「どのログを根拠にしているか」を一意に指せる |
 
 ### ツール・ファイル関連

@@ -714,7 +714,7 @@ Security and forensics jargon, in the order it appeared in this document.
 | **Review Gate** | The human review between each Tier. Gate 0 (parse) / **1A** (signature findings, auto-approved by severity) / **1B** (anomaly findings) / 2 (timeline) |
 | **Examiner** | The investigator (you, the user). Approve/reject operations are recorded under the Examiner's name |
 | **Tier 0/1/2/3** | TLVB's processing layers. **Tier 0** = parsers / **Tier 1A** = signature SQL (LLM=0) / **Tier 1B** = skill anomaly (LLM) / **Tier 2** = timeline analysis + synthesis (LLM) / **Tier 3** = report (LLM=0) |
-| **legacy (findevil)** | The old implementation's Tactic Agent / TacticReport / Synthesizer / Corrector. Currently opt-in via `tlvb synthesize --legacy` / `report --legacy` (the default is tier2/tier3) |
+| **legacy (moai)** | The old implementation's Tactic Agent / TacticReport / Synthesizer / Corrector. Currently opt-in via `tlvb synthesize --legacy` / `report --legacy` (the default is tier2/tier3) |
 | **audit_id** | The ID (hash) of an individual log event. Lets a finding uniquely point to "which log it is based on" |
 
 ### Tools/files-related

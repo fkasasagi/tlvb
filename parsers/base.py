@@ -27,8 +27,8 @@ from typing import Any, Callable, Protocol
 
 # Schema versions are pinned so downstream consumers (UI, Tactic Agents) can
 # detect breaking changes.
-PARSER_API_VERSION = "findevil/parser/v1"
-UNIFIED_EVENT_SCHEMA = "findevil/unified-event/v1"
+PARSER_API_VERSION = "tlvb/parser/v1"
+UNIFIED_EVENT_SCHEMA = "tlvb/unified-event/v1"
 
 
 @dataclasses.dataclass(frozen=True)
