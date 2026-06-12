@@ -72,7 +72,7 @@ func runStatus(args []string) error {
 	fmt.Printf("  unified_events rows:  %s\n", commaInt64(cs.UnifiedRowCount))
 	if *verbose && len(cs.ParseResults) > 0 {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "    ARTIFACT\tROWS\tEXIT\tDURATION")
+		fmt.Fprintln(w, "    EVIDENCE\tARTIFACT\tROWS\tEXIT\tDURATION")
 		for _, pr := range cs.ParseResults {
 			rows := int64(-1)
 			if pr.RowCount != nil {
@@ -86,7 +86,11 @@ func runStatus(args []string) error {
 			if pr.FinishedAt != nil {
 				dur = pr.FinishedAt.Sub(pr.StartedAt).Truncate(time.Millisecond).String()
 			}
-			fmt.Fprintf(w, "    %s\t%d\t%s\t%s\n", pr.ArtifactID, rows, exit, dur)
+			ev := pr.EvidenceID
+			if ev == "" {
+				ev = "-"
+			}
+			fmt.Fprintf(w, "    %s\t%s\t%d\t%s\t%s\n", ev, pr.ArtifactID, rows, exit, dur)
 		}
 		w.Flush()
 	}
