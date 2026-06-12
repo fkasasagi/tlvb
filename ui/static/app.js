@@ -3241,6 +3241,14 @@ function redrawAudit(list, entries) {
 const statusEventLog = [];   // in-memory, in-page-load only (no persistence)
 const STATUS_EVENT_CAP = 200;
 let statusTabPollID = null;
+// Bumped on every renderStatus call. renderStatus awaits several fetches
+// between clearing the previous interval and installing its own, so two
+// invocations can interleave (rapid case/tab switches) and both end up with
+// live timers — the loser's interval ID gets overwritten in statusTabPollID
+// and nobody can clear it, leaving a stale poll painting another case's
+// events into the visible #status_event_log. Closures compare their captured
+// epoch against this counter and self-terminate when superseded.
+let statusTabEpoch = 0;
 
 const STATUS_PHASES = [
   { kind: "parse",      label: "① Parse",     subpath: "parse" },
@@ -3350,6 +3358,9 @@ function statusFmtClock(ms) {
 
 async function renderStatus(pane, caseID) {
   // Stop any previous Status-tab poll so navigating between cases cleans up.
+  // The epoch invalidates in-flight ticks of older renders too — clearing the
+  // interval alone can't reach a tick that is already awaiting a fetch.
+  const epoch = ++statusTabEpoch;
   if (statusTabPollID !== null) {
     clearInterval(statusTabPollID);
     statusTabPollID = null;
@@ -3399,12 +3410,21 @@ async function renderStatus(pane, caseID) {
   // so we can detect a sustained outage, slow the cadence, and notify once.
   const FAST_MS = 2000, SLOW_MS = 15000, FAIL_LIMIT = 5;
   let pollFails = 0, pollDegraded = false, pollReason = "";
+  // This render's own timer. statusTabPollID is best-effort (a racing render
+  // may overwrite it), so cleanup must go through myTimer + the epoch check.
+  let myTimer = null;
   const reschedulePoll = (ms) => {
-    if (statusTabPollID !== null) clearInterval(statusTabPollID);
-    statusTabPollID = setInterval(pollOnce, ms);
+    if (myTimer !== null) {
+      clearInterval(myTimer);
+      myTimer = null;
+    }
+    if (epoch !== statusTabEpoch) return; // superseded — don't re-arm
+    myTimer = setInterval(pollOnce, ms);
+    statusTabPollID = myTimer;
   };
 
   async function tick() {
+    if (epoch !== statusTabEpoch) return false;
     let anyRunning = false, anyOK = false;
     const results = {};
     for (const phase of STATUS_PHASES) {
@@ -3445,6 +3465,10 @@ async function renderStatus(pane, caseID) {
       const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
       mergeSummaryIntoPhaseResults(results, sum);
     } catch (_) { /* summary optional */ }
+    // A newer render may have taken over the pane while we awaited the
+    // fetches above; painting now would write this case's data into the
+    // other case's visible DOM (the hosts are looked up by id/selector).
+    if (epoch !== statusTabEpoch) return false;
     paintOverview(overview, results);
     paintDetails(detailWrap, caseID, results);
     paintEventLog($("#status_event_log", pane), caseID);
@@ -3454,15 +3478,27 @@ async function renderStatus(pane, caseID) {
   // One poll iteration: tick + opportunistic snapshot refresh. Named so the
   // resilience reschedule can re-register the same body at a slower cadence.
   const pollOnce = async () => {
+    if (epoch !== statusTabEpoch) {
+      // Superseded by a newer Status render — kill this leftover timer.
+      if (myTimer !== null) {
+        clearInterval(myTimer);
+        myTimer = null;
+      }
+      return;
+    }
     const anyRun = await tick();
     // Refresh case snapshot when a job just transitioned to a terminal state,
     // so the summary picks up new findings / synthesis / reports.
-    if (!anyRun) await paintCaseSnapshot(snapshotHost, caseID);
+    if (!anyRun && epoch === statusTabEpoch) {
+      await paintCaseSnapshot(snapshotHost, caseID);
+    }
   };
 
   await tick();
   // Poll every 2 s. Same cadence as pipelinePolls so the two views agree.
-  statusTabPollID = setInterval(pollOnce, FAST_MS);
+  // Via reschedulePoll so the epoch check applies: if another render started
+  // while tick() awaited, this render must not install a timer at all.
+  reschedulePoll(FAST_MS);
 }
 
 async function paintCaseSnapshot(host, caseID) {
