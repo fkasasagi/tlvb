@@ -3447,7 +3447,7 @@ async function renderStatus(pane, caseID) {
     } catch (_) { /* summary optional */ }
     paintOverview(overview, results);
     paintDetails(detailWrap, caseID, results);
-    paintEventLog($("#status_event_log", pane));
+    paintEventLog($("#status_event_log", pane), caseID);
     return anyRunning;
   }
 
@@ -3760,15 +3760,19 @@ function paintDetails(host, caseID, results) {
   });
 }
 
-function paintEventLog(host) {
+function paintEventLog(host, caseID) {
   if (!host) return;
-  if (statusEventLog.length === 0) {
+  // statusEventLog is shared across the page-load; show only the current
+  // case's entries so switching cases doesn't leak another case's events.
+  const mine = statusEventLog.filter((ev) => ev.caseID === caseID);
+  if (mine.length === 0) {
+    host.dataset.sig = "";
     host.innerHTML = '<div class="empty">No events yet. Run Parse / Analyze / Synthesize / Report to populate.</div>';
     return;
   }
   // Render only recent N; signature-guard against repaint.
-  const recent = statusEventLog.slice(0, 80);
-  const sig = recent.length + ":" + (recent[0]?.ts || 0);
+  const recent = mine.slice(0, 80);
+  const sig = caseID + ":" + recent.length + ":" + (recent[0]?.ts || 0);
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.innerHTML = "";
