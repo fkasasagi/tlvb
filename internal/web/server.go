@@ -210,7 +210,15 @@ func (s *Server) routes() {
 	// UI.
 	uiSub, _ := fs.Sub(uiFS, "ui")
 	staticSub, _ := fs.Sub(uiSub, "static")
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))
+	s.mux.Handle("GET /static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// embed.FS files carry no modtime, so the FileServer emits no
+		// Last-Modified/ETag and a browser-cached app.js has nothing to
+		// revalidate against — a stale copy can outlive a bug fix. no-cache
+		// forces revalidation (here: a refetch) on every page load.
+		w.Header().Set("Cache-Control", "no-cache")
+		staticHandler.ServeHTTP(w, r)
+	}))
 	s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		// Anything not matched by /static/ or /api/ falls back to index.html so
 		// the (hash-routed) SPA can boot from any URL. But an asset-looking path

@@ -54,7 +54,9 @@ func (m *Manager) BulkInsertEvidence(ctx context.Context, rows []EvidenceRow) er
 }
 
 // BulkInsertParseResults overwrites parse_results for each (case_id,
-// artifact_id) tuple. Re-imports are idempotent.
+// evidence_id, artifact_id) tuple. Re-imports are idempotent. Rows from
+// a pre-per-evidence .fcz carry no evidence_id and land under "" (the
+// legacy un-attributed bucket).
 func (m *Manager) BulkInsertParseResults(ctx context.Context, rows []ParseResultRow) error {
 	if m.mode == ReadOnly {
 		return errors.New("casedb opened read-only")
@@ -64,11 +66,11 @@ func (m *Manager) BulkInsertParseResults(ctx context.Context, rows []ParseResult
 		return err
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO parse_results (case_id, artifact_id, started_at, finished_at,
-		                           command, exit_code, stdout_tail, stderr_tail,
-		                           output_csv, row_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (case_id, artifact_id) DO UPDATE SET
+		INSERT INTO parse_results (case_id, evidence_id, artifact_id, started_at,
+		                           finished_at, command, exit_code, stdout_tail,
+		                           stderr_tail, output_csv, row_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (case_id, evidence_id, artifact_id) DO UPDATE SET
 		  started_at=excluded.started_at,
 		  finished_at=excluded.finished_at,
 		  command=excluded.command,
@@ -96,7 +98,7 @@ func (m *Manager) BulkInsertParseResults(ctx context.Context, rows []ParseResult
 			rowCount = *r.RowCount
 		}
 		if _, err := stmt.ExecContext(ctx,
-			r.CaseID, r.ArtifactID, r.StartedAt, finishedAt,
+			r.CaseID, r.EvidenceID, r.ArtifactID, r.StartedAt, finishedAt,
 			r.Command, exitCode,
 			nullableString(r.StdoutTail), nullableString(r.StderrTail),
 			nullableString(r.OutputCSV), rowCount,

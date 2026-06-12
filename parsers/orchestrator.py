@@ -587,11 +587,12 @@ def persist(
     con = duckdb.connect(str(db_path))
     try:
         _ensure_schema(con)
-        # parse_results has PRIMARY KEY (case_id, artifact_id), so multiple
-        # detections of the same artifact_id (e.g., evtx from the staged
-        # tree AND evtx unpacked from a nested archive) must be combined
-        # into one row. Insert ALL per-detection JSONLs into
-        # unified_events though — that's where the data lives.
+        # parse_results has PRIMARY KEY (case_id, evidence_id, artifact_id),
+        # so within this evidence's run multiple detections of the same
+        # artifact_id (e.g., evtx from the staged tree AND evtx unpacked
+        # from a nested archive) must be combined into one row. Insert ALL
+        # per-detection JSONLs into unified_events though — that's where
+        # the data lives.
         events_inserted = 0
         by_artifact: dict[str, list[ParseResult]] = {}
         for r in results:
@@ -602,7 +603,7 @@ def persist(
                 )
         for aid, group in by_artifact.items():
             merged = _merge_parse_results(group) if len(group) > 1 else group[0]
-            _upsert_parse_result(con, case_id, merged)
+            _upsert_parse_result(con, case_id, evidence_id, merged)
         return {"parse_results": len(by_artifact), "unified_events": events_inserted}
     finally:
         con.close()
@@ -764,6 +765,7 @@ def _ensure_schema(con) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS parse_results (
             case_id      VARCHAR NOT NULL,
+            evidence_id  VARCHAR NOT NULL DEFAULT '',
             artifact_id  VARCHAR NOT NULL,
             started_at   TIMESTAMP NOT NULL,
             finished_at  TIMESTAMP,
@@ -773,9 +775,10 @@ def _ensure_schema(con) -> None:
             stderr_tail  VARCHAR,
             output_csv   VARCHAR,
             row_count    BIGINT,
-            PRIMARY KEY (case_id, artifact_id)
+            PRIMARY KEY (case_id, evidence_id, artifact_id)
         )
     """)
+    _migrate_parse_results_pk(con)
     con.execute("""
         CREATE TABLE IF NOT EXISTS unified_events (
             case_id       VARCHAR NOT NULL,
@@ -790,7 +793,51 @@ def _ensure_schema(con) -> None:
     """)
 
 
-def _upsert_parse_result(con, case_id: str, r: ParseResult) -> None:
+def _migrate_parse_results_pk(con) -> None:
+    """Upgrade parse_results from PK (case_id, artifact_id) to the
+    per-evidence PK (case_id, evidence_id, artifact_id).
+
+    Mirror of casedb's migrateParseResultsPK — the orchestrator can be run
+    standalone against a DB last written by an older binary, so the Python
+    side needs the same rebuild. Under the old key each per-evidence run
+    overwrote the previous evidence's rows. Legacy rows can't say which
+    evidence produced them: backfill the evidence_id when the case has
+    exactly one registered evidence, else leave '' (unknown).
+    """
+    cols = {row[1] for row in con.execute(
+        "PRAGMA table_info('parse_results')").fetchall()}
+    if "evidence_id" in cols:
+        return
+    con.execute("""
+        ALTER TABLE parse_results RENAME TO parse_results_v0;
+        CREATE TABLE parse_results (
+            case_id      VARCHAR NOT NULL,
+            evidence_id  VARCHAR NOT NULL DEFAULT '',
+            artifact_id  VARCHAR NOT NULL,
+            started_at   TIMESTAMP NOT NULL,
+            finished_at  TIMESTAMP,
+            command      VARCHAR NOT NULL,
+            exit_code    INTEGER,
+            stdout_tail  VARCHAR,
+            stderr_tail  VARCHAR,
+            output_csv   VARCHAR,
+            row_count    BIGINT,
+            PRIMARY KEY (case_id, evidence_id, artifact_id)
+        );
+        INSERT INTO parse_results
+            SELECT p.case_id,
+                   COALESCE((SELECT MIN(e.evidence_id) FROM evidence e
+                              WHERE e.case_id = p.case_id
+                             HAVING COUNT(*) = 1), '') AS evidence_id,
+                   p.artifact_id, p.started_at, p.finished_at, p.command,
+                   p.exit_code, p.stdout_tail, p.stderr_tail, p.output_csv,
+                   p.row_count
+            FROM parse_results_v0 p;
+        DROP TABLE parse_results_v0;
+    """)
+
+
+def _upsert_parse_result(con, case_id: str, evidence_id: str, r: ParseResult) -> None:
     # Wave 18 defence-in-depth: never let an empty-string timestamp reach
     # DuckDB. The dispatch-failure branch above stamps real ISO strings,
     # but a third-party parser could still emit "" by accident. parse_results
@@ -801,18 +848,29 @@ def _upsert_parse_result(con, case_id: str, r: ParseResult) -> None:
     started = r.started_at if r.started_at else now
     finished = r.finished_at if r.finished_at else None  # finished_at is NULLable
     con.execute(
-        "DELETE FROM parse_results WHERE case_id = ? AND artifact_id = ?",
-        [case_id, r.artifact_id],
+        "DELETE FROM parse_results"
+        " WHERE case_id = ? AND evidence_id = ? AND artifact_id = ?",
+        [case_id, evidence_id, r.artifact_id],
     )
+    if evidence_id:
+        # Also retire any legacy row ('' = written before parse_results was
+        # keyed per evidence) for this artifact — it described "the last run,
+        # whichever evidence that was" and is superseded by the accurate
+        # per-evidence row we are about to insert.
+        con.execute(
+            "DELETE FROM parse_results"
+            " WHERE case_id = ? AND evidence_id = '' AND artifact_id = ?",
+            [case_id, r.artifact_id],
+        )
     con.execute(
         """
         INSERT INTO parse_results (
-            case_id, artifact_id, started_at, finished_at, command,
-            exit_code, stdout_tail, stderr_tail, output_csv, row_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            case_id, evidence_id, artifact_id, started_at, finished_at,
+            command, exit_code, stdout_tail, stderr_tail, output_csv, row_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            case_id, r.artifact_id, started, finished, r.command,
+            case_id, evidence_id, r.artifact_id, started, finished, r.command,
             r.exit_code, r.stdout_tail, r.stderr_tail,
             r.output_csv, r.row_count,
         ],

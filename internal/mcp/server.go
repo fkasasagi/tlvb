@@ -228,8 +228,10 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("get_parse_result",
 			mcp.WithDescription(
-				"Execution metadata of a parser run: command, exit_code, "+
-					"stdout/stderr tails, output paths, timestamps. SAFE.",
+				"Execution metadata of parser runs for one artifact: command, "+
+					"exit_code, stdout/stderr tails, output paths, timestamps. "+
+					"Returns a JSON array with one row per evidence whose run "+
+					"parsed the artifact ('' evidence_id on legacy data). SAFE.",
 			),
 			mcp.WithString("case_id", mcp.Required()),
 			mcp.WithString("artifact_id", mcp.Required()),
@@ -470,11 +472,11 @@ func (s *Server) handleGetParseResult(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	pr, err := s.cases.GetParseResult(ctx, caseID, artifactID)
+	prs, err := s.cases.GetParseResults(ctx, caseID, artifactID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get parse result: %v", err)), nil
 	}
-	return jsonResult(pr)
+	return jsonResult(prs)
 }
 
 func (s *Server) handleHealth(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {

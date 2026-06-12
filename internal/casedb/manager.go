@@ -5,9 +5,9 @@
 //	cases            (case_id PK, name, examiner, timezone, created_at, status)
 //	evidence         (evidence_id PK, case_id FK, path, sha256, size_bytes,
 //	                  registered_at, source_host, evidence_type)
-//	parse_results    (case_id, artifact_id PK, started_at, finished_at,
-//	                  command, exit_code, stdout_tail, stderr_tail,
-//	                  output_csv, row_count)
+//	parse_results    (case_id, evidence_id, artifact_id PK, started_at,
+//	                  finished_at, command, exit_code, stdout_tail,
+//	                  stderr_tail, output_csv, row_count)
 //	unified_events   (case_id, evidence_id, artifact_id, audit_id, ts_utc,
 //	                  event_type, computer, payload_json)  -- main fact table
 //
@@ -89,6 +89,12 @@ func Open(path string, mode Mode) (*Manager, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate evidence PK: %w", err)
 		}
+		// Per-evidence parse_results: upgrade the PK in place if this DB
+		// predates the evidence_id column.
+		if err := m.migrateParseResultsPK(ctx); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate parse_results PK: %w", err)
+		}
 	}
 	return m, nil
 }
@@ -147,8 +153,16 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 		// time (IIS native, web error logs). ADD COLUMN IF NOT EXISTS makes
 		// this idempotent for DBs created before the column existed.
 		`ALTER TABLE evidence ADD COLUMN IF NOT EXISTS timezone VARCHAR`,
+		// parse_results is keyed per (case, evidence, artifact): each per-
+		// evidence orchestrator run owns its own rows, so a multi-evidence
+		// case keeps every evidence's parse outcome (OK / EMPTY / NOT_PRESENT
+		// / FAIL) instead of the last run overwriting the previous one.
+		// evidence_id "" marks legacy rows written before the column existed
+		// (migrateParseResultsPK backfills it when the case has exactly one
+		// registered evidence).
 		`CREATE TABLE IF NOT EXISTS parse_results (
 			case_id      VARCHAR NOT NULL,
+			evidence_id  VARCHAR NOT NULL DEFAULT '',
 			artifact_id  VARCHAR NOT NULL,
 			started_at   TIMESTAMP NOT NULL,
 			finished_at  TIMESTAMP,
@@ -158,7 +172,7 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 			stderr_tail  VARCHAR,
 			output_csv   VARCHAR,
 			row_count    BIGINT,
-			PRIMARY KEY (case_id, artifact_id)
+			PRIMARY KEY (case_id, evidence_id, artifact_id)
 		)`,
 		UnifiedEventsDDL,
 		`CREATE INDEX IF NOT EXISTS idx_unified_events_lookup
@@ -251,6 +265,56 @@ INSERT INTO evidence
 DROP TABLE evidence_v0;`
 	if _, err := m.db.ExecContext(ctx, migrationSQL); err != nil {
 		return fmt.Errorf("rebuild evidence table: %w", err)
+	}
+	return nil
+}
+
+// migrateParseResultsPK upgrades a parse_results table from the original
+// per-artifact key (case_id, artifact_id) to the per-evidence key
+// (case_id, evidence_id, artifact_id). Under the old key each per-evidence
+// orchestrator run overwrote the previous evidence's rows, so a
+// multi-evidence case only ever kept the parse outcome of whichever
+// evidence happened to be parsed last.
+//
+// Same rename-aside / recreate / copy / drop strategy as migrateEvidencePK.
+// Existing rows can't say which evidence produced them; when the case has
+// exactly one registered evidence the backfill attributes them to it,
+// otherwise evidence_id stays "" (unknown — the UI renders these in the
+// legacy un-attributed style).
+func (m *Manager) migrateParseResultsPK(ctx context.Context) error {
+	// The evidence_id column only ever appears together with the new PK
+	// (both are created in one batch below, and fresh tables get the new
+	// shape from ensureSchema), so column presence is the schema marker.
+	if m.columnExists(ctx, "parse_results", "evidence_id") {
+		return nil
+	}
+	const migrationSQL = `
+ALTER TABLE parse_results RENAME TO parse_results_v0;
+CREATE TABLE parse_results (
+    case_id      VARCHAR NOT NULL,
+    evidence_id  VARCHAR NOT NULL DEFAULT '',
+    artifact_id  VARCHAR NOT NULL,
+    started_at   TIMESTAMP NOT NULL,
+    finished_at  TIMESTAMP,
+    command      VARCHAR NOT NULL,
+    exit_code    INTEGER,
+    stdout_tail  VARCHAR,
+    stderr_tail  VARCHAR,
+    output_csv   VARCHAR,
+    row_count    BIGINT,
+    PRIMARY KEY (case_id, evidence_id, artifact_id)
+);
+INSERT INTO parse_results
+    SELECT p.case_id,
+           COALESCE((SELECT MIN(e.evidence_id) FROM evidence e
+                      WHERE e.case_id = p.case_id
+                     HAVING COUNT(*) = 1), '') AS evidence_id,
+           p.artifact_id, p.started_at, p.finished_at, p.command,
+           p.exit_code, p.stdout_tail, p.stderr_tail, p.output_csv, p.row_count
+    FROM parse_results_v0 p;
+DROP TABLE parse_results_v0;`
+	if _, err := m.db.ExecContext(ctx, migrationSQL); err != nil {
+		return fmt.Errorf("rebuild parse_results table: %w", err)
 	}
 	return nil
 }
@@ -460,7 +524,12 @@ func (m *Manager) ListEvidence(ctx context.Context, caseID string) ([]EvidenceRo
 }
 
 type ParseResultRow struct {
-	CaseID     string     `json:"case_id"`
+	CaseID string `json:"case_id"`
+	// EvidenceID names the evidence whose orchestrator run produced this
+	// row. "" on legacy rows written before parse_results was keyed
+	// per evidence (the migration backfills it only for single-evidence
+	// cases).
+	EvidenceID string     `json:"evidence_id,omitempty"`
 	ArtifactID string     `json:"artifact_id"`
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
@@ -472,48 +541,58 @@ type ParseResultRow struct {
 	RowCount   *int64     `json:"row_count,omitempty"`
 }
 
-func (m *Manager) GetParseResult(ctx context.Context, caseID, artifactID string) (*ParseResultRow, error) {
-	var p ParseResultRow
-	var fin sql.NullTime
-	var exit sql.NullInt64
-	var rc sql.NullInt64
-	err := m.db.QueryRowContext(ctx,
-		`SELECT case_id, artifact_id, started_at, finished_at, command,
+// parseResultEvidenceExpr returns the SELECT expression for the
+// parse_results.evidence_id column, degrading to "" when the column is
+// absent — a DB last written by an older binary and only ever opened
+// read-only afterwards never had migrateParseResultsPK applied (same
+// rationale as the evidence.timezone fallback in ListEvidence).
+func (m *Manager) parseResultEvidenceExpr(ctx context.Context) string {
+	if m.columnExists(ctx, "parse_results", "evidence_id") {
+		return "COALESCE(evidence_id, '')"
+	}
+	return "'' AS evidence_id"
+}
+
+// GetParseResults returns every parse_results row for one artifact — one
+// row per evidence whose orchestrator run touched it (a single "" row on
+// pre-migration data).
+func (m *Manager) GetParseResults(ctx context.Context, caseID, artifactID string) ([]ParseResultRow, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT case_id, `+m.parseResultEvidenceExpr(ctx)+`, artifact_id,
+		        started_at, finished_at, command,
 		        exit_code, COALESCE(stdout_tail,''), COALESCE(stderr_tail,''),
 		        COALESCE(output_csv,''), row_count
-		   FROM parse_results WHERE case_id = ? AND artifact_id = ?`,
-		caseID, artifactID).
-		Scan(&p.CaseID, &p.ArtifactID, &p.StartedAt, &fin, &p.Command,
-			&exit, &p.StdoutTail, &p.StderrTail, &p.OutputCSV, &rc)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no parse result for case=%s artifact=%s", caseID, artifactID)
-	}
+		   FROM parse_results WHERE case_id = ? AND artifact_id = ?
+		  ORDER BY evidence_id`,
+		caseID, artifactID)
 	if err != nil {
 		return nil, err
 	}
-	if fin.Valid {
-		t := fin.Time
-		p.FinishedAt = &t
+	out, err := scanParseResultRows(rows)
+	if err != nil {
+		return nil, err
 	}
-	if exit.Valid {
-		v := int(exit.Int64)
-		p.ExitCode = &v
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no parse result for case=%s artifact=%s", caseID, artifactID)
 	}
-	if rc.Valid {
-		p.RowCount = &rc.Int64
-	}
-	return &p, nil
+	return out, nil
 }
 
 func (m *Manager) listParseResultsForCase(ctx context.Context, caseID string) ([]ParseResultRow, error) {
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT case_id, artifact_id, started_at, finished_at, command,
+		`SELECT case_id, `+m.parseResultEvidenceExpr(ctx)+`, artifact_id,
+		        started_at, finished_at, command,
 		        exit_code, COALESCE(stdout_tail,''), COALESCE(stderr_tail,''),
 		        COALESCE(output_csv,''), row_count
-		   FROM parse_results WHERE case_id = ? ORDER BY artifact_id`, caseID)
+		   FROM parse_results WHERE case_id = ?
+		  ORDER BY evidence_id, artifact_id`, caseID)
 	if err != nil {
 		return nil, err
 	}
+	return scanParseResultRows(rows)
+}
+
+func scanParseResultRows(rows *sql.Rows) ([]ParseResultRow, error) {
 	defer rows.Close()
 	var out []ParseResultRow
 	for rows.Next() {
@@ -521,7 +600,7 @@ func (m *Manager) listParseResultsForCase(ctx context.Context, caseID string) ([
 		var fin sql.NullTime
 		var exit sql.NullInt64
 		var rc sql.NullInt64
-		if err := rows.Scan(&p.CaseID, &p.ArtifactID, &p.StartedAt, &fin, &p.Command,
+		if err := rows.Scan(&p.CaseID, &p.EvidenceID, &p.ArtifactID, &p.StartedAt, &fin, &p.Command,
 			&exit, &p.StdoutTail, &p.StderrTail, &p.OutputCSV, &rc); err != nil {
 			return nil, err
 		}

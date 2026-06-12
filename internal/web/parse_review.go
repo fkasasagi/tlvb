@@ -299,8 +299,11 @@ func (s *Server) gateAllowsAnalyze(r *http.Request, caseID string) error {
 		joinStrings(parts, "; "))
 }
 
-// parseResultArtifactIDs reads the artifact_ids in the case's parse_results
-// table — used to enumerate what the examiner is reviewing.
+// parseResultArtifactIDs reads the distinct artifact_ids in the case's
+// parse_results table — used to enumerate what the examiner is reviewing.
+// parse_results is keyed per (evidence, artifact) but Review Gate 0
+// decisions stay per artifact, so the same artifact parsed from several
+// evidence collapses to one entry.
 func (s *Server) parseResultArtifactIDs(ctx context.Context, caseID string) ([]string, error) {
 	var ids []string
 	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
@@ -310,7 +313,12 @@ func (s *Server) parseResultArtifactIDs(ctx context.Context, caseID string) ([]s
 		if err != nil {
 			return err
 		}
+		seen := map[string]bool{}
 		for _, pr := range st.ParseResults {
+			if seen[pr.ArtifactID] {
+				continue
+			}
+			seen[pr.ArtifactID] = true
 			ids = append(ids, pr.ArtifactID)
 		}
 		return nil

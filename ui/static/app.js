@@ -3241,6 +3241,14 @@ function redrawAudit(list, entries) {
 const statusEventLog = [];   // in-memory, in-page-load only (no persistence)
 const STATUS_EVENT_CAP = 200;
 let statusTabPollID = null;
+// Bumped on every renderStatus call. renderStatus awaits several fetches
+// between clearing the previous interval and installing its own, so two
+// invocations can interleave (rapid case/tab switches) and both end up with
+// live timers — the loser's interval ID gets overwritten in statusTabPollID
+// and nobody can clear it, leaving a stale poll painting another case's
+// events into the visible #status_event_log. Closures compare their captured
+// epoch against this counter and self-terminate when superseded.
+let statusTabEpoch = 0;
 
 const STATUS_PHASES = [
   { kind: "parse",      label: "① Parse",     subpath: "parse" },
@@ -3350,6 +3358,9 @@ function statusFmtClock(ms) {
 
 async function renderStatus(pane, caseID) {
   // Stop any previous Status-tab poll so navigating between cases cleans up.
+  // The epoch invalidates in-flight ticks of older renders too — clearing the
+  // interval alone can't reach a tick that is already awaiting a fetch.
+  const epoch = ++statusTabEpoch;
   if (statusTabPollID !== null) {
     clearInterval(statusTabPollID);
     statusTabPollID = null;
@@ -3399,12 +3410,21 @@ async function renderStatus(pane, caseID) {
   // so we can detect a sustained outage, slow the cadence, and notify once.
   const FAST_MS = 2000, SLOW_MS = 15000, FAIL_LIMIT = 5;
   let pollFails = 0, pollDegraded = false, pollReason = "";
+  // This render's own timer. statusTabPollID is best-effort (a racing render
+  // may overwrite it), so cleanup must go through myTimer + the epoch check.
+  let myTimer = null;
   const reschedulePoll = (ms) => {
-    if (statusTabPollID !== null) clearInterval(statusTabPollID);
-    statusTabPollID = setInterval(pollOnce, ms);
+    if (myTimer !== null) {
+      clearInterval(myTimer);
+      myTimer = null;
+    }
+    if (epoch !== statusTabEpoch) return; // superseded — don't re-arm
+    myTimer = setInterval(pollOnce, ms);
+    statusTabPollID = myTimer;
   };
 
   async function tick() {
+    if (epoch !== statusTabEpoch) return false;
     let anyRunning = false, anyOK = false;
     const results = {};
     for (const phase of STATUS_PHASES) {
@@ -3445,6 +3465,10 @@ async function renderStatus(pane, caseID) {
       const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
       mergeSummaryIntoPhaseResults(results, sum);
     } catch (_) { /* summary optional */ }
+    // A newer render may have taken over the pane while we awaited the
+    // fetches above; painting now would write this case's data into the
+    // other case's visible DOM (the hosts are looked up by id/selector).
+    if (epoch !== statusTabEpoch) return false;
     paintOverview(overview, results);
     paintDetails(detailWrap, caseID, results);
     paintEventLog($("#status_event_log", pane), caseID);
@@ -3454,15 +3478,27 @@ async function renderStatus(pane, caseID) {
   // One poll iteration: tick + opportunistic snapshot refresh. Named so the
   // resilience reschedule can re-register the same body at a slower cadence.
   const pollOnce = async () => {
+    if (epoch !== statusTabEpoch) {
+      // Superseded by a newer Status render — kill this leftover timer.
+      if (myTimer !== null) {
+        clearInterval(myTimer);
+        myTimer = null;
+      }
+      return;
+    }
     const anyRun = await tick();
     // Refresh case snapshot when a job just transitioned to a terminal state,
     // so the summary picks up new findings / synthesis / reports.
-    if (!anyRun) await paintCaseSnapshot(snapshotHost, caseID);
+    if (!anyRun && epoch === statusTabEpoch) {
+      await paintCaseSnapshot(snapshotHost, caseID);
+    }
   };
 
   await tick();
   // Poll every 2 s. Same cadence as pipelinePolls so the two views agree.
-  statusTabPollID = setInterval(pollOnce, FAST_MS);
+  // Via reschedulePoll so the epoch check applies: if another render started
+  // while tick() awaited, this render must not install a timer at all.
+  reschedulePoll(FAST_MS);
 }
 
 async function paintCaseSnapshot(host, caseID) {
@@ -4150,11 +4186,14 @@ async function renderEvents(pane, caseID, detail, params) {
     prSection.appendChild(h("div", { class: "empty" },
       "No parse results yet. Run Parse from the pipeline buttons above."));
   } else {
-    // Header banner: roll-up + skip-all toggle
+    // Header banner: roll-up + skip-all toggle. parse_results is keyed per
+    // (evidence, artifact), so the artifact count dedupes across evidence —
+    // it has to match the per-artifact review counts shown next to it.
     const c = review.counts || {};
+    const artifactCount = new Set(prs.map((p) => p.artifact_id).filter(Boolean)).size;
     const banner = h("div", { class: "row", style: "align-items: center; margin-bottom: 8px; gap: 12px;" }, [
       h("span", { class: "muted" },
-        `${prs.length} artifacts · approved=${c.approved||0} · pending=${c.pending||0} · ` +
+        `${artifactCount} artifacts · approved=${c.approved||0} · pending=${c.pending||0} · ` +
         `rejected=${c.rejected||0} · skipped=${c.skipped||0}`),
       h("span", { class: "spacer" }),
       h("label", { style: "display: flex; gap: 6px; align-items: center; font-size: 11px; cursor: pointer;" }, [
@@ -4175,72 +4214,123 @@ async function renderEvents(pane, caseID, detail, params) {
     ]);
     prSection.appendChild(banner);
 
-    // Group the artifacts by the source evidence whose events they contain.
-    // parse_results is keyed per-artifact (one row per artifact_id for the
-    // whole case), so the evidence attribution comes from the per-evidence
-    // event breakdown in /summary (parse.evidence[].artifacts[]). Single-
-    // evidence cases keep the original flat table; multi-evidence cases get
-    // one collapsible group per evidence, plus a trailing group for artifacts
-    // that produced no events and so can't be attributed to a single evidence.
+    // Group the parse rows by source evidence. parse_results is keyed per
+    // (evidence, artifact) — each evidence's orchestrator run owns its rows,
+    // including the no-event outcomes (EMPTY / NOT_PRESENT / FAIL), so every
+    // evidence group shows the full per-evidence picture. Rows with an empty
+    // evidence_id predate the per-evidence key (legacy DBs): those fall back
+    // to event-attribution grouping via /summary, and any leftovers land in
+    // a trailing "No events parsed" group like before.
     const prByID = {};
     prs.forEach((pr) => { if (pr.artifact_id) prByID[pr.artifact_id] = pr; });
+    const prByEvidence = {};
+    prs.forEach((pr) => {
+      const ev = pr.evidence_id || "";
+      (prByEvidence[ev] = prByEvidence[ev] || []).push(pr);
+    });
 
-    // The per-evidence breakdown from /summary (derived from unified_events) is
-    // the authoritative count of how many evidence the case bundles — we gate on
-    // it rather than detail.evidence, which can come back empty on a cases.duckdb
-    // that predates newer evidence-table columns.
+    // The per-evidence event breakdown from /summary (derived from
+    // unified_events) supplies the per-evidence event counts and the
+    // evidence list for legacy rows.
     let evBreakdown = [];
     try {
       const sum = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/summary`);
       evBreakdown = (sum && sum.parse && sum.parse.evidence) || [];
-    } catch (_) { /* summary unavailable → fall back to the flat table */ }
+    } catch (_) { /* summary unavailable → parse-row grouping only */ }
+    const esByID = {};
+    evBreakdown.forEach((es) => { esByID[es.evidence_id || ""] = es; });
 
-    if (evBreakdown.length <= 1) {
-      // Single evidence, or summary unavailable — original flat per-artifact table.
+    // Group order: summary breakdown first (registration order), then any
+    // evidence that has parse rows but produced no events at all (absent
+    // from unified_events and so from the breakdown).
+    const groupIDs = [];
+    evBreakdown.forEach((es) => {
+      const id = es.evidence_id || "";
+      if (!groupIDs.includes(id)) groupIDs.push(id);
+    });
+    Object.keys(prByEvidence).sort().forEach((id) => {
+      if (id !== "" && !groupIDs.includes(id)) groupIDs.push(id);
+    });
+
+    const multiEvidence =
+      groupIDs.filter((id) => id !== "").length > 1 || evBreakdown.length > 1;
+    if (!multiEvidence) {
+      // Single evidence (or no attribution data at all) — flat per-artifact table.
       prSection.appendChild(parseResultTable(caseID, detail,
         sortParseResults(prs).map((pr) => ({ pr, count: null })), review, "Rows"));
     } else {
       prSection.appendChild(h("div",
         { class: "muted", style: "margin-bottom: 8px; font-size: 11px;" },
-        "Artifacts grouped by the source evidence whose events they contain. " +
-        "Approve / Reject applies to an artifact's parser output across the whole " +
-        "case (parse review is keyed per artifact, not per evidence)."));
+        "Artifacts grouped by source evidence; artifacts that produced no " +
+        "events from an evidence are listed under it with a 0 count. " +
+        "Approve / Reject applies to an artifact's parser output across the " +
+        "whole case (parse review is keyed per artifact, not per evidence)."));
 
-      const attributed = new Set();
-      evBreakdown.forEach((es) => {
+      const rendered = new Set();
+      groupIDs.forEach((evID) => {
+        const es = esByID[evID] || {};
+        const meta = evidences.find((e) => e.evidence_id === evID) || {};
         const countByID = {};
         (es.artifacts || []).forEach((a) => { countByID[a.artifact_id] = a.event_count; });
-        const groupPRs = sortParseResults(
-          (es.artifacts || []).map((a) => prByID[a.artifact_id]).filter(Boolean));
-        if (groupPRs.length === 0) return;
-        const entries = groupPRs.map((pr) => {
-          attributed.add(pr.artifact_id);
-          return { pr, count: countByID[pr.artifact_id] };
-        });
-        const sub = [es.source_host, es.evidence_type].filter(Boolean).join(" · ");
+
+        // Per-evidence parse rows are the primary source ('' = legacy bucket,
+        // never its own group). Artifacts with events from this evidence come
+        // first with their event count, the rest follow with 0.
+        const own = evID !== "" ? (prByEvidence[evID] || []) : [];
+        let entries;
+        if (own.length > 0) {
+          const withEv = sortParseResults(own.filter((pr) => countByID[pr.artifact_id] != null));
+          const without = sortParseResults(own.filter((pr) => countByID[pr.artifact_id] == null));
+          entries = [
+            ...withEv.map((pr) => ({ pr, count: countByID[pr.artifact_id] })),
+            ...without.map((pr) => ({ pr, count: 0 })),
+          ];
+          // Mixed-history case: events attributed to this evidence whose parse
+          // row still predates the per-evidence key — show the legacy row.
+          const ownIDs = new Set(own.map((pr) => pr.artifact_id));
+          (es.artifacts || []).forEach((a) => {
+            if (ownIDs.has(a.artifact_id)) return;
+            const pr = prByID[a.artifact_id];
+            if (pr) entries.push({ pr, count: a.event_count });
+          });
+        } else {
+          // Legacy rows only — original event-attribution grouping.
+          entries = sortParseResults(
+            (es.artifacts || []).map((a) => prByID[a.artifact_id]).filter(Boolean))
+            .map((pr) => ({ pr, count: countByID[pr.artifact_id] }));
+        }
+        if (entries.length === 0) return;
+        entries.forEach((en) => rendered.add(en.pr));
+
+        const withEvents = entries.filter((en) => countByID[en.pr.artifact_id] != null).length;
+        const sub = [es.source_host || meta.source_host, es.evidence_type || meta.evidence_type]
+          .filter(Boolean).join(" · ");
+        const evPath = es.path || meta.path;
         const summary = h("summary", { class: "evidence-summary" }, [
-          h("span", { class: "evidence-name" }, es.evidence_id || "(unattributed)"),
+          h("span", { class: "evidence-name" }, evID || "(unattributed)"),
           ...(sub ? [h("span", { class: "muted", style: "font-size: 11px;" }, sub)] : []),
-          h("span", { class: "evidence-count" },
-            `${entries.length} artifacts · ${(es.events_total || 0).toLocaleString()} ev`),
+          h("span", { class: "evidence-count",
+            title: `${withEvents} of ${entries.length} artifacts produced events from this evidence` },
+            `${withEvents}/${entries.length} artifacts · ${(es.events_total || 0).toLocaleString()} ev`),
         ]);
         const detailEl = h("div", { class: "evidence-detail" }, [
-          ...(es.path ? [h("div", { class: "muted mono",
-            style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, es.path)] : []),
+          ...(evPath ? [h("div", { class: "muted mono",
+            style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, evPath)] : []),
           parseResultTable(caseID, detail, entries, review, "Events"),
         ]);
         prSection.appendChild(
           h("details", { class: "evidence-item", open: "open" }, [summary, detailEl]));
       });
 
-      // Artifacts with no events anywhere (EMPTY / NOT_PRESENT / FAIL) have no
-      // evidence_id in unified_events, so they live in one shared group.
-      const orphans = sortParseResults(prs.filter((pr) => !attributed.has(pr.artifact_id)));
+      // Legacy leftovers: rows without an evidence_id whose artifact produced
+      // no events anywhere (pre-per-evidence DBs). Disappears once the case
+      // is re-parsed with the per-evidence schema.
+      const orphans = sortParseResults(prs.filter((pr) => !rendered.has(pr)));
       if (orphans.length > 0) {
         const summary = h("summary", { class: "evidence-summary" }, [
           h("span", { class: "evidence-name" }, "No events parsed"),
           h("span", { class: "muted", style: "font-size: 11px;" },
-            "not attributable to a single evidence"),
+            "legacy parse rows · not attributable to a single evidence"),
           h("span", { class: "evidence-count" }, `${orphans.length} artifacts`),
         ]);
         const detailEl = h("div", { class: "evidence-detail" }, [

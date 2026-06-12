@@ -325,7 +325,8 @@ v0.1 では `--tier 3` の付かない `tlvb report` で起動可能(legacy 経�
 ### 7.1 `cases.duckdb` (findevil 流用)
 - `cases` (case_id PK, name, examiner, timezone, created_at, status)
 - `evidence` (evidence_id, case_id, path, sha256, size_bytes, ...)
-- `parse_results` (case_id, artifact_id PK, started_at, exit_code, row_count, ...)
+- `parse_results` (case_id, evidence_id, artifact_id PK, started_at, exit_code, row_count, ...)
+  — evidence 単位の orchestrator run が自分の行を持つ (旧 PK=(case_id, artifact_id) からは自動 migration、legacy 行は evidence_id='')
 - `unified_events` — 中心テーブル、`internal/casedb/schema_doc.go::UnifiedEventsDDL` 参照
 
 ### 7.2 `outputs/rules.duckdb` (TLVB 新規)

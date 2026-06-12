@@ -500,3 +500,59 @@ def test_enumerate_partitions_falls_back_when_mmls_fails(monkeypatch):
     monkeypatch.setattr(image_extractor, "run_command",
                         lambda cmd, timeout=None: (1, "", "mmls: cannot open", 0.01))
     assert image_extractor._enumerate_partitions("/dev/fake") == [(0, 0)]
+
+
+# ---------------------------------------------------------------------------
+# Multi-partition triage gating — Review Gate 0 duplicate/odd-target fix
+# ---------------------------------------------------------------------------
+#
+# A GPT Windows disk yields both the OS volume and a System-Reserved/recovery
+# volume (see test_enumerate_partitions_gpt_basic_data). The non-OS volume has
+# no Windows/ dir, so running the full triage list against it produced a wall
+# of NOT_FOUND rows that read as duplicates of the OS volume in Review Gate 0.
+# extract() now gates the Windows-specific list + per-user/web passes on
+# _partition_has_windows(), and skips non-interactive pseudo-profiles.
+
+
+def test_partition_has_windows_true_when_present(monkeypatch):
+    """ifind resolves Windows/ → the volume hosts the OS."""
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (0, "12345\n", "", 0.01))
+    assert image_extractor._partition_has_windows("/dev/fake", 0, 30) is True
+
+
+def test_partition_has_windows_false_on_clean_miss(monkeypatch):
+    """A clean ifind miss (rc==0, 'File not found') marks a non-OS volume."""
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (0, "File not found\n", "", 0.01))
+    assert image_extractor._partition_has_windows("/dev/fake", 0, 30) is False
+
+
+def test_partition_has_windows_fails_safe_on_probe_error(monkeypatch):
+    """Regression: a probe that ERRORS (rc!=0) must NOT skip a real OS volume.
+    Returns True so a flaky ifind never drops the hive triage."""
+    monkeypatch.setattr(image_extractor, "run_command",
+                        lambda cmd, timeout=None: (1, "", "ifind: image error", 0.01))
+    assert image_extractor._partition_has_windows("/dev/fake", 0, 30) is True
+
+
+def test_partition_has_windows_empty_device_fails_safe():
+    assert image_extractor._partition_has_windows("", 0, 30) is True
+
+
+def test_volume_level_targets_are_a_subset_of_triage_labels():
+    """The volume-level allowlist must reference real triage labels — a typo
+    here would silently drop $MFT etc. from non-OS partitions."""
+    labels = {label for _path, label in image_extractor._TRIAGE_PATHS}
+    assert image_extractor._VOLUME_LEVEL_TARGETS <= labels
+    # These are the volume-wide artifacts that exist on any NTFS volume.
+    assert image_extractor._VOLUME_LEVEL_TARGETS == {
+        "$MFT", "$J", "$LogFile", "$Recycle.Bin",
+    }
+
+
+def test_pseudo_user_dirs_excludes_junk_but_keeps_default():
+    pseudo = image_extractor._PSEUDO_USER_DIRS
+    assert {"All Users", "Default User", "Public"} <= pseudo
+    # 'Default' carries a real NTUSER.DAT template hive — must NOT be skipped.
+    assert "Default" not in pseudo
