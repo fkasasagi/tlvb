@@ -1,447 +1,469 @@
-# TLVB ユーザーガイド (はじめての方向け)
+# TLVB User Guide (for first-time users)
 
-このドキュメントは、セキュリティの専門知識がない方でも TLVB を
-使えるようにするための手引きです。
+This document is a hands-on guide that lets you use TLVB even without a
+security background.
 
-専門用語は本文中ではできるだけ避け、必要に応じて補足を入れています。
-詳しい用語の定義は **巻末の Appendix A: 用語集** にまとめてあります。
-本文中の **太字の用語** は用語集で説明しています。
+*日本語版: [USER_GUIDE.ja.md](USER_GUIDE.ja.md)*
 
----
-
-## 目次
-
-- [1. TLVB って何？](#1-tlvb-って何)
-- [2. 何ができるの？](#2-何ができるの)
-- [3. 5分でさわってみる](#3-5分でさわってみる)
-- [4. Web UI 完全ガイド](#4-web-ui-完全ガイド)
-  - [4.1 起動とアクセス](#41-起動とアクセス)
-  - [4.2 ダッシュボード画面](#42-ダッシュボード画面)
-  - [4.3 ケース詳細画面](#43-ケース詳細画面)
-  - [4.4 パイプライン (4 つのステップ)](#44-パイプライン-4-つのステップ)
-  - [4.5 Findings タブ — 何が起きたかの一覧](#45-findings-タブ--何が起きたかの一覧)
-  - [4.6 Timeline タブ — 時系列で見る](#46-timeline-タブ--時系列で見る)
-  - [4.7 IOC タブ — 指標の一覧](#47-ioc-タブ--指標の一覧)
-  - [4.8 MITRE Map タブ — 攻撃手口の地図](#48-mitre-map-タブ--攻撃手口の地図)
-  - [4.9 Report タブ — レポート閲覧とダウンロード](#49-report-タブ--レポート閲覧とダウンロード)
-  - [4.10 Audit タブ — 操作履歴](#410-audit-タブ--操作履歴)
-- [5. CLI でも同じことができる](#5-cli-でも同じことができる)
-- [6. よくあるトラブル](#6-よくあるトラブル)
-- [Appendix A: 用語集](#appendix-a-用語集)
-- [Appendix B: 全体像の図](#appendix-b-全体像の図)
+We avoid jargon in the main text where we can, and add explanations where
+needed. Detailed definitions of the terms are collected in
+**Appendix A: Glossary** at the end.
+**Bold terms** in the main text are explained in the glossary.
 
 ---
 
-## 1. TLVB って何？
+## Table of Contents
 
-「**サイバー攻撃にあったかもしれないパソコンの中身**を、自動で調べてくれる
-道具」です。
+- [1. What is TLVB?](#1-what-is-tlvb)
+- [2. What can it do?](#2-what-can-it-do)
+- [3. Try it in 5 minutes](#3-try-it-in-5-minutes)
+- [4. Complete Web UI guide](#4-complete-web-ui-guide)
+  - [4.1 Launching and accessing](#41-launching-and-accessing)
+  - [4.2 Dashboard screen](#42-dashboard-screen)
+  - [4.3 Case detail screen](#43-case-detail-screen)
+  - [4.4 The pipeline (four steps)](#44-the-pipeline-four-steps)
+  - [4.5 Findings tab — a list of what happened](#45-findings-tab--a-list-of-what-happened)
+  - [4.6 Timeline tab — viewing chronologically](#46-timeline-tab--viewing-chronologically)
+  - [4.7 IOC tab — a list of indicators](#47-ioc-tab--a-list-of-indicators)
+  - [4.8 MITRE Map tab — a map of attacker techniques](#48-mitre-map-tab--a-map-of-attacker-techniques)
+  - [4.9 Report tab — viewing and downloading the report](#49-report-tab--viewing-and-downloading-the-report)
+  - [4.10 Audit tab — operation history](#410-audit-tab--operation-history)
+- [5. You can do the same from the CLI](#5-you-can-do-the-same-from-the-cli)
+- [6. Common troubleshooting](#6-common-troubleshooting)
+- [Appendix A: Glossary](#appendix-a-glossary)
+- [Appendix B: The big picture](#appendix-b-the-big-picture)
 
-たとえば、会社のパソコンが誰かに侵入されたかもしれないと疑われたとき、
-専門家(**フォレンジック**の技術者)はそのパソコンの中身を取り出して、
-ログファイルや設定ファイルなどを一つひとつ調べていきます。
+---
 
-これは時間がかかる作業で、ベテランでも 1 件あたり 数日 〜 数週間 かかる
-ことが普通です。
+## 1. What is TLVB?
 
-TLVB は、その**最初の絞り込み**を **AIエージェント** に任せて
-自動化し、人間は「重要そうな発見」だけを確認すればよくする道具です。
+A tool that **automatically investigates the contents of a PC that may have
+been the victim of a cyberattack**.
+
+For example, when a company PC is suspected of having been compromised by
+someone, an expert (a **forensics** practitioner) extracts the contents of
+that PC and goes through the log files, configuration files, and so on one
+by one.
+
+This is time-consuming work; even for a veteran, a single case commonly
+takes anywhere from a few days to a few weeks.
+
+TLVB hands that **initial triage** off to an **AI agent** to automate it, so
+that the human only needs to review the "things that look important."
 
 ```
-[攻撃された疑いのあるPCのデータ] → [TLVB] → [疑わしい点の一覧]
+[data from a PC suspected of being attacked] → [TLVB] → [list of suspicious points]
                                        ↓
-                                  人間が確認 (承認/却下)
+                                  human review (approve/reject)
                                        ↓
-                                  [調査レポート (HTML/CSV/JSON)]
+                                  [investigation report (HTML/CSV/JSON)]
 ```
 
-> **重要な原則**:
-> TLVB は元の証拠データを **絶対に書き換えません**。
-> すべての出力は別の場所(`outputs/cases/<ケースID>/`)に書き出されます。
-> これは法的な場面で証拠として使える状態を保つためです。
+> **Key principle**:
+> TLVB **never rewrites** the original evidence data.
+> All output is written out to a separate location (`outputs/cases/<case-id>/`).
+> This is to preserve a state in which the evidence can be used in a legal
+> setting.
 
 ---
 
-## 2. 何ができるの？
+## 2. What can it do?
 
-### 入力
+### Input
 
-- パソコンから取り出した**証拠データ**
-  (ZIPファイル、または抽出後のディレクトリ)
+- **evidence data** extracted from a PC
+  (a ZIP file, or an already-extracted directory)
 
-### 出力
+### Output
 
-| 出力物 | 説明 |
+| Output | Description |
 |---|---|
-| **Findings (発見事項)** | 「ここに怪しい挙動があります」というリスト |
-| **Timeline (タイムライン)** | 何時何分にどんなイベントが起きたか、時系列で並べたもの |
-| **IOC (侵害指標)** | 攻撃の痕跡となる具体的な値(怪しいIPアドレス、ファイルのハッシュ値など) |
-| **MITRE Map** | 「攻撃の手口」を業界標準の分類(**MITRE ATT&CK**)に当てはめた地図 |
-| **HTML レポート** | 上記を全部まとめた人間向けの報告書 |
-| **CSV / JSON** | Excel や他のツールで再利用するためのデータ |
+| **Findings** | A list saying "here is some suspicious behavior" |
+| **Timeline** | What events happened at what time, arranged chronologically |
+| **IOC (Indicators of Compromise)** | The concrete values that are traces of an attack (suspicious IP addresses, file hashes, etc.) |
+| **MITRE Map** | A map that fits the "attacker techniques" into an industry-standard taxonomy (**MITRE ATT&CK**) |
+| **HTML report** | A human-facing report that brings all of the above together |
+| **CSV / JSON** | Data for reuse in Excel or other tools |
 
-### 自動化される作業
+### Work that is automated
 
-10 種類の調査(専門用語で「**Tactic** = 戦術」と呼びます。攻撃者がやる
-ことのカテゴリのこと)を並行して行います。
+It runs 10 kinds of investigation (in jargon, called a **Tactic** — i.e., a
+category of things attackers do) in parallel.
 
-| 番号 | 戦術 | 「攻撃者は何をしようとしていたか」 |
+| Number | Tactic | "What was the attacker trying to do?" |
 |---|---|---|
-| TA0001 | **Initial Access** | どうやって入ってきたか |
-| TA0002 | **Execution** | 何のプログラムを動かしたか |
-| TA0003 | **Persistence** | 再起動後も居座る仕掛けを作ったか |
-| TA0004 | Privilege Escalation | より強い権限を奪ったか |
-| TA0005 | Defense Evasion | 痕跡を消そうとしたか |
-| TA0006 | Credential Access | パスワード等を盗んだか |
-| TA0007 | Discovery | 社内ネットワークを偵察したか |
-| TA0008 | Lateral Movement | 別のパソコンに移動したか |
-| TA0009 | Collection | データを集めたか |
-| TA0040 | Impact | データを暗号化・破壊したか |
+| TA0001 | **Initial Access** | How did they get in? |
+| TA0002 | **Execution** | What programs did they run? |
+| TA0003 | **Persistence** | Did they plant a mechanism to stick around after reboot? |
+| TA0004 | Privilege Escalation | Did they seize stronger privileges? |
+| TA0005 | Defense Evasion | Did they try to erase their traces? |
+| TA0006 | Credential Access | Did they steal passwords, etc.? |
+| TA0007 | Discovery | Did they reconnoiter the internal network? |
+| TA0008 | Lateral Movement | Did they move to another PC? |
+| TA0009 | Collection | Did they gather data? |
+| TA0040 | Impact | Did they encrypt or destroy data? |
 
-加えて **Anomaly Hunter (異常ハンター)** が、上記の枠に収まらない
-「何かおかしい挙動」を探します。
+In addition, the **Anomaly Hunter** looks for "something is off" behavior that
+does not fit into the categories above.
 
 ---
 
-## 3. 5分でさわってみる
+## 3. Try it in 5 minutes
 
-すでにサンプルケース `INC-2026-0003` が用意されているので、すぐに
-画面を眺められます。
+A sample case `INC-2026-0003` is already prepared, so you can look at the
+screens right away.
 
-### ステップ 1 — Web サーバを起動
+### Step 1 — Start the web server
 
 ```bash
-cd tlvb            # git clone したリポジトリのルート
+cd tlvb            # the root of the repository you git cloned
 go build -o /tmp/tlvb ./cmd/tlvb
 /tmp/tlvb serve --port 8080
 ```
 
-> 起動したターミナルはそのまま開いたままにしておきます。
-> 止めたいときは `Ctrl-C` を押します。
+> Leave the terminal you started it in open.
+> To stop it, press `Ctrl-C`.
 
-### ステップ 2 — ブラウザで開く
+### Step 2 — Open it in a browser
 
-VM 上で起動した場合、**同じVM** のブラウザからアクセス:
+If you launched it on a VM, access it from a browser on the **same VM**:
 
 ```
 http://localhost:8080/
 ```
 
-**ホストPC** からアクセスしたい場合は、VMのIPアドレスを使います:
+If you want to access it from the **host PC**, use the VM's IP address:
 
 ```bash
-# VM上で IP を確認
+# Check the IP on the VM
 hostname -I
-# 例: 192.168.44.129
+# e.g.: 192.168.44.129
 ```
 
-ホストPCのブラウザで `http://192.168.44.129:8080/` を開きます。
-(数字は環境によって違います)
+Open `http://192.168.44.129:8080/` in the host PC's browser.
+(The numbers differ depending on your environment.)
 
-### ステップ 3 — サンプルケースを開く
+### Step 3 — Open the sample case
 
-ダッシュボード画面に `INC-2026-0003` のカードが表示されているので
-**クリック**します。
+A card for `INC-2026-0003` is shown on the dashboard screen, so **click** it.
 
-ケース詳細画面が開いたら、
+When the case detail screen opens:
 
-1. **Findings タブ**: 50件の発見事項が戦術別にグループ化されて並んでいます
-2. **Timeline タブ**: 時系列で何が起きたか並んでいます
-3. **MITRE Map タブ**: 攻撃の手口を地図状に俯瞰できます
-4. **Report タブ**: 完成したHTMLレポートを iframe 内で見られます
+1. **Findings tab**: 50 findings, grouped by tactic
+2. **Timeline tab**: what happened, arranged chronologically
+3. **MITRE Map tab**: a bird's-eye, map-like view of attacker techniques
+4. **Report tab**: the finished HTML report, viewable inside an iframe
 
-これで雰囲気がつかめます。
+That gives you a feel for it.
 
 ---
 
-## 4. Web UI 完全ガイド
+## 4. Complete Web UI guide
 
-### 4.1 起動とアクセス
+### 4.1 Launching and accessing
 
 ```bash
 /tmp/tlvb serve --port 8080 [--db PATH] [--outputs DIR]
 ```
 
-| オプション | デフォルト | 説明 |
+| Option | Default | Description |
 |---|---|---|
-| `--port` | `8080` | リッスンするポート番号 |
-| `--db` | `outputs/cases.duckdb` | ケース情報を保存するデータベースファイル |
-| `--outputs` | `outputs/cases` | ケースごとの作業ディレクトリ |
-| `--addr` | (空) | バインドアドレスを直接指定(例: `127.0.0.1:8080` でローカルのみに制限) |
+| `--port` | `8080` | The port number to listen on |
+| `--db` | `outputs/cases.duckdb` | The database file that stores case information |
+| `--outputs` | `outputs/cases` | The per-case working directory |
+| `--addr` | (empty) | Specify the bind address directly (e.g., `127.0.0.1:8080` to restrict to local only) |
 
-> セキュリティ上の注意: デフォルトでは **すべてのネットワークインター
-> フェース** で待ち受けます。社内ネットワークなど信頼できる環境でのみ
-> 動かしてください。インターネット直結のサーバーで動かすのは推奨しません。
+> Security note: by default it listens on **all network interfaces**. Run it
+> only in a trusted environment such as an internal network. Running it on a
+> server directly exposed to the internet is not recommended.
 
-### 4.2 ダッシュボード画面
+### 4.2 Dashboard screen
 
 URL: `http://<host>:8080/`
 
-最初に開く画面です。2 つのセクションがあります。
+This is the first screen that opens. It has two sections.
 
-#### 新規ケース作成フォーム (上段)
+#### New-case creation form (top)
 
-| フィールド | 例 | 説明 |
+| Field | Example | Description |
 |---|---|---|
-| Case ID | `INC-2026-0042` | ケースを識別する名前。社内のチケット番号などに合わせると整理しやすい |
-| Name | `Workstation alert from SOC` | このケースの簡単な説明 |
-| Examiner | `tanaka` | 調査者の名前(あとで「誰が承認したか」の記録に使われます) |
-| Timezone | `UTC` | タイムスタンプを表示するタイムゾーン |
-| Language | `ja` | レポートの言語(`ja` = 日本語、`en` = 英語) |
+| Case ID | `INC-2026-0042` | A name that identifies the case. Matching it to an internal ticket number makes things easier to organize |
+| Name | `Workstation alert from SOC` | A brief description of this case |
+| Examiner | `tanaka` | The investigator's name (used later in the record of "who approved what") |
+| Timezone | `UTC` | The timezone in which timestamps are displayed |
+| Language | `ja` | The report language (`ja` = Japanese, `en` = English) |
 
-「**Create case**」を押すと新しいケースが作られます。
+Pressing "**Create case**" creates a new case.
 
-#### ケース一覧 (下段)
+#### Case list (bottom)
 
-各ケースがカードとして並びます。カードに表示されるバッジ:
+Each case is laid out as a card. The badges shown on a card:
 
-| バッジ | 意味 |
+| Badge | Meaning |
 |---|---|
-| `N evidence` | 登録された証拠データの数 |
-| `N events` | 解析済みのイベント数 |
-| `N findings` | 発見事項の数 |
-| `synth` | **Tier 2**(タイムライン統合)が完了済み |
-| `report` | レポート生成済み |
-| `no parse yet` | まだ何も処理していない |
+| `N evidence` | The number of registered evidence items |
+| `N events` | The number of parsed events |
+| `N findings` | The number of findings |
+| `synth` | **Tier 2** (timeline synthesis) is complete |
+| `report` | A report has been generated |
+| `no parse yet` | Nothing has been processed yet |
 
-カードをクリックするとそのケースの詳細画面に飛びます。
+Clicking a card takes you to that case's detail screen.
 
-### 4.3 ケース詳細画面
+### 4.3 Case detail screen
 
-URL: `http://<host>:8080/#/cases/<ケースID>`
+URL: `http://<host>:8080/#/cases/<case-id>`
 
-画面の構成:
+Screen layout:
 
-1. **ヘッダー**: ケースID・名前・調査者・作成日時。右上に「Delete case」ボタン
-2. **パイプライン操作バー**: 4 つのボタン (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
-3. **タブバー**: 6 つのタブ (`Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
+1. **Header**: case ID, name, investigator, creation timestamp. A "Delete case" button in the top right
+2. **Pipeline action bar**: four buttons (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
+3. **Tab bar**: six tabs (`Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
 
-> **削除について**: 「Delete case」を押すとデータベース上のケース情報と
-> 作業ディレクトリ(`outputs/cases/<id>/`)が消えます。
-> ただし元の証拠データ(別の場所)は触りません。
+> **About deletion**: pressing "Delete case" removes the case information in
+> the database and the working directory (`outputs/cases/<id>/`).
+> The original evidence data (in a separate location) is left untouched.
 
-### 4.4 パイプライン (4 つのステップ)
+### 4.4 The pipeline (four steps)
 
-> **2026-05 追加機能**:
-> - **複数 Evidence 同時パース** (Issue #1 / v0.3 #1) — Parse モーダルで `+ Add evidence` ボタンで何件でも追加可能
-> - **Auto-pilot トグル** (Issue #11/#12) — Parse / Analyze モーダルに「Review Gate 0 をスキップ」チェックボックス。ON で人間レビューを飛ばして次に進む
-> - **キャンセルボタン** (Issue #8) — 各ステップ実行中、進捗ブロックの下に **`✕ cancel`** ボタンが表示。誤実行や暴走時に途中中断可能(進捗バーが灰色イタリックの `canceled` 表示に切替)
-> - **LLM アクセス事前警告** — Analyze モーダルを開いた時点で `claude` CLI も `ANTHROPIC_API_KEY` も無ければ赤色警告が出ます(以前は実行後に発覚した)
+> **Features added 2026-05**:
+> - **Parse multiple evidence at once** (Issue #1 / v0.3 #1) — in the Parse modal, the `+ Add evidence` button lets you add as many items as you like
+> - **Auto-pilot toggle** (Issue #11/#12) — a "skip Review Gate 0" checkbox in the Parse / Analyze modals. When ON, it skips human review and proceeds to the next step
+> - **Cancel button** (Issue #8) — while each step is running, an **`✕ cancel`** button appears below the progress block. You can abort partway through in case of a mistaken run or a runaway (the progress bar switches to a gray italic `canceled` display)
+> - **Up-front LLM-access warning** — the moment you open the Analyze modal, a red warning appears if neither the `claude` CLI nor `ANTHROPIC_API_KEY` is present (previously this only surfaced after running)
 
-調査は 4 ステップです。順番に実行する必要があります。
+The investigation has four steps. They must be run in order.
 
 ```
 [Parse]  →  [Analyze All]      →  [Synthesize]   →  [Generate Report]
-証拠を       Tier 1A 署名SQL      Tier 2 が         Tier 3 が
-分解する     (+任意で Tier 1B)    タイムライン統合   報告書化
+break down   Tier 1A signature   Tier 2 does       Tier 3 turns it
+the evidence SQL                 timeline          into a report
+             (+ optionally       synthesis
+             Tier 1B)
 ```
 
-各ボタンを押すと、確認用のモーダルが開いて細かいオプションを指定できます。
-ボタンの右側にステータス(`idle` / `running...` / `ok` / `FAIL`)が
-リアルタイムに表示されます(2秒ごとに自動更新)。
+Pressing each button opens a confirmation modal where you can specify
+fine-grained options. To the right of the button, a status (`idle` /
+`running...` / `ok` / `FAIL`) is shown in real time (auto-refreshed every
+2 seconds).
 
-#### Step 1: Parse (パース)
+#### Step 1: Parse
 
-証拠データの中に入っているログファイルや設定ファイルを、それぞれの
-専用ツールで分解して、データベースに格納します。
+Breaks down the log files and configuration files contained in the evidence
+data, each with its dedicated tool, and stores the results in the database.
 
-入力モーダル:
+Input modal:
 
-| フィールド | 例 |
+| Field | Example |
 |---|---|
-| Evidence path | `./evtx-samples` (証拠データのフォルダかZIP) |
-| Evidence ID | `EV-001` (省略時は自動採番) |
+| Evidence path | `./evtx-samples` (a folder or ZIP of evidence data) |
+| Evidence ID | `EV-001` (auto-numbered if omitted) |
 
-処理時間: 証拠データの量によりますが、通常 5〜30 分。
+Processing time: depends on the amount of evidence data, but typically
+5–30 minutes.
 
-#### Step 2: Analyze All (解析 — Tier 1A + 任意で Tier 1B)
+#### Step 2: Analyze All (analysis — Tier 1A + optionally Tier 1B)
 
-**Tier 1A (シグネチャ)** が常に走ります: ルールコーパス (Sigma / Hayabusa /
-STIX / custom / LOLBAS) を build 時に SQL 化したものをこのケースに対して
-実行し、ヒットを finding 化します。**LLM を呼ばないので無料・数秒〜数十秒**で
-完了します。任意で **Tier 1B (anomaly_hunter)** の LLM パスも有効化できます。
+**Tier 1A (signature)** always runs: it executes the rule corpus
+(Sigma / Hayabusa / STIX / custom / LOLBAS), compiled into SQL at build time,
+against this case, and turns hits into findings. **Because it does not call
+an LLM, it is free and completes in seconds to tens of seconds.** Optionally,
+you can also enable the **Tier 1B (anomaly_hunter)** LLM pass.
 
-入力モーダル:
+Input modal:
 
-| フィールド | 説明 |
+| Field | Description |
 |---|---|
-| Also run Tier 1B (anomaly_hunter, LLM) | チェックすると Tier 1B 異常ハンターも実行 (LLM 課金あり)。既定は OFF |
-| Tier 1B model | 空欄で claude CLI のデフォルトモデル |
+| Also run Tier 1B (anomaly_hunter, LLM) | When checked, the Tier 1B anomaly hunter also runs (incurs LLM charges). OFF by default |
+| Tier 1B model | Leave empty for the claude CLI's default model |
 
-> **注意**: Tier 1A は LLM 不要・無料です。Tier 1B を有効にした場合のみ
-> AI モデルを呼ぶのでトークン使用料 (1 ケース 〜$1 程度) がかかります。
+> **Note**: Tier 1A needs no LLM and is free. Only when you enable Tier 1B
+> does it call an AI model, so a token usage fee (around $1 per case) applies.
 
-処理時間: Tier 1A ≈ 数秒〜数十秒、Tier 1B (有効時) ≈ 数分。
+Processing time: Tier 1A ≈ seconds to tens of seconds, Tier 1B (when enabled)
+≈ a few minutes.
 
-#### Step 3: Synthesize (統合 — Tier 2)
+#### Step 3: Synthesize (synthesis — Tier 2)
 
-**Tier 2 (タイムライン解析エージェント)** が Tier 1A / 1B の findings を
-時間的にクラスタ化し、各クラスタ周辺の生タイムラインを LLM が解析して
-**Kill Chain**(攻撃の流れ)・全体ストーリー・MITRE マッピングを推定します。
-出力は `synthesis.json`。
+The **Tier 2 (timeline analysis agent)** clusters the Tier 1A / 1B findings
+temporally, and an LLM analyzes the raw timeline around each cluster to infer
+the **Kill Chain** (the flow of the attack), the overall story, and the MITRE
+mapping. The output is `synthesis.json`.
 
-入力モーダル:
+Input modal:
 
-| フィールド | 説明 |
+| Field | Description |
 |---|---|
-| Active search | チェックすると各クラスタの未解明点について仮説駆動の広域 SQL を追加実行する (より網羅的・低速) |
+| Active search | When checked, runs additional hypothesis-driven, wide-range SQL on the open questions of each cluster (more thorough, slower) |
 
-> **注意**: Tier 2 は LLM を呼ぶのでトークン使用料がかかります (1 ケース 〜$1 程度)。
-> 整合性チェック (R1-R4) や Corrector を伴う旧 Synthesizer を使いたい場合は
-> CLI で `tlvb synthesize CASE_ID --legacy [--correct]` を使います。
+> **Note**: Tier 2 calls an LLM, so a token usage fee applies (around $1 per
+> case). If you want to use the older Synthesizer with its consistency checks
+> (R1–R4) and Corrector, use the CLI with
+> `tlvb synthesize CASE_ID --legacy [--correct]`.
 
-処理時間: クラスタ数によりますが数分程度 (active search 有効時はさらに増加)。
+Processing time: a few minutes depending on the number of clusters (increases
+further when active search is enabled).
 
-#### Step 4: Generate Report (レポート生成)
+#### Step 4: Generate Report
 
-統合結果を人間向けに整形します。
+Formats the synthesis result for humans.
 
-入力モーダル:
+Input modal:
 
-| フィールド | 説明 |
+| Field | Description |
 |---|---|
-| Language | `日本語` または `English` |
-| Only approved | チェックすると、Findings タブで承認した発見事項のみをレポートに含める |
+| Language | `日本語` or `English` |
+| Only approved | When checked, includes only the findings you approved in the Findings tab |
 
-処理時間: 数秒。
+Processing time: a few seconds.
 
-### 4.5 Findings タブ — 何が起きたかの一覧
+### 4.5 Findings tab — a list of what happened
 
-このタブで「TLVB が見つけた疑わしい点」を一つずつ確認します。
-これが **Examiner (調査者) の主な作業画面** です。
+In this tab, you review "the suspicious points TLVB found" one by one.
+This is the **Examiner's (investigator's) main workspace**.
 
-#### 表示
+#### Display
 
-戦術ごとにグループ化され、各発見事項は次の情報を持ちます:
+Grouped by tactic, each finding carries the following information:
 
 ```
 [high] T1543.003 — Create or Modify System Process: Windows Service
                                           F-persistence-001  [pending]
 
-不審なWindowsサービスが複数のホストで作成された (spoolfool, msdhch, ...)
+Suspicious Windows services were created on multiple hosts (spoolfool, msdhch, ...)
 
-[展開] reasoning: なぜそう判断したかの根拠
-[▸ N evidence rows] (クリックで展開)
+[expand] reasoning: the rationale for why it was judged so
+[▸ N evidence rows] (click to expand)
 
 [Approve] [Reject]
 ```
 
-| 要素 | 説明 |
+| Element | Description |
 |---|---|
-| **赤バッジ `high`** | 信頼度が高い(MUSTレビュー) |
-| **黄バッジ `medium`** | 信頼度が中(できれば確認) |
-| **緑バッジ `low`** | 信頼度が低い(誤検知の可能性あり) |
-| **technique_id** | MITRE ATT&CK の **テクニックID**(調べる手がかり) |
-| **summary** | 何が起きたかの要約 |
-| **reasoning** | AIがそう判断した根拠 |
-| **evidence rows** | クリックで展開すると、根拠となる元のログが見える |
-| **finding_id** | この発見事項のID(`F-<戦術>-<連番>`) |
+| **Red badge `high`** | High confidence (MUST review) |
+| **Yellow badge `medium`** | Medium confidence (review if possible) |
+| **Green badge `low`** | Low confidence (possible false positive) |
+| **technique_id** | The MITRE ATT&CK **technique ID** (a clue for investigating) |
+| **summary** | A summary of what happened |
+| **reasoning** | The rationale the AI used to make that judgment |
+| **evidence rows** | Click to expand and see the original logs that serve as evidence |
+| **finding_id** | The ID of this finding (`F-<tactic>-<serial>`) |
 
-#### 承認 (Approve) と 却下 (Reject) — Review Gate
+#### Approve and Reject — the Review Gate
 
-各発見事項には 2 つのボタンがあります:
+Each finding has two buttons:
 
-- **Approve**: 「これは本物の侵害です」と判断 → 緑色の枠で表示される
-- **Reject**: 「これは誤検知/問題なし」と判断 → 赤色の枠で表示される
-  - 押すと**理由を入力するモーダル**が開きます(あとで監査用に残ります)
+- **Approve**: judge "this is a real compromise" → shown with a green border
+- **Reject**: judge "this is a false positive / no problem" → shown with a red border
+  - pressing it opens a **modal to enter a reason** (retained later for auditing)
 
-> **Review Gate**(レビュー・ゲート)とは:
-> AI が出した結果を **人間が確認してから次の段階に進む仕組み** です。
-> AI を信頼しすぎず、最終判断は必ず人間が行うことで、誤検知が
-> 報告書に紛れ込むのを防ぎます。
+> What a **Review Gate** is:
+> a mechanism in which **a human reviews the AI's results before proceeding to
+> the next stage**. By not over-trusting the AI and always leaving the final
+> judgment to a human, it prevents false positives from slipping into the
+> report.
 
-承認状態は元の `findings/by-rule/<rule_source>/*.json` (Tier 1A) および `findings/by-skill/*.json` (Tier 1B) ファイルに書き戻されます。
-レポート生成時に「Only approved」をチェックすれば、承認したものだけが
-最終レポートに出ます。
+The approval state is written back to the original
+`findings/by-rule/<rule_source>/*.json` (Tier 1A) and
+`findings/by-skill/*.json` (Tier 1B) files.
+If you check "Only approved" when generating the report, only the approved
+ones appear in the final report.
 
-#### 一括選択モード(2026-05 追加 — Issue #5/#10)
+#### Bulk-selection mode (added 2026-05 — Issue #5/#10)
 
-50 件以上の findings を 1 件ずつ Approve するのは大変なので、**チェックボックスによる一括操作** が使えます:
+Approving 50+ findings one at a time is laborious, so a **checkbox-based bulk
+operation** is available:
 
-- 各 finding 行の左に **チェックボックス** があり、複数選択可能
-- 戦術グループのヘッダーにも **「全選択」チェックボックス** があり、その戦術だけ一括選択可能
-- 選択後、上部ツールバーの **`Approve selected` / `Reject selected` / `Reset selected`** で一括変更
-- **`Approve all visible (N)`** ボタンで、現在表示中の(フィルタ後)全件を一括承認
+- there is a **checkbox** to the left of each finding row, and multiple selection is possible
+- the header of a tactic group also has a **"select all" checkbox** that lets you bulk-select just that tactic
+- after selecting, change them in bulk with **`Approve selected` / `Reject selected` / `Reset selected`** in the top toolbar
+- the **`Approve all visible (N)`** button bulk-approves all currently displayed (post-filter) items
 
-#### フィルタ(Issue #4)
+#### Filters (Issue #4)
 
-ツールバーの **`all` / `pending` / `reviewed`** ボタンで:
-- **all**: 全 findings 表示
-- **pending**: 未レビューのみ表示
-- **reviewed**: 承認/却下済みのみ表示
+With the **`all` / `pending` / `reviewed`** buttons in the toolbar:
+- **all**: show all findings
+- **pending**: show only un-reviewed ones
+- **reviewed**: show only approved/rejected ones
 
-選択状態とスクロール位置は維持されたままフィルタ切替できます。
+You can switch filters while the selection state and scroll position are
+preserved.
 
-#### 取り消し(Issue #7)
+#### Undo (Issue #7)
 
-承認/却下した finding は、その行の右側に **`Reset` ボタン** が出ます。クリックすると pending 状態に戻り、再度 Approve/Reject ボタンが表示されます(誤って承認してしまった場合の救済策)。
+For an approved/rejected finding, a **`Reset` button** appears on the right of
+its row. Clicking it returns it to the pending state and the Approve/Reject
+buttons appear again (a remedy for when you approve something by mistake).
 
-#### 戦術グループの折りたたみ(Issue #6)
+#### Collapsing tactic groups (Issue #6)
 
-各戦術(Initial Access / Execution / Persistence 等)はデフォルトで **折りたたみ** 状態で表示されます。ヘッダーをクリックで展開/折りたたみ。長い findings リストでスクロール量を抑えるための変更です。
+Each tactic (Initial Access / Execution / Persistence, etc.) is displayed
+**collapsed** by default. Click the header to expand/collapse. This change is
+to keep scrolling under control with long findings lists.
 
-### 4.6 Timeline タブ — 時系列で見る
+### 4.6 Timeline tab — viewing chronologically
 
-「いつ・どこで・何が起きたか」を時系列のテーブルで表示します。
-攻撃の流れを追うのに使います。
+Displays "when, where, and what happened" in a chronological table.
+Used to follow the flow of the attack.
 
-#### Kill Chain ダイアグラム (上部)
+#### Kill Chain diagram (top)
 
-`Initial Access → Execution → Persistence → ... → Impact` の流れで、
-各段階の最も早いイベントを矢印付きで並べたものです。
-攻撃者が **どういう順序で何をしたか** を一目で把握できます。
+Following the `Initial Access → Execution → Persistence → ... → Impact` flow,
+it lays out the earliest event at each stage with arrows.
+It lets you grasp at a glance **in what order the attacker did what**.
 
-#### Timeline テーブル (下部)
+#### Timeline table (bottom)
 
-| カラム | 内容 |
+| Column | Contents |
 |---|---|
-| Timestamp | 発生時刻 (UTC) |
-| Tactic | どの戦術に分類されるか |
-| Technique | より具体的な手口のID |
-| Computer | どのパソコンで起きたか |
-| Summary | 何が起きたかの一文 |
+| Timestamp | Time of occurrence (UTC) |
+| Tactic | Which tactic it is classified under |
+| Technique | The ID of the more specific technique |
+| Computer | Which PC it happened on |
+| Summary | A one-line statement of what happened |
 
-行は時刻順に並んでいます。
+The rows are arranged in time order.
 
-### 4.7 IOC タブ — 指標の一覧
+### 4.7 IOC tab — a list of indicators
 
-**IOC (Indicator of Compromise = 侵害指標)** は、攻撃の痕跡となる
-「具体的な値」のことです。例:
+An **IOC (Indicator of Compromise)** is a "concrete value" that is a trace of
+an attack. Examples:
 
-- 怪しいIPアドレス: `203.0.113.45`
-- 怪しいドメイン: `evil-c2.example.com`
-- 怪しいファイルのハッシュ値: `sha256:abc123...`
-- 怪しいファイルパス: `C:\Users\Public\malware.exe`
+- a suspicious IP address: `203.0.113.45`
+- a suspicious domain: `evil-c2.example.com`
+- a suspicious file hash: `sha256:abc123...`
+- a suspicious file path: `C:\Users\Public\malware.exe`
 
-IOC は「他のパソコンも同じ攻撃を受けていないか」を調べるときに使います。
-社内の別のパソコンや、**SIEM**(セキュリティ監視システム)に
-これらの値を流し込んでスキャンする、という使い方が一般的です。
+IOCs are used when checking "have other PCs been hit by the same attack?" A
+common usage is to feed these values into other PCs on the internal network,
+or into a **SIEM** (security monitoring system), to scan for them.
 
-#### 表示
+#### Display
 
-種類別にグループ化されます。種類の例:
+Grouped by type. Example types:
 
-- `domain` (ドメイン)
-- `ipv4` (IPアドレス)
-- `sha256` / `sha1` / `md5` (ファイルのハッシュ値)
-- `file_path` (ファイルのパス)
-- `registry_key` (Windowsのレジストリキー)
-- `service_name` (Windowsのサービス名)
+- `domain`
+- `ipv4` (IP address)
+- `sha256` / `sha1` / `md5` (file hashes)
+- `file_path`
+- `registry_key` (a Windows registry key)
+- `service_name` (a Windows service name)
 
-#### CSV ダウンロード
+#### CSV download
 
-「Download CSV」ボタンを押すと、すべての IOC が CSV ファイル
-(`iocs.csv`) としてダウンロードできます。
+Pressing the "Download CSV" button downloads all IOCs as a CSV file
+(`iocs.csv`).
 
-### 4.8 MITRE Map タブ — 攻撃手口の地図
+### 4.8 MITRE Map tab — a map of attacker techniques
 
-**MITRE ATT&CK** とは、世界中の攻撃事例から「攻撃者がよくやる手口」を
-カタログ化した知識ベースです。業界の事実上の標準です。
+**MITRE ATT&CK** is a knowledge base that catalogs "techniques attackers
+commonly use" from attack cases around the world. It is the industry's de
+facto standard.
 
-このタブでは、見つかった発見事項を ATT&CK の地図上にマッピングして
-表示します。
+In this tab, the findings that were discovered are mapped onto and displayed
+on the ATT&CK map.
 
-#### 表示
+#### Display
 
 ```
 TA0001 (Initial Access)    │ [T1133 (External Remote)] [T1190 (Public-Facing App)]
@@ -450,275 +472,277 @@ TA0003 (Persistence)       │ [T1543.003 (Service)] [T1547.001 (Run Key)] ...
 ...
 ```
 
-各セル(マス)には:
+Each cell contains:
 
-- **Technique ID**: T1543.003 などの番号
-- **Technique Name**: 手口の名前
-- **件数**: 発見事項の数と証拠の数
-- **色**: 信頼度に応じて 赤(high) / 黄(medium) / 緑(low)
+- **Technique ID**: a number such as T1543.003
+- **Technique Name**: the name of the technique
+- **count**: the number of findings and the number of evidence items
+- **color**: red (high) / yellow (medium) / green (low) according to confidence
 
-セルをクリックすると Findings タブに飛びます。
+Clicking a cell takes you to the Findings tab.
 
-### 4.9 Report タブ — レポート閲覧とダウンロード
+### 4.9 Report tab — viewing and downloading the report
 
-「Generate Report」を実行すると、このタブで結果を閲覧できます。
+Once you run "Generate Report," you can view the result in this tab.
 
-#### ボタン
+#### Buttons
 
-| ボタン | 用途 |
+| Button | Use |
 |---|---|
-| Open HTML | 別タブで HTMLレポートを開く |
-| Findings CSV | 発見事項のCSV (Excelで開ける) |
-| Timeline CSV | タイムラインのCSV |
-| IOC CSV | IOCのCSV |
-| JSON | 機械処理用のJSON全データ |
+| Open HTML | Open the HTML report in a separate tab |
+| Findings CSV | Findings CSV (opens in Excel) |
+| Timeline CSV | Timeline CSV |
+| IOC CSV | IOC CSV |
+| JSON | The full JSON data for machine processing |
 
-#### iframe プレビュー
+#### iframe preview
 
-下部に HTML レポートが埋め込み表示されます。
-レポートの中身は次のセクションを含みます:
+The HTML report is embedded at the bottom.
+The contents of the report include the following sections:
 
-1. エグゼクティブサマリ
-2. 影響範囲
-3. 侵入経路 (Kill Chain)
-4. 攻撃タイムライン
-5. Finding 一覧 (Tier 1A は rule_source 別、Tier 1B は skill 別)
-6. 未解決事項・整合性チェック
-7. 推奨対応
-8. IOC サマリ
-9. MITRE ATT&CK マッピング
-10. 監査トレイル
-11. 付録: Evidence 詳細
+1. Executive summary
+2. Scope of impact
+3. Intrusion path (Kill Chain)
+4. Attack timeline
+5. List of findings (Tier 1A by rule_source, Tier 1B by skill)
+6. Open questions and consistency checks
+7. Recommended actions
+8. IOC summary
+9. MITRE ATT&CK mapping
+10. Audit trail
+11. Appendix: evidence details
 
-### 4.10 Audit タブ — 操作履歴
+### 4.10 Audit tab — operation history
 
-TLVB が実行したすべての処理(パース・解析など)が時系列で残ります。
+Every process TLVB executed (parsing, analysis, etc.) is retained
+chronologically.
 
-| 列 | 内容 |
+| Column | Contents |
 |---|---|
-| Timestamp | いつ実行されたか |
-| Actor | 誰(または何)が実行したか (例: `tier0-orchestrator`) |
-| Kind | 何の処理か (例: `parse`, `analyze`) |
-| Body | 詳細(コマンド・行数・所要時間など) |
+| Timestamp | When it was executed |
+| Actor | Who (or what) executed it (e.g., `tier0-orchestrator`) |
+| Kind | What kind of process it was (e.g., `parse`, `analyze`) |
+| Body | Details (command, line count, elapsed time, etc.) |
 
-「Tier filter」で `tier0` (パース) / `tier1` (解析) / `tier2` (統合) /
-`tier3` (レポート) で絞り込めます。
+With "Tier filter" you can narrow down by `tier0` (parse) / `tier1`
+(analysis) / `tier2` (synthesis) / `tier3` (report).
 
-> 監査ログは法的な場面で「いつ・誰が・何をしたか」を証明する
-> ために重要な記録です。元の `outputs/cases/<id>/actions.jsonl` が
-> 1行=1イベントの形式で保存されています。
+> The audit log is an important record for proving "when, who, and what was
+> done" in a legal setting. The original `outputs/cases/<id>/actions.jsonl` is
+> stored in a one-event-per-line format.
 
 ---
 
-## 5. CLI でも同じことができる
+## 5. You can do the same from the CLI
 
-Web UI はバックエンドの REST API のラッパーです。コマンドラインから
-直接同じ処理を実行することもできます(自動化したい場合に便利)。
+The Web UI is a wrapper around the backend REST API. You can also run the
+same processes directly from the command line (handy when you want to
+automate).
 
 ```bash
-# ケース作成
+# Create a case
 tlvb case init --case-id INC-2026-0042 --name "test case" --examiner tanaka
 
-# Step 1: パース
+# Step 1: parse
 tlvb parse --case-id INC-2026-0042 --evidence-id EV-001 --input ./evtx-samples
 
-# Step 2: 解析 — Tier 1A (署名 SQL, LLM 無し)
+# Step 2: analysis — Tier 1A (signature SQL, no LLM)
 tlvb analyze INC-2026-0042 --tier 1a
-# 任意: Tier 1B 異常ハンター (LLM)
+# optional: Tier 1B anomaly hunter (LLM)
 tlvb analyze INC-2026-0042 --tier 1b --skill anomaly_hunter
 
-# Step 3: 統合 — Tier 2 (LLM)。--active-search で広域探索も
+# Step 3: synthesis — Tier 2 (LLM). --active-search for wide-range exploration too
 tlvb synthesize INC-2026-0042
 
-# Step 4: レポート — Tier 3
+# Step 4: report — Tier 3
 tlvb report INC-2026-0042 --format html,csv,json --language ja
 
-# 全ステップを一括で (Tier 0→1A→1B→2→3)
+# All steps at once (Tier 0→1A→1B→2→3)
 tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto"
 
-# 対話的に Approve/Reject を行う
+# Interactively Approve/Reject
 tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 ```
 
-ヘルプ: `tlvb --help`
+Help: `tlvb --help`
 
 ---
 
-## 6. よくあるトラブル
+## 6. Common troubleshooting
 
-### Q. ホストPCのブラウザから VM の Web UI にアクセスできない
+### Q. I can't reach the VM's Web UI from the host PC's browser
 
-- VM の IP を確認: `hostname -I`
-- そのIPでホストPCから ping が通るか確認
-- ホストPCの `http://<VMのIP>:8080/` にアクセス
-- 通らない場合は VMware の「Virtual Network Editor」で VMnet8 (NAT) の
-  ポートフォワーディングを設定 (`Host port 8080 → VM IP:8080`)
+- Check the VM's IP: `hostname -I`
+- Confirm the host PC can ping that IP
+- Access `http://<VM's IP>:8080/` from the host PC
+- If it doesn't work, set up port forwarding for VMnet8 (NAT) in VMware's
+  "Virtual Network Editor" (`Host port 8080 → VM IP:8080`)
 
-### Q. Parse ボタンがエラーになる
+### Q. The Parse button errors out
 
-- 証拠データのパスが正しいか
-- パスがVM上から見えるディレクトリか(ホスト側のパスは指定不可)
-- パス先のフォルダの中に解析できるファイルがあるか
-  (Windowsイベントログ `.evtx`、レジストリハイブ、Amcache 等)
+- Is the evidence data path correct?
+- Is the path a directory visible from the VM? (paths on the host side cannot be specified)
+- Are there analyzable files in the folder at that path?
+  (Windows event logs `.evtx`, registry hives, Amcache, etc.)
 
-### Q. Analyze がすぐ失敗する
+### Q. Analyze fails immediately
 
-- 先に Parse が完了している必要があります
-- `claude-code` エンジンを使うには `claude` コマンドが必要
-- `anthropic-api` エンジンを使うには `export ANTHROPIC_API_KEY=sk-ant-xxx`
+- Parse must have completed first
+- To use the `claude-code` engine, the `claude` command is required
+- To use the `anthropic-api` engine, `export ANTHROPIC_API_KEY=sk-ant-xxx`
 
-### Q. Synthesize に findings が見つからないと言われる
+### Q. Synthesize says no findings were found
 
-- Analyze が一つも成功していません。Analyze を再実行してください
+- No Analyze succeeded. Please rerun Analyze
 
-### Q. Findings タブで何も表示されない
+### Q. Nothing shows up in the Findings tab
 
-- まだ Analyze が完了していません
-- パイプラインバーで `Analyze All` のステータスを確認
+- Analyze has not completed yet
+- Check the status of `Analyze All` in the pipeline bar
 
-### Q. データを最初からやり直したい
+### Q. I want to redo the data from scratch
 
-- ダッシュボードでケースカード → 詳細 → 「Delete case」
-- 作業ディレクトリ (`outputs/cases/<id>/`) も削除されます
-- 元の証拠データは触りません
+- On the dashboard, case card → detail → "Delete case"
+- The working directory (`outputs/cases/<id>/`) is also deleted
+- The original evidence data is left untouched
 
-### Q. AIが間違っているっぽい
+### Q. The AI seems to be wrong
 
-- それが Review Gate (Findings タブの Approve/Reject) を設けている理由です
-- 「これは違う」と判断したら **Reject + 理由** を記録してください
-- 最終レポート生成時に「Only approved」を有効にすれば、却下したものは
-  レポートに含まれません
-- 一度 Approve した finding を取り消したい場合は、その行の **Reset** ボタンで pending に戻せます(2026-05 追加)
+- That is exactly why the Review Gate (Approve/Reject in the Findings tab) exists
+- If you judge "this is wrong," record a **Reject + reason**
+- If you enable "Only approved" when generating the final report, the rejected
+  ones will not be included in the report
+- If you want to undo a finding you once approved, you can return it to pending
+  with the **Reset** button on its row (added 2026-05)
 
-### Q. パイプライン途中で止めたい
+### Q. I want to stop the pipeline partway through
 
-- 各ステップの進捗ブロック下に **`✕ cancel`** ボタンが出ます(2026-05 追加)
-- クリック → 確認 → ジョブが中断され `canceled` 状態に
-- DuckDB / 部分出力は残ったままなので、次回 Parse / Analyze で再開できます
+- An **`✕ cancel`** button appears below the progress block of each step (added 2026-05)
+- Click → confirm → the job is aborted and goes to the `canceled` state
+- DuckDB / partial output is left in place, so you can resume from the next Parse / Analyze
 
-### Q. 毎回 `export ANTHROPIC_API_KEY=...` が面倒
+### Q. Doing `export ANTHROPIC_API_KEY=...` every time is a hassle
 
-- リポジトリのルートに `.env.local` ファイルを作って `ANTHROPIC_API_KEY=sk-ant-...` と書けば、`tlvb serve` 起動時に自動読み込みされます(2026-05 追加)
-- シェルで明示的に `export` した値が優先されるので、一時的な上書きも可能
-
----
-
-## Appendix A: 用語集
-
-セキュリティ・フォレンジック分野の専門用語を、本ドキュメントで
-登場した順に並べています。
-
-### 基本概念
-
-| 用語 | 説明 |
-|---|---|
-| **インシデント** | サイバー攻撃が疑われる出来事の単位。TLVB の「ケース」1つ = 1インシデント |
-| **インシデントレスポンス (IR)** | インシデントが起きたときの対応活動全般。「事故対応」 |
-| **フォレンジック (Digital Forensics, DFIR)** | コンピューター上に残った証拠を法的に通用する形で収集・分析する技術。直訳すると「デジタル鑑識」 |
-| **証拠 (Evidence)** | 攻撃の有無を判断する材料となるデータ。ハードディスクのコピー、ログファイル、メモリダンプなど |
-| **チェーン・オブ・カストディ (Chain of Custody)** | 「証拠が誰の手に渡り、誰がいつ何をしたか」の記録。法廷で証拠が認められるために必須 |
-| **読み取り専用 (Read-Only)** | 元の証拠ファイルを **絶対に書き換えない** という運用原則。TLVB もこれを守ります |
-
-### 攻撃のしくみと対策
-
-| 用語 | 説明 |
-|---|---|
-| **MITRE ATT&CK** | 米国 MITRE 社が公開している、攻撃者の手口のカタログ。業界標準の分類体系 |
-| **Tactic (戦術)** | ATT&CK の最上位カテゴリ。「攻撃者の目的」(例: 侵入する、居座る、情報を盗む)。TLVB では 10 種類を扱う |
-| **Technique (テクニック)** | Tactic を達成する具体的な手段。例: T1543.003 は「Windows サービスを作って居座る」テクニック |
-| **Initial Access** | 最初にシステムに侵入する手口(フィッシングメール、脆弱性悪用など) |
-| **Execution** | 侵入後に悪意あるプログラムを実行すること |
-| **Persistence** | 再起動後も居座る仕掛けを作ること(自動起動レジストリ、サービス登録、スケジュールタスクなど) |
-| **Privilege Escalation** | 一般ユーザーから管理者権限へ昇格すること |
-| **Defense Evasion** | ログを消す、検知を回避する、痕跡を隠すなどの行為 |
-| **Credential Access** | パスワードや認証トークンを盗むこと |
-| **Discovery** | 「ここはどんな環境だろう?」と調べる行為(ユーザー一覧取得、ネットワーク偵察など) |
-| **Lateral Movement** | 1台のパソコンから別のパソコンへ移動すること |
-| **Collection** | 盗み出すデータを集める行為 |
-| **Impact** | データを暗号化(ランサムウェア)、削除、破壊する最終行為 |
-| **Kill Chain** | 攻撃が「侵入 → 居座り → 権限昇格 → 横移動 → データ窃取」のように段階を踏むという考え方。元はロッキード・マーチン社が提唱 |
-
-### 証拠の種類
-
-| 用語 | 説明 |
-|---|---|
-| **EVTX** | Windows のイベントログのファイル形式。`.evtx` 拡張子。ログオン履歴・サービス起動・PowerShell実行などが記録されている |
-| **EventID** | EVTX 内のイベントの種類番号。例: `4624` = 成功ログオン、`7045` = 新サービスインストール |
-| **Sysmon** | Microsoft が出している詳細ログ取得ツール。プロセス起動・ネットワーク接続・ファイル変更などを細かく記録 |
-| **レジストリ (Registry)** | Windows の設定データベース。マルウェアが自動起動を仕込む場所として悪用されやすい |
-| **Amcache** | Windows が「過去にこのPCで実行されたことのある実行ファイル」を記録するファイル。攻撃者が消したマルウェアの痕跡が残ることがある |
-| **Prefetch** | Windows が起動高速化のために「最近実行したプログラム」をキャッシュするファイル。同じく事後追跡に有用 |
-| **Shimcache (AppCompatCache)** | Windows のアプリ互換性データベース。実行された .exe の痕跡が残る |
-| **MFT (Master File Table)** | NTFS ファイルシステムの目次。削除されたファイルの情報も部分的に残る |
-| **USN Journal** | NTFS のファイル変更履歴。「いつ何のファイルが作られた/消された」が分かる |
-
-### 解析関連
-
-| 用語 | 説明 |
-|---|---|
-| **IOC (Indicator of Compromise)** | 「侵害指標」。攻撃を識別する具体的な値(IPアドレス、ドメイン、ハッシュ値、ファイルパスなど) |
-| **ハッシュ値** | ファイルから計算される短い文字列(SHA-256, MD5など)。同じファイルかどうかの判定に使う |
-| **C2 / C&C (Command and Control)** | 攻撃者が侵入先を遠隔操作するためのサーバ。IOC として C2 のドメイン/IPが共有される |
-| **TTP (Tactics, Techniques, Procedures)** | 「戦術・テクニック・手順」。攻撃者の行動パターンを表す ATT&CK の3階層 |
-| **シグマ (Sigma)** | ログから攻撃を検出するルールの汎用的な記述形式 |
-| **YARA** | マルウェアのファイルパターンを記述するルール形式。バイナリ中の特定文字列・バイト列を探す |
-| **タイムライン (Timeline)** | 「いつ何が起きたか」を時系列で並べたデータ。複数の証拠を時刻でマージして作る |
-| **Plaso / log2timeline** | 多種類の証拠をまとめて1つのタイムラインにする標準ツール |
-
-### 監視・検知関連
-
-| 用語 | 説明 |
-|---|---|
-| **SIEM (Security Information and Event Management)** | 社内のさまざまな機器のログを集めて相関分析する監視システム。Splunk, Elastic SIEM, QRadar など |
-| **EDR (Endpoint Detection and Response)** | 各PCに常駐して挙動を監視するソフトウェア。CrowdStrike, SentinelOne, Defender for Endpoint など |
-| **SOC (Security Operations Center)** | セキュリティ監視を行うチーム/部門 |
-| **検知ルール** | 「この条件に当てはまるログが出たらアラートを出す」というルール |
-| **誤検知 (False Positive, FP)** | 攻撃ではないのに攻撃と判定してしまうこと |
-| **見逃し (False Negative, FN)** | 攻撃なのに見逃してしまうこと。TLVB は AI + Review Gate でこれを減らすのが狙い |
-
-### TLVB 特有の用語
-
-| 用語 | 説明 |
-|---|---|
-| **Tier 1A (シグネチャ)** | ルールコーパス (Sigma / Hayabusa / ATT&CK STIX / custom / LOLBAS) を **build 時**に SQL へコンパイルし (`tlvb rules build`)、**実行時**はキャッシュ済み SQL を回すだけ (LLM ゼロ)。ヒット = finding |
-| **Tier 1B (異常ハンター)** | `skills/*.md` のスキルが SQL を実行 → LLM が Tier 1A findings と併せて抽象的な異常を推論し、必要なら新クエリを考案 (キャッシュが成長)。既定スキル = anomaly_hunter (tactic スキルは `--skill` で opt-in) |
-| **Anomaly Hunter** | Tier 1B の既定スキル。既存ルールに当てはまらない「何かおかしい」挙動を探す |
-| **finding (発見事項)** | Tier 1A は `findings/by-rule/<rule_source>/<rule_id>.json`、Tier 1B は `findings/by-skill/<skill>.json` に保存 |
-| **rule_source** | Tier 1A ルールの出所: `sigma` / `hayabusa` / `stix` / `custom` / `lolbas`。主キーは `(rule_id, rule_source)` で rule_id は上流の原 ID を保持 |
-| **Tier 2 (タイムライン解析)** | Tier 1 findings をクラスタ化し、各クラスタの ±N 分の生タイムラインを LLM が解析。`--active-search` で仮説駆動の広域 SQL も実行。出力 = `synthesis.json` (クラスタ + overall_story + mitre_mapping + open_questions) |
-| **Tier 3 (レポーター)** | `synthesis.json` + findings から HTML / CSV / JSON の DFIR レポートを生成 (LLM ゼロ) |
-| **Review Gate** | 各 Tier の合間の人間レビュー。Gate 0 (parse) / **1A** (署名 findings、重要度で自動承認) / **1B** (異常 findings) / 2 (タイムライン) |
-| **Examiner** | 調査者(ユーザー自身)。承認/却下の操作は Examiner 名で記録される |
-| **Tier 0/1/2/3** | TLVB の処理層。**Tier 0**=パーサ / **Tier 1A**=署名 SQL (LLM=0) / **Tier 1B**=スキル異常 (LLM) / **Tier 2**=タイムライン解析+統合 (LLM) / **Tier 3**=レポート (LLM=0) |
-| **legacy (findevil)** | 旧実装の Tactic Agent / TacticReport / Synthesizer / Corrector。現在は `tlvb synthesize --legacy` / `report --legacy` で opt-in (既定は tier2/tier3) |
-| **audit_id** | 個々のログイベントのID(ハッシュ値)。finding が「どのログを根拠にしているか」を一意に指せる |
-
-### ツール・ファイル関連
-
-| 用語 | 説明 |
-|---|---|
-| **MCP (Model Context Protocol)** | AI エージェントが外部ツールを呼び出すための標準プロトコル。TLVB 内部で使用 |
-| **EZ Tools** | フォレンジック界で広く使われている Eric Zimmerman 氏の解析ツール群。EvtxECmd, AmcacheParser, RECmd など |
-| **SIFT Workstation** | SANS Institute が提供しているフォレンジック専用 Linux 環境(Ubuntu ベース)。TLVB の動作前提環境 |
-| **DuckDB** | TLVB がイベントデータの保管に使う組み込みデータベース(SQLite に似て、分析向け) |
+- If you create a `.env.local` file at the root of the repository and write `ANTHROPIC_API_KEY=sk-ant-...`, it is loaded automatically when `tlvb serve` starts (added 2026-05)
+- A value explicitly `export`ed in the shell takes precedence, so a temporary override is also possible
 
 ---
 
-## Appendix B: 全体像の図
+## Appendix A: Glossary
 
-### 処理の流れ
+Security and forensics jargon, in the order it appeared in this document.
+
+### Basic concepts
+
+| Term | Description |
+|---|---|
+| **Incident** | The unit of an event suspected to be a cyberattack. One TLVB "case" = one incident |
+| **Incident Response (IR)** | The overall response activity when an incident occurs |
+| **Forensics (Digital Forensics, DFIR)** | The technique of collecting and analyzing evidence left on a computer in a legally admissible form. Literally "digital forensics" |
+| **Evidence** | The material used to judge whether an attack occurred. A copy of a hard disk, log files, memory dumps, etc. |
+| **Chain of Custody** | The record of "whose hands the evidence passed through, and who did what and when." Essential for evidence to be accepted in court |
+| **Read-Only** | The operational principle of **never rewriting** the original evidence files. TLVB upholds this too |
+
+### How attacks work, and countermeasures
+
+| Term | Description |
+|---|---|
+| **MITRE ATT&CK** | A catalog of attacker techniques published by MITRE Corporation (US). The industry-standard classification system |
+| **Tactic** | The top-level category of ATT&CK. The "attacker's objective" (e.g., get in, stick around, steal information). TLVB handles 10 of them |
+| **Technique** | A concrete means of achieving a tactic. E.g., T1543.003 is the "create a Windows service to stick around" technique |
+| **Initial Access** | The technique used to first break into a system (phishing emails, exploiting vulnerabilities, etc.) |
+| **Execution** | Running a malicious program after breaking in |
+| **Persistence** | Planting a mechanism to stick around after reboot (auto-start registry, service registration, scheduled tasks, etc.) |
+| **Privilege Escalation** | Escalating from a regular user to administrator privileges |
+| **Defense Evasion** | Acts such as erasing logs, evading detection, and hiding traces |
+| **Credential Access** | Stealing passwords and authentication tokens |
+| **Discovery** | The act of investigating "what kind of environment is this?" (enumerating users, network reconnaissance, etc.) |
+| **Lateral Movement** | Moving from one PC to another |
+| **Collection** | The act of gathering the data to be exfiltrated |
+| **Impact** | The final act of encrypting (ransomware), deleting, or destroying data |
+| **Kill Chain** | The idea that an attack proceeds in stages, like "intrusion → persistence → privilege escalation → lateral movement → data theft." Originally proposed by Lockheed Martin |
+
+### Types of evidence
+
+| Term | Description |
+|---|---|
+| **EVTX** | The Windows event log file format. The `.evtx` extension. Logon history, service starts, PowerShell execution, etc. are recorded |
+| **EventID** | The type number of an event within EVTX. E.g., `4624` = successful logon, `7045` = new service installed |
+| **Sysmon** | A detailed-logging tool from Microsoft. Records process starts, network connections, file changes, etc. in fine detail |
+| **Registry** | The Windows configuration database. Frequently abused as a place where malware plants auto-start entries |
+| **Amcache** | A file in which Windows records "executables that have previously run on this PC." Traces of malware the attacker deleted can remain |
+| **Prefetch** | A file in which Windows caches "recently executed programs" to speed up startup. Likewise useful for after-the-fact tracking |
+| **Shimcache (AppCompatCache)** | The Windows application-compatibility database. Traces of executed .exe files remain |
+| **MFT (Master File Table)** | The table of contents of the NTFS file system. Information about deleted files also partially remains |
+| **USN Journal** | NTFS's file-change history. You can tell "when which file was created/deleted" |
+
+### Analysis-related
+
+| Term | Description |
+|---|---|
+| **IOC (Indicator of Compromise)** | A concrete value that identifies an attack (IP address, domain, hash, file path, etc.) |
+| **Hash** | A short string computed from a file (SHA-256, MD5, etc.). Used to determine whether two files are the same |
+| **C2 / C&C (Command and Control)** | A server attackers use to remotely operate the breached host. C2 domains/IPs are shared as IOCs |
+| **TTP (Tactics, Techniques, Procedures)** | The three-level hierarchy of ATT&CK that represents an attacker's behavior patterns |
+| **Sigma** | A generic format for writing rules to detect attacks from logs |
+| **YARA** | A rule format for describing malware file patterns. Searches for specific strings/byte sequences within a binary |
+| **Timeline** | Data arranging "what happened when" chronologically. Built by merging multiple pieces of evidence by time |
+| **Plaso / log2timeline** | The standard tool for combining many kinds of evidence into a single timeline |
+
+### Monitoring/detection-related
+
+| Term | Description |
+|---|---|
+| **SIEM (Security Information and Event Management)** | A monitoring system that collects logs from various internal devices and performs correlation analysis. Splunk, Elastic SIEM, QRadar, etc. |
+| **EDR (Endpoint Detection and Response)** | Software that resides on each PC and monitors behavior. CrowdStrike, SentinelOne, Defender for Endpoint, etc. |
+| **SOC (Security Operations Center)** | The team/department that performs security monitoring |
+| **Detection rule** | A rule that says "raise an alert when a log matching this condition appears" |
+| **False Positive (FP)** | Judging something as an attack when it is not |
+| **False Negative (FN)** | Missing an attack when it is one. TLVB aims to reduce these with AI + the Review Gate |
+
+### TLVB-specific terms
+
+| Term | Description |
+|---|---|
+| **Tier 1A (signature)** | Compiles the rule corpus (Sigma / Hayabusa / ATT&CK STIX / custom / LOLBAS) into SQL **at build time** (`tlvb rules build`), and **at runtime** merely runs the cached SQL (zero LLM). A hit = a finding |
+| **Tier 1B (anomaly hunter)** | The skills in `skills/*.md` execute SQL → an LLM infers abstract anomalies together with the Tier 1A findings, and devises new queries if needed (the cache grows). Default skill = anomaly_hunter (tactic skills are opt-in via `--skill`) |
+| **Anomaly Hunter** | The default Tier 1B skill. Looks for "something is off" behavior that does not match existing rules |
+| **finding** | Tier 1A is saved to `findings/by-rule/<rule_source>/<rule_id>.json`, Tier 1B to `findings/by-skill/<skill>.json` |
+| **rule_source** | The origin of a Tier 1A rule: `sigma` / `hayabusa` / `stix` / `custom` / `lolbas`. The primary key is `(rule_id, rule_source)`, and rule_id preserves the upstream original ID |
+| **Tier 2 (timeline analysis)** | Clusters the Tier 1 findings, and an LLM analyzes the ±N-minute raw timeline of each cluster. With `--active-search`, it also runs hypothesis-driven, wide-range SQL. Output = `synthesis.json` (clusters + overall_story + mitre_mapping + open_questions) |
+| **Tier 3 (reporter)** | Generates an HTML / CSV / JSON DFIR report from `synthesis.json` + findings (zero LLM) |
+| **Review Gate** | The human review between each Tier. Gate 0 (parse) / **1A** (signature findings, auto-approved by severity) / **1B** (anomaly findings) / 2 (timeline) |
+| **Examiner** | The investigator (you, the user). Approve/reject operations are recorded under the Examiner's name |
+| **Tier 0/1/2/3** | TLVB's processing layers. **Tier 0** = parsers / **Tier 1A** = signature SQL (LLM=0) / **Tier 1B** = skill anomaly (LLM) / **Tier 2** = timeline analysis + synthesis (LLM) / **Tier 3** = report (LLM=0) |
+| **legacy (findevil)** | The old implementation's Tactic Agent / TacticReport / Synthesizer / Corrector. Currently opt-in via `tlvb synthesize --legacy` / `report --legacy` (the default is tier2/tier3) |
+| **audit_id** | The ID (hash) of an individual log event. Lets a finding uniquely point to "which log it is based on" |
+
+### Tools/files-related
+
+| Term | Description |
+|---|---|
+| **MCP (Model Context Protocol)** | A standard protocol for AI agents to call external tools. Used internally by TLVB |
+| **EZ Tools** | Eric Zimmerman's suite of analysis tools, widely used in the forensics field. EvtxECmd, AmcacheParser, RECmd, etc. |
+| **SIFT Workstation** | A forensics-specific Linux environment (Ubuntu-based) provided by the SANS Institute. TLVB's assumed operating environment |
+| **DuckDB** | The embedded database TLVB uses to store event data (similar to SQLite, but analytics-oriented) |
+
+---
+
+## Appendix B: The big picture
+
+### Processing flow
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                     ユーザー                                         │
+│                     user                                            │
 │  ┌────────┐                                                         │
-│  │ ブラウザ │ ⇄ http://localhost:8080/                                │
+│  │ browser │ ⇄ http://localhost:8080/                               │
 │  └────────┘                                                         │
 └────────────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  tlvb serve  (Go バイナリ — UI も埋め込み済み)                    │
+│  tlvb serve  (Go binary — UI is embedded too)                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
 │  │ REST API     │  │ JobsManager  │  │ Embedded UI (HTML/CSS/JS)│  │
 │  │ /api/cases   │  │ (goroutine)  │  │ /static/app.js etc.      │  │
@@ -728,48 +752,49 @@ tlvb review INC-2026-0042 --gate 1a --examiner tanaka
                             ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │  Tier 0:  Parser orchestrator (Python + EZ Tools)                  │
-│           ↓ 証拠ファイルを構造化データに変換 (unified_events)         │
-│  Tier 1A: Signature SQL (cached rules → DuckDB, LLM ゼロ)            │
-│           ↓ ヒットを findings/by-rule/ に出力                        │
-│  Tier 1B: Anomaly Hunter skill (Claude, LLM, 任意) → by-skill/       │
-│  Tier 2:  Timeline Analysis Agent (Claude) → 統合・タイムライン・KC   │
-│  Tier 3:  Reporter (Go) → HTML/CSV/JSON DFIR レポート (LLM ゼロ)     │
+│           ↓ convert evidence files into structured data (unified_events) │
+│  Tier 1A: Signature SQL (cached rules → DuckDB, zero LLM)           │
+│           ↓ output hits to findings/by-rule/                        │
+│  Tier 1B: Anomaly Hunter skill (Claude, LLM, optional) → by-skill/  │
+│  Tier 2:  Timeline Analysis Agent (Claude) → synthesis, timeline, KC│
+│  Tier 3:  Reporter (Go) → HTML/CSV/JSON DFIR report (zero LLM)      │
 └────────────────────────────────────────────────────────────────────┘
                             │
                             ▼
-        outputs/cases/<ケースID>/                     outputs/cases.duckdb
-        ├── findings/*.json   ← 戦術別の発見事項        (イベント全件のDB)
-        ├── synthesis.json    ← 統合結果
-        ├── reports/          ← HTML/CSV/JSON レポート
-        └── actions.jsonl     ← 監査ログ
+        outputs/cases/<case-id>/                      outputs/cases.duckdb
+        ├── findings/*.json   ← findings by tactic     (DB of all events)
+        ├── synthesis.json    ← synthesis result
+        ├── reports/          ← HTML/CSV/JSON report
+        └── actions.jsonl     ← audit log
 ```
 
-### Web UI のページ階層
+### Web UI page hierarchy
 
 ```
-/  (ダッシュボード)
-└─ #/cases/<id>  (ケース詳細)
-   ├─ ?tab=findings   (発見事項 + Approve/Reject)
-   ├─ ?tab=timeline   (時系列 + Kill Chain)
-   ├─ ?tab=iocs       (侵害指標)
-   ├─ ?tab=mitre      (MITRE ATT&CK マップ)
-   ├─ ?tab=report     (HTML/CSV/JSON レポート)
-   └─ ?tab=audit      (操作履歴)
+/  (dashboard)
+└─ #/cases/<id>  (case detail)
+   ├─ ?tab=findings   (findings + Approve/Reject)
+   ├─ ?tab=timeline   (chronological + Kill Chain)
+   ├─ ?tab=iocs       (indicators of compromise)
+   ├─ ?tab=mitre      (MITRE ATT&CK map)
+   ├─ ?tab=report     (HTML/CSV/JSON report)
+   └─ ?tab=audit      (operation history)
 ```
 
-### Review Gate (人間の介入点)
+### Review Gates (human intervention points)
 
 ```
 Tier 0 ─→ [Gate 0] ─→ Tier 1A/1B ─→ [Gate 1A/1B] ─→ Tier 2 ─→ [Gate 2] ─→ Tier 3
             ↑                       ↑                       ↑
-            パーサ結果の              発見事項の               タイムラインの
-            確認                     Approve/Reject          確認
-                                    (Findings タブ)
+            review the              Approve/Reject          review the
+            parser results          the findings           timeline
+                                    (Findings tab)
 ```
 
-現在の Web UI で実装されているのは主に **Gate 1**(Findings タブの
-Approve/Reject)です。
+What is implemented in the current Web UI is mainly **Gate 1** (Approve/Reject
+in the Findings tab).
 
 ---
 
-**ご質問・改善要望は GitHub Issue または `examiner@example.com` まで。**
+**For questions or improvement requests, please use a GitHub Issue or
+`examiner@example.com`.**

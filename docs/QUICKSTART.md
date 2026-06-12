@@ -1,81 +1,94 @@
-# TLVB Quickstart — 自分で試してみる
+# TLVB Quickstart — Try It Yourself
 
-このドキュメントは「TLVB を実際に動かしてみたい」人向けの手順書です。
-SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI が
-入っていればどこでも動きます。
+This document is a step-by-step guide for anyone who wants to actually run TLVB.
+It assumes SIFT Workstation as the primary environment, but it works anywhere as
+long as Linux + the Claude Code CLI are installed.
 
-すべてのコマンドは **このリポジトリのクローン先で(リポジトリのルート)** 実行する前提で書いています。
-本文中のパスはすべてリポジトリルート相対表記です。
+*日本語版: [QUICKSTART.ja.md](QUICKSTART.ja.md)*
 
-所要時間の目安:
+Every command is written to be run from **the clone of this repository (the
+repository root)**. All paths in the body are relative to the repository root.
 
-| 項目 | 時間 | LLM 呼び出し |
+Estimated time:
+
+| Item | Time | LLM calls |
 |---|---|---|
-| 0a. ビルド + ヘルプ確認 | 2 分 | なし |
-| 0b. サンプル EVTX を取得 | 1 分 | なし |
-| 1. MCP サーバ経由で覗く | 5 分 | なし |
-| 2. Review Gate 1 を体験する | 5 分 | なし(Step 4 か 5 完了が前提) |
-| 3. 小さい新規ケースで `analyze --tier 1a` (任意で 1b) | 5–10 分 | Tier 1A なし / 1B 1 回 |
-| 4. 小さい新規ケースで全パイプライン (`run`) | 35 分 | あり (11 回) |
+| 0a. Build + verify help | 2 min | none |
+| 0b. Fetch sample EVTX | 1 min | none |
+| 1. Inspect via the MCP server | 5 min | none |
+| 2. Try out a Review Gate 1 | 5 min | none (requires Step 4 or 5 first) |
+| 3. `analyze --tier 1a` (optionally 1b) on a small new case | 5–10 min | none for Tier 1A / 1 call for 1B |
+| 4. The full pipeline (`run`) on a small new case | 35 min | yes (11 calls) |
 
 ---
 
-## 前提
+## Prerequisites
 
 ```bash
-which claude && claude --version    # Claude Code CLI(--engine claude-code 用、推奨)
-which go && go version              # Go 1.25.5+(apt install golang-go で OK)
+which claude && claude --version    # Claude Code CLI (for --engine claude-code, recommended)
+which go && go version              # Go 1.25.5+ (apt install golang-go is fine)
 which python3 && python3 --version  # 3.11+
-which dotnet && dotnet --version    # 9.x(EZ Tools 実行用)
-ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # 必須パーサ(SIFT 標準パス)
+which dotnet && dotnet --version    # 9.x (to run EZ Tools)
+ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # required parser (standard SIFT path)
 ```
 
-`ANTHROPIC_API_KEY` は **不要** です。Claude Code CLI のセッション認証を
-そのまま使うので、別途キーをセットしなくても LLM 呼び出しが走ります
-(API モードで動かしたい場合は `--engine anthropic-api` + `export ANTHROPIC_API_KEY=...`)。
+`ANTHROPIC_API_KEY` is **not required**. TLVB reuses the Claude Code CLI's session
+authentication as-is, so LLM calls go through without setting a separate key
+(if you want to run in API mode, use `--engine anthropic-api` +
+`export ANTHROPIC_API_KEY=...`).
 
 ---
 
-## 0a. ビルド (初回のみ)
+## 0a. Build (first time only)
 
 ```bash
-# リポジトリのクローン直後、ルートに居る前提
-./scripts/setup.sh           # 依存検証 + .venv 作成 + go build
+# Assumes you are at the root, right after cloning the repository
+./scripts/setup.sh           # verifies dependencies + creates .venv + go build
 ./bin/tlvb version
 # → tlvb 0.1.0-dev
 ```
 
-> Ubuntu 24.04 等で `python3-venv` 未導入のため `.venv` 作成に失敗する場合は
-> `./scripts/setup.sh --auto-install-deps` を渡すと sudo apt 越しに自動導入します
-> (それ以外のフラグなしの場合は手動導入を促すメッセージのみ)。
+> If `.venv` creation fails because `python3-venv` is not installed (e.g. on
+> Ubuntu 24.04), pass `./scripts/setup.sh --auto-install-deps` to install it
+> automatically via sudo apt (without that flag, you only get a message
+> prompting you to install it manually).
 
-> `--engine anthropic-api` を常用する場合は、リポジトリルートに `.env.local`
-> を置いて `ANTHROPIC_API_KEY=...` を書き、`tlvb serve --env-file .env.local`
-> で起動するとブラウザ UI からも自動的に API 経由で動きます。
+> If you routinely use `--engine anthropic-api`, place a `.env.local` at the
+> repository root containing `ANTHROPIC_API_KEY=...`, and start with
+> `tlvb serve --env-file .env.local`; the browser UI will then automatically
+> run via the API too.
 
-### 0a-bis. altpf (Prefetch primary engine) について
+### 0a-bis. About altpf (the Prefetch primary engine)
 
-Prefetch のパースは **altpf** (Linux ネイティブ Go、PECmd 互換 CSV、LastRun + PreviousRun0..6 完備、~1000x Plaso) が primary、Plaso `psteal.py` が fallback です。
+Prefetch parsing uses **altpf** (a native Linux Go tool, PECmd-compatible CSV,
+full LastRun + PreviousRun0..6, ~1000x faster than Plaso) as the primary engine,
+with Plaso `psteal.py` as the fallback.
 
-**`./scripts/setup.sh` を実行した時点で `/opt/altpf/altpf` に v0.5.1 が自動 install されています** (gh / curl で fetch → SHA-256 二段検証 → 設置、idempotent)。追加の手作業は不要です。
+**As soon as you run `./scripts/setup.sh`, v0.5.1 is automatically installed at
+`/opt/altpf/altpf`** (fetched via gh / curl → two-stage SHA-256 verification →
+installed, idempotent). No additional manual work is needed.
 
-特殊ケースだけ手動操作が必要です:
+Only special cases require manual operation:
 
 ```bash
-./scripts/install_altpf.sh --check          # 既設の verify だけ (download なし)
-./scripts/install_altpf.sh --force          # 再 install (バージョン更新したい時)
-./scripts/install_altpf.sh                  # setup でスキップされた時の手動再 install
+./scripts/install_altpf.sh --check          # verify only (no download)
+./scripts/install_altpf.sh --force          # reinstall (when you want to update the version)
+./scripts/install_altpf.sh                  # manual reinstall if setup skipped it
 ```
 
-altpf が無くてもパース自体は走ります (Plaso fallback / LastRun のみ)。どの経路で動いたかは **UI の Audit タブの parse コマンドで判別**できます: `command` 列が `/opt/altpf/altpf -d ...` なら altpf、`psteal.py --source ... --parsers prefetch` なら Plaso fallback です。
+Parsing still runs even without altpf (Plaso fallback / LastRun only). You can
+tell which path was used **from the parse command in the UI's Audit tab**: if the
+`command` column shows `/opt/altpf/altpf -d ...` it was altpf; if it shows
+`psteal.py --source ... --parsers prefetch` it was the Plaso fallback.
 
-ヘルプ:
+Help:
 
 ```bash
 ./bin/tlvb help
 ```
 
-サブコマンド一覧が出ます。各サブコマンドは `-h` で詳細フラグが出ます:
+This prints the list of subcommands. Each subcommand shows its detailed flags
+with `-h`:
 
 ```bash
 ./bin/tlvb analyze -h
@@ -83,42 +96,43 @@ altpf が無くてもパース自体は走ります (Plaso fallback / LastRun �
 ./bin/tlvb run -h
 ```
 
-## 0b. サンプル EVTX データを取得
+## 0b. Fetch sample EVTX data
 
-検証用には **公開コレクション** の
+For validation, the quickest path is the **public collection**
 [**EVTX-ATTACK-SAMPLES**](https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES)
-(MITRE ATT&CK Tactic 別に整理された約 200 evtx)を使うのが最短です。
+(about 200 evtx files organized by MITRE ATT&CK tactic).
 
 ```bash
-# 任意の場所に clone(SIFT 慣習なら /cases/、$HOME 配下でも OK)
-EVTX_DIR=./evtx-samples       # ← お好きなパスで
+# Clone anywhere you like (the SIFT convention is /cases/, but under $HOME is fine too)
+EVTX_DIR=./evtx-samples       # ← whatever path you prefer
 sudo mkdir -p "$(dirname $EVTX_DIR)" && sudo chown $USER "$(dirname $EVTX_DIR)" 2>/dev/null
 git clone https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES.git "$EVTX_DIR"
 
-# 確認
+# Verify
 ls "$EVTX_DIR/Persistence/" | head -3
 ```
 
-> **注**: 以後の手順で `$EVTX_DIR` と書いた箇所は、上で設定した変数を指します。
-> 別のシェルで作業する場合は再度 `export EVTX_DIR=...` してください。
-> 任意の `.evtx` ファイルが入った任意のディレクトリで動くので、Windows 機の
-> `C:\Windows\System32\winevt\Logs\` から取ってきた evtx でも構いません。
+> **Note**: Wherever the following steps write `$EVTX_DIR`, they refer to the
+> variable you set above. If you work in a different shell, run
+> `export EVTX_DIR=...` again.
+> It works on any directory containing any `.evtx` files, so evtx pulled from a
+> Windows machine's `C:\Windows\System32\winevt\Logs\` is fine too.
 
 ---
 
-## 1. MCP サーバ経由でケースを覗く (LLM 呼び出しなし)
+## 1. Inspect a case via the MCP server (no LLM calls)
 
-TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
-クライアントから繋げて、ケースの中身を read-only で問い合わせるのに
-使えます。
+TLVB's Tier 0 MCP server can be connected from Claude Code / Cursor / any MCP
+client to query the contents of a case read-only.
 
 ```bash
-# 起動 (stdio モード — クライアントから接続して使う)
+# Start it (stdio mode — connect to it from a client)
 ./bin/tlvb mcp-serve --log-level info
 ```
 
-サーバ単体で「JSON-RPC を 1 ターン送る」スモークテストを以下のように
-書けます(初回はケースが空なので `list_cases` の結果も空です):
+You can write a "send one JSON-RPC turn" smoke test against the server alone as
+follows (on the first run the case list is empty, so `list_cases` returns an
+empty result too):
 
 ```bash
 {
@@ -130,63 +144,63 @@ TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 } | ./bin/tlvb mcp-serve --log-level error 2>/dev/null | python3 -m json.tool
 ```
 
-公開ツール (全 19 — 主要 10 個を抜粋。全リストは上の `tools/list` 出力で確認):
+All 19 tools exposed — the 10 core ones below; see the `tools/list` output above for the full list:
 
-| Tool | 用途 |
+| Tool | Purpose |
 |---|---|
-| `list_artifacts` | サポートしているアーティファクト種別 |
-| `get_artifact_definition` | 1 アーティファクトの詳細定義 (caveats 含む) |
-| `list_cases` | 登録済みケース一覧 |
-| `get_case_status` | 1 ケースの詳細 + parse 結果 |
-| `list_evidence` | ケースの evidence 登録情報 |
-| `get_unified_events` | 解析済みイベントを SQL like フィルタで取得 |
-| `get_parse_result` | 個別パーサの実行コマンド・成否・stderr |
-| `list_findings` | ケース内の AI 発見事項を tactic / state でフィルタ |
-| `get_finding` | 1 finding の詳細(evidence 配列・confidence 等) |
-| `health` | サーバ生存確認 |
+| `list_artifacts` | the artifact types that are supported |
+| `get_artifact_definition` | detailed definition of one artifact (including caveats) |
+| `list_cases` | list of registered cases |
+| `get_case_status` | details of one case + parse results |
+| `list_evidence` | the evidence registered for a case |
+| `get_unified_events` | fetch parsed events with SQL-like filters |
+| `get_parse_result` | the exact command, success/failure, and stderr of an individual parser |
+| `list_findings` | filter the AI findings within a case by tactic / state |
+| `get_finding` | details of one finding (evidence array, confidence, etc.) |
+| `health` | server liveness check |
 
-**全部 read-only**。MCP 経由で `parse` / `analyze` を引き起こすことは
-構造的にできません (CLAUDE.md「`execute_shell` は MCP に絶対公開しない」)。
+**Everything is read-only.** It is structurally impossible to trigger `parse` /
+`analyze` over MCP (per CLAUDE.md: "never expose `execute_shell` over MCP").
 
 ---
 
-## 2. Review Gate を体験する (LLM 呼び出しなし)
+## 2. Try out a Review Gate (no LLM calls)
 
-> **主経路は Web UI の Review Gate 1A (署名 findings) / 1B (異常 findings)** です
-> (`tlvb serve` → Findings タブ)。これらは Tier 1A の `findings/by-rule/` と
-> Tier 1B の `findings/by-skill/` を読み、重要度ベースの自動承認やクラスタ単位の
-> 一括承認に対応します。
+> **The main path is the Web UI Review Gate 1A (signature findings) / 1B
+> (anomaly findings)** (`tlvb serve` → Findings tab). These read Tier 1A's
+> `findings/by-rule/` and Tier 1B's `findings/by-skill/`, and support
+> severity-based auto-approve and per-cluster bulk approval.
 >
-> 以下の CLI `tlvb review` は **legacy (TacticReport 形式) 専用**のデモで、
-> 新パイプライン (tier1a/1b) の findings は読めません。`tlvb analyze --legacy`
-> 系の tactic-agent findings がある場合のみ動きます。
-> (以下の例では `MY-TEST-001` を使います。)
+> The CLI `tlvb review` below is a demo for the **legacy (TacticReport) format
+> only**; it cannot read the new pipeline's (tier1a/1b) findings. It only works
+> when you have tactic-agent findings from the `tlvb analyze --legacy` family.
+> (The examples below use `MY-TEST-001`.)
 
 ```bash
-CASE=MY-TEST-001    # Step 3 / 4 で作ったケース ID に置き換える
+CASE=MY-TEST-001    # replace with the case ID you created in Step 3 / 4
 
-# 一部の findings ファイルだけコピーしてレビュー操作の対象にする
+# Copy just some of the findings files to use as the review target
 TEST=/tmp/tlvb-review-test
 mkdir -p $TEST/findings
 cp outputs/cases/$CASE/findings/persistence.json $TEST/findings/
 
-# レビューセッション開始 (10 finding ほど出てくる)
+# Start the review session (about 10 findings appear)
 ./bin/tlvb review $CASE \
     --findings-dir $TEST/findings \
     --examiner "$USER"
 ```
 
-操作キー:
+Keys:
 
-| キー | 動作 |
+| Key | Action |
 |---|---|
-| `a` | 承認 (`approved=true` を付与) |
-| `r` | 拒否 (`rejected=true` + reason 入力) |
-| `s` | スキップ (状態未変更) |
-| `S` | 残り全スキップ (状態未変更) |
-| `q` | 中断 (これまでの状態は保存) |
+| `a` | approve (sets `approved=true`) |
+| `r` | reject (sets `rejected=true` + prompts for a reason) |
+| `s` | skip (leaves state unchanged) |
+| `S` | skip all remaining (leaves state unchanged) |
+| `q` | abort (state so far is saved) |
 
-セッション終了後、ファイルにフラグが書かれているのを確認:
+After the session ends, confirm the flags were written to the file:
 
 ```bash
 python3 -c "
@@ -200,7 +214,7 @@ for f in r['findings']:
 "
 ```
 
-承認済みのみで HTML を再生成 (`--only-approved`):
+Regenerate the HTML from approved findings only (`--only-approved`):
 
 ```bash
 ./bin/tlvb synthesize $CASE \
@@ -213,56 +227,57 @@ for f in r['findings']:
     --format html
 ```
 
-`$TEST/reports/report.html` を任意のブラウザ(`xdg-open` / `firefox` / `chromium-browser`)
-で開くと、§5 Findings by Tactic は承認済みだけになります。
+Open `$TEST/reports/report.html` in any browser (`xdg-open` / `firefox` /
+`chromium-browser`); §5 Findings by Tactic will contain only the approved ones.
 
 ---
 
-## 3. 小さい新規ケースで Tier 1A を試す (LLM 呼び出しなし、任意で Tier 1B)
+## 3. Try Tier 1A on a small new case (no LLM calls, optionally Tier 1B)
 
-EVTX サンプル `Other` (~8 ファイル / 750 events) で Persistence Agent
-だけ走らせます。
+Run just the Persistence Agent over the EVTX sample `Other` (~8 files / 750
+events).
 
 ```bash
-# 0b で設定した EVTX_DIR を引き継ぎ
+# Carry over the EVTX_DIR you set in 0b
 EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 
-# 3-1: ケース登録
+# 3-1: register the case
 ./bin/tlvb case init \
     --case-id MY-TEST-001 \
     --name "first-test" \
     --examiner "$USER"
 
-# 3-2: Tier 0 — 8 EVTX をパースして DB に投入 (~3 秒)
+# 3-2: Tier 0 — parse the 8 EVTX files and load them into the DB (~3 s)
 ./bin/tlvb parse \
     --case-id MY-TEST-001 \
     --evidence-id EV-OTHER-001 \
     --input "$EVTX_DIR/Other" \
     --only evtx
 
-# 3-2-bis: 複数 Evidence を一発で登録したい場合は --inputs(★v0.3 #1)
+# 3-2-bis: to register multiple Evidence at once, use --inputs (★v0.3 #1)
 # ./bin/tlvb parse \
 #     --case-id MY-TEST-001 \
 #     --inputs "$EVTX_DIR/Other,$EVTX_DIR/Persistence" \
 #     --only evtx
 
-# 3-3: Tier 1A — キャッシュ済み署名 SQL を実行 (LLM 不要・数秒〜数十秒)
+# 3-3: Tier 1A — execute the cached signature SQL (no LLM, seconds to tens of seconds)
 ./bin/tlvb analyze MY-TEST-001 --tier 1a
 
-# 任意: Tier 1B — 異常ハンター (LLM、~数分)。API key 不要の claude CLI を使用
+# Optional: Tier 1B — the anomaly hunter (LLM, ~a few minutes). Uses the claude CLI, no API key needed
 ./bin/tlvb analyze MY-TEST-001 --tier 1b --skill anomaly_hunter
 
-# 3-4: 出力を見る (Tier 1A は by-rule/、Tier 1B は by-skill/)
+# 3-4: look at the output (Tier 1A is under by-rule/, Tier 1B under by-skill/)
 ls -R outputs/cases/MY-TEST-001/findings/
 cat outputs/cases/MY-TEST-001/findings/by-rule/sigma/*.json | python3 -m json.tool | head -50
 ```
 
-Tier 1A は LLM を呼ばないので API key も claude CLI も不要です。Tier 1B のみ
-LLM を使い、`claude` CLI があれば API key 無しで動きます。
+Tier 1A does not call the LLM, so it needs neither an API key nor the claude CLI.
+Only Tier 1B uses the LLM, and it runs without an API key if the `claude` CLI is
+present.
 
 ---
 
-## 4. 全パイプラインを試す (Tier 1A は LLM ゼロ / Tier 1B + Tier 2 で LLM 数回・〜$1・約 10 分)
+## 4. Try the full pipeline (Tier 1A is LLM-free / a few LLM calls across Tier 1B + Tier 2 · ~$1 · about 10 min)
 
 ```bash
 EVTX_DIR=${EVTX_DIR:-./evtx-samples}
@@ -274,7 +289,7 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
     --examiner "$USER"
 ```
 
-これ 1 コマンドで Tier 0→1A→1B→2→3 が走ります:
+This single command runs Tier 0→1A→1B→2→3:
 
 ```
 [run] case-init  ok  (new case)
@@ -286,31 +301,33 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 [run] DONE  case=MY-FULL-001  total=~8min
 ```
 
-1 段が失敗してもケース全体は止まりません — `[FAIL]` でログされて次へ進みます。
+If one stage fails, the case as a whole does not stop — it is logged with
+`[FAIL]` and the run moves on.
 
-途中段階だけスキップしたい時 (`--skip-1a` / `--skip-1b` / `--skip-2` / `--skip-report`):
+To skip only certain stages (`--skip-1a` / `--skip-1b` / `--skip-2` /
+`--skip-report`):
 
 ```bash
-# Tier 0 (parse) はもう済んでる、Tier 1A からやり直し
+# Tier 0 (parse) is already done, redo from Tier 1A
 ./bin/tlvb run MY-FULL-001 --tier all --skip-parse
 
-# Tier 1A/1B までは終わった、Tier 2 から
+# Tier 1A/1B are done, start from Tier 2
 ./bin/tlvb run MY-FULL-001 --tier all --skip-parse --skip-1a --skip-1b
 
-# Tier 2 の能動探索を有効化 (広域 SQL)
+# Enable Tier 2 active search (wide-range SQL)
 ./bin/tlvb run MY-FULL-001 --tier all --skip-parse --active-search
 ```
 
-完了後:
+When it finishes:
 
 ```bash
-# レポートを開く(GUI セッションのある端末から)
+# Open the report (from a machine with a GUI session)
 xdg-open outputs/cases/MY-FULL-001/reports/report.html
-# 上が動かなければブラウザを直接呼ぶ:
+# If that does not work, call the browser directly:
 #   firefox outputs/cases/MY-FULL-001/reports/report.html
 #   chromium-browser outputs/cases/MY-FULL-001/reports/report.html
 
-# DB の中身を確認
+# Check the contents of the DB
 python3 -c "
 import duckdb
 con = duckdb.connect('outputs/cases.duckdb', read_only=True)
@@ -319,20 +336,21 @@ print(con.execute('SELECT artifact_id, COUNT(*) FROM unified_events WHERE case_i
 "
 ```
 
-レポートの解説は `outputs/cases/MY-FULL-001/reports/HANDOFF.md` を併読
-してください。チームに HTML を配布する際もそのファイルを同梱します。
+For an explanation of the report, also read
+`outputs/cases/MY-FULL-001/reports/HANDOFF.md`. Include that file when you
+distribute the HTML to your team.
 
 ---
 
-## 5. 自分の Evidence で動かす
+## 5. Run it on your own evidence
 
-`$EVTX_DIR/Other` の代わりに、自分の調査対象を渡します。
-入力は **ディレクトリ または .zip** です(例: Washizukami-Collector や
-CDIR-Collector の出力 zip もそのまま渡せます — collector.log など
-auxiliary ファイルがあれば自動で拾います)。
+Instead of `$EVTX_DIR/Other`, pass your own investigation target. The input is
+**a directory or a .zip** (for example, you can pass the output zip from
+Washizukami-Collector or CDIR-Collector as-is — auxiliary files like
+collector.log are picked up automatically if present).
 
 ```bash
-# (例) 隔離済みのインシデント zip
+# (example) a quarantined incident zip
 ./bin/tlvb run INC-2026-9001 \
     --evidence /path/to/triage_collector.zip \
     --evidence-id EV-COLL-001 \
@@ -341,50 +359,50 @@ auxiliary ファイルがあれば自動で拾います)。
     --engine claude-code
 ```
 
-zip は `outputs/cases/<id>/extractions/extracted/` に展開されます (元
-ファイルは無変更)。
+The zip is extracted to `outputs/cases/<id>/extractions/extracted/` (the
+original files are left unchanged).
 
-検出可能アーティファクト(主要・抜粋):
+Detectable artifacts (key ones, excerpted):
 
-| 種別 | 検出パターン | 必要ファイル |
+| Type | Detection pattern | Required files |
 |---|---|---|
 | EVTX | `**/*.evtx` | Windows Event Logs |
-| Amcache | `**/Amcache.hve` | レジストリハイブ |
+| Amcache | `**/Amcache.hve` | registry hive |
 | Prefetch | `**/Prefetch/*.pf` | %SystemRoot%\Prefetch |
-| Registry | parent dir of `SOFTWARE`/`SYSTEM`/`NTUSER.DAT` 等 | レジストリハイブ群 |
-| Scheduled Tasks | `**/System32/Tasks/**` | XML タスクファイル |
-| Shimcache | `**/SYSTEM` (hive) | SYSTEM ハイブ |
+| Registry | parent dir of `SOFTWARE`/`SYSTEM`/`NTUSER.DAT`, etc. | registry hives |
+| Scheduled Tasks | `**/System32/Tasks/**` | XML task files |
+| Shimcache | `**/SYSTEM` (hive) | SYSTEM hive |
 | MFT | `**/$MFT` | $MFT |
-| LNK / Jumplists / Recycle Bin | 各種パターン | Windows shell artifact 群 |
-| Browser History | `**/User Data/*/History`、`**/Profiles/*/places.sqlite` | Chrome/Edge/Firefox |
-| Washizukami audit log | `**/collection.log` | Washizukami-Collector の出力 |
+| LNK / Jumplists / Recycle Bin | various patterns | Windows shell artifacts |
+| Browser History | `**/User Data/*/History`, `**/Profiles/*/places.sqlite` | Chrome/Edge/Firefox |
+| Washizukami audit log | `**/collection.log` | Washizukami-Collector output |
 
-含まれない種別は MVP 範囲外として無視されます (ログでスキップ表示)。
-全パーサ一覧は `config/artifacts.yaml` 参照。
+Types that are not included are ignored as out of MVP scope (shown as skipped in
+the log). For the full parser list, see `config/artifacts.yaml`.
 
 ---
 
-## 6. 既存ケースを再解析する
+## 6. Re-analyze an existing case
 
-ルールコーパスを再 build した / 新しいスキルを追加した、というケースで使えます:
+Useful when you have rebuilt the rule corpus or added a new skill:
 
 ```bash
-CASE=MY-FULL-001    # 自分のケース ID
+CASE=MY-FULL-001    # your case ID
 
-# Tier 1A を回し直す (キャッシュ署名 SQL、LLM 不要)
+# Re-run Tier 1A (cached signature SQL, no LLM)
 ./bin/tlvb analyze $CASE --tier 1a
 
-# 既存ケースに Tier 1B (anomaly_hunter) を追加で走らせる
+# Additionally run Tier 1B (anomaly_hunter) on an existing case
 ./bin/tlvb analyze $CASE --tier 1b --skill anomaly_hunter
 
-# Tier 2 で統合し直し (既定。--active-search で広域探索)
+# Re-synthesize with Tier 2 (default; use --active-search for wide-range exploration)
 ./bin/tlvb synthesize $CASE
 
-# レポート再生成 (既定で Tier 3)
+# Regenerate the report (Tier 3 by default)
 ./bin/tlvb report $CASE --format html,csv,json
 ```
 
-特定の Tier 1B スキル (lens) だけ再走:
+Re-run only a specific Tier 1B skill (lens):
 
 ```bash
 ./bin/tlvb analyze $CASE --tier 1b --skill credential_access
@@ -394,149 +412,171 @@ CASE=MY-FULL-001    # 自分のケース ID
 
 ---
 
-## 7. Web UI で全部やる
+## 7. Do it all in the Web UI
 
-CLI ではなく WebUI を使う場合:
+If you prefer the Web UI over the CLI:
 
 ```bash
 ./bin/tlvb serve --port 8080
-# → ブラウザで http://localhost:8080/
-# → リモート(VM 外)からアクセスする場合は http://<VM-IP>:8080/
+# → http://localhost:8080/ in your browser
+# → to access remotely (from outside the VM), use http://<VM-IP>:8080/
 ```
 
-WebUI 側では:
-- 新規ケース作成 → Parse → Analyze All → Synthesize → Generate Report が
-  4 ボタンで一直線(各ボタンの右に進捗バー + ETA)
-- Findings タブで Approve / Reject(= Review Gate 1)
-- Events タブで Review Gate 0(parse 結果の承認)
-- 浮動 💬 ボタンで TLVB Assistant チャット
+In the Web UI:
+- Create new case → Parse → Analyze All → Synthesize → Generate Report in a
+  straight line of 4 buttons (each button has a progress bar + ETA to its right)
+- Approve / Reject in the Findings tab (= Review Gate 1)
+- Review Gate 0 in the Events tab (approving parse results)
+- The floating 💬 button opens the TLVB Assistant chat
 
-詳細は `docs/USER_GUIDE.md` 参照。
+For details, see [`USER_GUIDE.md`](USER_GUIDE.md).
 
 ---
 
-## 8. うまく動かない時 (Troubleshooting)
+## 8. When things don't work (Troubleshooting)
 
 ### `claude: command not found`
-Claude Code CLI が PATH に無い。`/usr/bin/claude` か `~/.local/bin/claude`
-にあるか確認。なければ `npm install -g @anthropic-ai/claude-code` で導入。
-代替として `--engine anthropic-api` + `ANTHROPIC_API_KEY` 環境変数。
+The Claude Code CLI is not on PATH. Check whether it is at `/usr/bin/claude` or
+`~/.local/bin/claude`. If not, install it with
+`npm install -g @anthropic-ai/claude-code`. As an alternative, use
+`--engine anthropic-api` + the `ANTHROPIC_API_KEY` environment variable.
 
 ### `engine=anthropic-api requires ANTHROPIC_API_KEY`
-`--engine claude-code` を明示するか、`export ANTHROPIC_API_KEY=sk-ant-...`
-してから実行。
+Either pass `--engine claude-code` explicitly, or run
+`export ANTHROPIC_API_KEY=sk-ant-...` before invoking.
 
 ### `claude CLI failed (...): Not logged in · Please run /login`
-Claude Code に `--bare` を渡している、または初回起動。`claude` を
-インタラクティブに 1 回起動して `/login` するとセッションが生まれる。
+You are passing `--bare` to Claude Code, or this is the first launch. Start
+`claude` interactively once and run `/login` to create a session.
 
 ### `xdg-open: no method available`
-ヘッドレスシェル(Claude Code 経由など)からブラウザを起動できない。
-GUI 端末から `chromium-browser <path>` か `firefox <path>` を実行する、
-または `! chromium-browser <path>` を Claude Code プロンプトに打つ
-(`!` プレフィックス指示)。
+A browser cannot be launched from a headless shell (e.g. via Claude Code). Run
+`chromium-browser <path>` or `firefox <path>` from a GUI terminal, or type
+`! chromium-browser <path>` at the Claude Code prompt (the `!` prefix
+instruction).
 
 ### `dotnet: command not found`
-EZ Tools が動かない。`apt install -y dotnet-runtime-9.0` または
-SIFT 標準の `/usr/bin/dotnet` パスを確認。
+EZ Tools won't run. `apt install -y dotnet-runtime-9.0`, or check the standard
+SIFT path `/usr/bin/dotnet`.
 
 ### `error: externally-managed-environment` (PEP 668)
-Ubuntu 24.04+ で system pip が拒否される。`scripts/setup.sh` が
-`./.venv/` を作って `duckdb` をそこに入れます。venv モジュールが無ければ
-`sudo apt install python3-venv python3-full` を先に。
+The system pip is rejected on Ubuntu 24.04+. `scripts/setup.sh` creates
+`./.venv/` and installs `duckdb` there. If the venv module is missing, run
+`sudo apt install python3-venv python3-full` first.
 
 ### `case has no registered evidence`
-`tlvb parse` を先に走らせる(または WebUI から Parse ボタン)。
+Run `tlvb parse` first (or the Parse button in the Web UI).
 
-### Tier 1B (anomaly_hunter) が `status=partial` で終わる
-LLM が evidence 不足を保守的にマークした正常動作。`partial` 自体は
-失敗ではなく、Examiner レビューを促すサイン。
+### Tier 1B (anomaly_hunter) ends with `status=partial`
+Normal behavior: the LLM conservatively marked insufficient evidence. `partial`
+is not a failure in itself but a sign to prompt Examiner review.
 
-### Corrector が `retried_no_change` ばかり返す
-LLM が一貫した所見を持っているということ — 健全。整合性矛盾は
-Examiner の手調査が必要なケースとして残ります。
+### The Corrector keeps returning `retried_no_change`
+It means the LLM holds a consistent finding — which is healthy. Consistency
+contradictions remain as cases requiring the Examiner's manual investigation.
 
-### DuckDB lock エラー
-複数の `tlvb` プロセスが書き込みで開いている。`pkill tlvb`
-してから再実行。MCP サーバ + parse の同時実行で出ます。
+### DuckDB lock error
+Multiple `tlvb` processes have the DB open for writing. Run `pkill tlvb` and
+retry. This happens when the MCP server and a parse run concurrently.
 
-### Web UI Analyze All が 409 で弾かれる
-Review Gate 0 が未承認。Events タブで各 parse 結果を Approve するか、
-「Skip Review Gate 0」をチェック、または `?force=true` を URL に付ける。
+### The Web UI's Analyze All is rejected with 409
+Review Gate 0 is not yet approved. Approve each parse result in the Events tab,
+check "Skip Review Gate 0", or append `?force=true` to the URL.
 
-### Parse Results に mft / usn_journal / shellbags / browser_history が出ない (Wave 15 で解消)
-**Wave 15 以降は自動で対応済**。`Web/Chrome/Tanaka_Default_History` のような collector が prefix を付けた flatten 命名 (TANAKA / KAPE-NTFS bundled / FastIR 系) を、`parsers/_collector_prefix.py` の basename regex で吸収します。**それでも UI で見当たらない artifact** は次の 4 つのどれかです:
+### mft / usn_journal / shellbags / browser_history don't appear in Parse Results (resolved in Wave 15)
+**Resolved automatically from Wave 15 onward.** Collector-flattened naming that
+prepends a prefix, like `Web/Chrome/Tanaka_Default_History` (TANAKA /
+KAPE-NTFS bundled / FastIR families), is absorbed by the basename regex in
+`parsers/_collector_prefix.py`. **An artifact still not visible in the UI** is
+one of these four:
 
-- **🟢 OK**: バッジが緑なら parse 成功 (row_count > 0)
-- **🟡 EMPTY**: parse 成功したが 0 行 (collector がファイルだけ収集して中身が空、等)
-- **⚪ NOT_PRESENT**: 入力にそのアーティファクトが含まれていない (例: triage zip が `Users/*/AppData/` を収集していない → `jumplists` `lnk` `recyclebin` `win10timeline` は全部 NOT_PRESENT)。**バグではなく仕様**
-- **🔴 FAIL**: parser はインストールされていて入力にもファイルがあるが、parse 中にエラー (ファイル破損 / ツール無し等)
+- **🟢 OK**: a green badge means parse succeeded (row_count > 0)
+- **🟡 EMPTY**: parse succeeded but 0 rows (the collector gathered only the file
+  and its contents were empty, etc.)
+- **⚪ NOT_PRESENT**: the input does not contain that artifact (e.g. the triage
+  zip did not collect `Users/*/AppData/` → `jumplists` `lnk` `recyclebin`
+  `win10timeline` are all NOT_PRESENT). **This is by design, not a bug.**
+- **🔴 FAIL**: the parser is installed and the input has the files, but an error
+  occurred during parsing (corrupt file / missing tool, etc.)
 
-Wave 15 以前のバージョンでは検出漏れすると UI に「行が出ない」だけで判別できませんでしたが、現在は実装済 17 種すべてが必ず Parse Results に行を持ちます。
+In versions before Wave 15, a detection miss simply showed "no rows" in the UI
+with no way to tell why; now all 17 implemented types always have a row in Parse
+Results.
 
-### Prefetch のパースコマンドが `psteal.py` になっている / Events タブで engine=plaso
-**設計通りの fallback 経路です**。Prefetch primary は altpf (`/opt/altpf/altpf`)、altpf が未配置だと Plaso `psteal.py` に自動 fallback します (graceful degradation)。altpf を入れたい場合は:
+### The Prefetch parse command is `psteal.py` / engine=plaso in the Events tab
+**This is the fallback path, by design.** The Prefetch primary is altpf
+(`/opt/altpf/altpf`); if altpf is not installed, it falls back automatically to
+Plaso `psteal.py` (graceful degradation). To install altpf:
 
 ```bash
-./scripts/install_altpf.sh --check     # 現状確認
-./scripts/install_altpf.sh             # /opt/altpf/altpf を v0.5.1 で配置
+./scripts/install_altpf.sh --check     # check current state
+./scripts/install_altpf.sh             # install /opt/altpf/altpf at v0.5.1
 ```
 
-altpf 配置後に再 parse すると Audit タブの command 列が `/opt/altpf/altpf -d ...` に変わり、Events の `payload.engine` が `altpf` になります。altpf は LastRun + PreviousRun0..6 を独立した unified_event 行 (`run_kind` フィールドで識別) として展開するため、Plaso fallback (LastRun のみ) よりも実行履歴の解像度が高くなります。
+After installing altpf and re-parsing, the command column in the Audit tab
+changes to `/opt/altpf/altpf -d ...` and `payload.engine` in Events becomes
+`altpf`. Because altpf expands LastRun + PreviousRun0..6 into independent
+unified_event rows (identified by the `run_kind` field), it gives a higher
+resolution of execution history than the Plaso fallback (LastRun only).
 
 ---
 
-## 9. 主要パスの目印(リポジトリルート相対)
+## 9. Landmarks for the key paths (relative to repository root)
 
 ```
 ./
-├── bin/tlvb                       # ビルドした CLI
+├── bin/tlvb                       # the built CLI
 ├── outputs/
-│   ├── cases.duckdb                   # 全ケース横断 DB (read-only mostly)
-│   ├── rules.duckdb                    # Tier 1A ルール SQL キャッシュ
+│   ├── cases.duckdb                   # cross-case DB (mostly read-only)
+│   ├── rules.duckdb                    # Tier 1A rule SQL cache
 │   └── cases/<case_id>/
 │       ├── findings/
-│       │   ├── by-rule/<source>/<id>.json  # Tier 1A 署名 findings
-│       │   └── by-skill/<skill>.json       # Tier 1B 異常 findings
-│       ├── extractions/               # パーサ中間データ
+│       │   ├── by-rule/<source>/<id>.json  # Tier 1A signature findings
+│       │   └── by-skill/<skill>.json       # Tier 1B anomaly findings
+│       ├── extractions/               # parser intermediate data
 │       ├── synthesis.json             # Tier 2 CaseSynthesis
-│       ├── parse_review.json          # Review Gate 0 のステート
-│       ├── timeline_gate.json         # Review Gate 2 のステート
-│       ├── actions.jsonl              # 監査トレイル
+│       ├── parse_review.json          # Review Gate 0 state
+│       ├── timeline_gate.json         # Review Gate 2 state
+│       ├── actions.jsonl              # audit trail
 │       └── reports/
-│           ├── report.html            # メイン成果物 (Tier 3)
-│           ├── report.json            # 機械可読版
-│           ├── findings.csv           # Excel 取り込み用
+│           ├── report.html            # main deliverable (Tier 3)
+│           ├── report.json            # machine-readable version
+│           ├── findings.csv           # for Excel import
 │           ├── mitre.csv  clusters.csv
 │           ├── timeline.csv  ioc.csv
-│           └── HANDOFF.md             # 配布用説明
-├── skills/<skill>.md                  # Tier 1B スキル (既定 anomaly_hunter)
-├── config/artifacts.yaml              # アーティファクト定義
+│           └── HANDOFF.md             # distribution notes
+├── skills/<skill>.md                  # Tier 1B skills (default anomaly_hunter)
+├── config/artifacts.yaml              # artifact definitions
 ├── parsers/                           # Tier 0 (Python)
-├── internal/                          # Tier 1〜3 + web (Go)
+├── internal/                          # Tier 1–3 + web (Go)
 └── docs/
-    ├── DESIGN.md                      # 設計書 v0.3
-    ├── STATUS.md                      # 実装ステータストラッカー
-    ├── USER_GUIDE.md                  # 初心者向け完全ガイド + 用語集
-    ├── tool_inventory.md              # SIFT ツール検証結果
-    ├── valhuntir_analysis.md          # 参考リポジトリ分析
-    └── QUICKSTART.md                  # 本ファイル
+    ├── DESIGN.md                      # design document v0.3
+    ├── ARCHITECTURE.md                # end-to-end pipeline + security boundaries
+    ├── USER_GUIDE.md                  # complete beginner-friendly guide + glossary
+    ├── tool_inventory.md              # SIFT tool validation results
+    ├── valhuntir_analysis.md          # reference repository analysis
+    └── QUICKSTART.md                  # this file
 ```
 
-evidence(`$EVTX_DIR` や自分の調査対象 zip)は **read-only**。書き込まれる
-場所は **すべて `outputs/`** に集約されています(CLAUDE.md「証拠は read-only」)。
+The evidence (`$EVTX_DIR` or your own investigation zip) is **read-only**.
+Everything that gets written is consolidated entirely under **`outputs/`**
+(per CLAUDE.md: "evidence is read-only").
 
 ---
 
-## 10. 次のステップ
+## 10. Next steps
 
-- 自分の調査ケースで `tlvb run` を 1 度通す
-- HTML レポートをチームに配布(zip + SHA-256 確認 — `HANDOFF.md` 参照)
-- `skills/<skill>.md` (Tier 1B のレンズ) を自社の TTPs に合わせてカスタマイズ
-  (新しい観点のクエリ意図を足す)
-- `rules/custom/` に自社ルールを足して `tlvb rules build` で Tier 1A に反映
-- `config/artifacts.yaml` に独自パーサを追加(Linux syslog 等)
-- `internal/synthesizer/consistency.go` に独自ルール R5+ を追加
+- Run `tlvb run` once through with your own investigation case
+- Distribute the HTML report to your team (zip + verify SHA-256 — see
+  `HANDOFF.md`)
+- Customize `skills/<skill>.md` (the Tier 1B lenses) to your organization's TTPs
+  (add the query intent for a new perspective)
+- Add your own rules under `rules/custom/` and reflect them into Tier 1A with
+  `tlvb rules build`
+- Add your own parser to `config/artifacts.yaml` (Linux syslog, etc.)
+- Add your own rule R5+ to `internal/synthesizer/consistency.go`
 
-困ったら `docs/DESIGN.md`(システム設計書 v0.3)、`docs/STATUS.md`
-(実装トラッカー)、`docs/USER_GUIDE.md`(初心者向け完全ガイド)を併読してください。
+If you get stuck, read [`DESIGN.md`](DESIGN.md) (the system design document v0.3),
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (the end-to-end pipeline + security
+boundaries), and [`USER_GUIDE.md`](USER_GUIDE.md) (the complete beginner-friendly
+guide) together.
