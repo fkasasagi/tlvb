@@ -2,6 +2,47 @@
 
 All notable changes to TLVB.
 
+## [Unreleased]
+
+### Fixed — Tier 2/3 synthesis guardrails (issue #82)
+
+Deterministic, case-agnostic guardrails that stop four hallucination modes an
+external evaluation found. Prompt changes are auxiliary; the enforcement is in
+code so it holds regardless of LLM output.
+
+- **Timeline honesty (task 1):** a non-monotonic timeline (clusters a year+ apart
+  — provisioning / `Set-Date` correction) now sets `timeline_reliability:
+  "unreliable"` and is presented as "re-anchor required", never as an attacker
+  timestomp (`T1070.006`) or a fabricated re-intrusion. Added a benign-`4616`
+  classifier (`LOCAL SERVICE` / `SYSTEM` / W32Time). `internal/tier2/synthesis_guard.go`.
+- **Grounding (task 2):** the authoritative MITRE matrix (`mitre_mapping`) is now
+  derived **only** from findings (rule→technique); LLM-narrative techniques move
+  to a separate `mitre_unconfirmed` list and never inflate the matrix.
+  Non-standard technique IDs are rejected. Tool/technique names asserted in the
+  summary without finding backing (Mimikatz, web shell, Pass-the-Hash) are
+  surfaced as `ungrounded_mentions`.
+- **Initial access (task 3):** new deterministic detector reconstructs a
+  single-account `4625` burst → `4624` success as password guessing
+  (`T1110.001`); a successful NTLM logon is no longer mislabelled Pass-the-Hash
+  (`T1550.002`) without hash-theft evidence. `internal/tier2/bruteforce.go`.
+- **Consistency (task 4):** clusters classified benign (provisioning / temporal
+  outliers) are excluded from the attack MITRE matrix, preventing the same
+  boot/provisioning events being double-counted as attacker activity.
+- **Corroboration layer (real-case follow-up):** on the actual evaluation case
+  the misleading techniques were *real Sigma-rule matches with wrong tags* (a PnP
+  driver event matched "Antivirus Web Shell Detection"; "Pass the Hash Activity
+  2" fired on the brute-force success; "Unauthorized System Time Modification"
+  fired on the lab Set-Date), so finding-derived alone did not remove them. A
+  general corroboration layer (`splitCorroboratedMITRE`) now demotes high-impact,
+  FP-prone tags when the case lacks support: web shell / public-facing exploit
+  (T1190, T1505.003) with no web-server artifact; Pass-the-Hash (T1550.002)
+  explained by a detected brute-force burst; timestomp (T1070.006) on a reversed
+  clock. Demotions and reasons are recorded in `mitre_unconfirmed` /
+  `mitre_demotion_notes`. New `detectClockReversal` flags a same-day backward
+  clock step (4616) that the year-apart heuristic misses.
+- **Report (Tier 3):** timeline-reliability banner, ungrounded-mention caution,
+  and an "unconfirmed techniques" table (ja/en).
+
 ## [v0.1] — 2026-05-29
 
 🎉 **TLVB v0.1**: Tier 0/1A/1B/2/3 + 横断機能 (CLI / Web UI / MCP) を含む主要

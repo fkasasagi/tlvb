@@ -170,6 +170,34 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return rep, fmt.Errorf("enrich timestamps: %w", err)
 	}
 
+	// Deterministic initial-access reconstruction (issue #82, task 3): a
+	// single-account 4625 burst → 4624 success is password guessing (T1110.001)
+	// the signature corpus can miss. Best-effort — a DB/extract failure is logged
+	// and the pipeline continues.
+	gctx := groundingContext{BruteForcedAccounts: map[string]bool{}}
+	if bf, bfErr := detectBruteForceFindings(ctx, db, cfg.CaseID); bfErr != nil {
+		emit(cfg, Event{Phase: "loading",
+			Message: fmt.Sprintf("brute-force heuristic skipped: %v", bfErr)})
+	} else if len(bf) > 0 {
+		findings = append(findings, bf...)
+		rep.TotalFindings = len(findings)
+		gctx.BruteForcedAccounts = bruteForcedAccountsOf(bf)
+		emit(cfg, Event{Phase: "loading",
+			Message: fmt.Sprintf("brute-force heuristic added %d finding(s)", len(bf))})
+	}
+
+	// Grounding context for the corroboration layer (issue #82, tasks 1/2/4):
+	// whether the case has a web server (for web-shell / public-facing claims) and
+	// whether the clock was stepped backward (timeline non-monotonic). Best-effort.
+	if arts, aerr := listArtifacts(ctx, db, cfg.CaseID); aerr == nil {
+		gctx.HasWebArtifact = containsWebArtifact(arts)
+	}
+	if rev, rerr := detectClockReversal(ctx, db, cfg.CaseID); rerr == nil && rev {
+		gctx.ClockReversed = true
+		emit(cfg, Event{Phase: "loading",
+			Message: "clock reversal detected (4616 backward jump) — timeline flagged unreliable"})
+	}
+
 	emit(cfg, Event{Phase: "clustering",
 		Message: fmt.Sprintf("clustering %d findings with %v gap", len(findings), cfg.ClusterGap)})
 	clusters := ClusterFindings(findings, cfg.ClusterGap)
@@ -237,7 +265,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err2 != nil {
 		overallSkillBytes = skillBytes // fall back to the cluster skill if absent
 	}
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit)
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit, gctx.ClockReversed)
 	overallFallback := false
 	if err != nil {
 		// Fall back to a deterministic per-cluster stitch so the report
@@ -260,7 +288,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	emit(cfg, Event{Phase: "writing",
 		Message: fmt.Sprintf("writing %s", cfg.OutputPath)})
-	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit)
+	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit, cfg.Language, gctx)
 	cs.OverallStoryFallback = overallFallback
 	if !oqSynth.IsEmpty() {
 		cs.OpenQuestionsSynth = oqSynth
@@ -366,7 +394,10 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 	start := time.Now()
 	var audit SynthAudit
 	rep := &OverallRegenReport{OutputPath: cfg.OutputPath}
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit)
+	// Reuse the reliability the full run already stored to keep steering the
+	// regenerated summary away from clock-reversal hallucinations.
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit,
+		cs.TimelineReliability == "unreliable")
 	if err != nil {
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
@@ -560,7 +591,7 @@ func countOKSummaries(s []evidencex.FetchSummary) int {
 }
 
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
-	systemPrompt string, audit *SynthAudit) (string, error) {
+	systemPrompt string, audit *SynthAudit, clockReversed bool) (string, error) {
 
 	// The overall call aggregates EVERY cluster's narrative, so it routinely
 	// needs more wall-clock than a single per-cluster call. Giving it the flat
@@ -591,7 +622,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// token counters.
 	for attempt := 1; attempt <= 2; attempt++ {
 		compacted := attempt == 2
-		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language)
+		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, clockReversed)
 		if err != nil {
 			return "", err
 		}
@@ -1019,12 +1050,13 @@ ClusterContext:
 	return prelude + string(body), nil
 }
 
-func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool) (string, error) {
 	type clite struct {
 		ID               int      `json:"cluster_id"`
 		AttackPhase      string   `json:"attack_phase,omitempty"`
 		Narrative        string   `json:"narrative,omitempty"`
-		MITRETechniques  []string `json:"mitre_techniques,omitempty"`
+		MITRETechniques  []string `json:"mitre_techniques,omitempty"`  // finding-derived (confirmed)
+		MITREUnconfirmed []string `json:"mitre_unconfirmed,omitempty"` // LLM-suggested, no finding backing
 		WindowStart      string   `json:"window_start,omitempty"`
 		WindowEnd        string   `json:"window_end,omitempty"`
 		FindingCount     int      `json:"finding_count"`
@@ -1042,7 +1074,8 @@ func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang st
 			ID:               c.ID,
 			AttackPhase:      c.AttackPhase,
 			Narrative:        narrative,
-			MITRETechniques:  c.MITRETechniques,
+			MITRETechniques:  findingTechniqueUnion(c),
+			MITREUnconfirmed: clusterUnconfirmedTechniques(c),
 			FindingCount:     len(c.Findings),
 			IsNoiseCandidate: IsNoiseCluster(c.AttackPhase, c.Narrative) || temporalOutlier[i],
 		}
@@ -1062,8 +1095,24 @@ func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang st
 	if strings.ToLower(lang) == "en" {
 		langInst = "Output language: English."
 	}
-	return langInst + `
 
+	// Deterministic steering directives (issue #82): keep the executive summary
+	// grounded and prevent the clock-reversal → "attacker rewound time / re-intrusion"
+	// hallucination at generation time. These are derived facts, not prompt fluff.
+	var directives strings.Builder
+	directives.WriteString(`
+GROUNDING RULES (must follow):
+- Treat mitre_techniques as confirmed; treat mitre_unconfirmed as UNVERIFIED hypotheses — never assert them as fact and never present them as the attack's techniques.
+- Do NOT name a specific offensive tool (e.g. Mimikatz) or technique (e.g. web shell, Pass-the-Hash) unless a cluster narrative or finding explicitly supports it. If unsupported, omit it or mark it as an open question.
+- Do NOT claim credential theft / lateral movement / re-intrusion succeeded unless the evidence shows it; "evidence does not show X" is a valid statement.
+`)
+	if rel, notes := detectTimelineReliability(clusters, clockReversed, lang); rel == "unreliable" {
+		directives.WriteString("- TIMELINE RELIABILITY: UNRELIABLE. ")
+		directives.WriteString(strings.Join(notes, " "))
+		directives.WriteString("\n  Do NOT attribute time reversals/jumps to an attacker timestomp or a later re-intrusion. Treat them as re-anchoring / provisioning artifacts first.\n")
+	}
+
+	return langInst + directives.String() + `
 Below are the per-cluster narratives you produced for a Windows
 forensic case. Write a single 4-5 paragraph case-level story that connects
 them into one attack timeline. Mention concrete techniques, host names, and
@@ -1173,8 +1222,8 @@ func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (
 // synthesis assembly
 // ----------------------------------------------------------------------------
 
-func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
-	overall string, audit SynthAudit) CaseSynthesis {
+func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
+	overall string, audit SynthAudit, lang string, gctx groundingContext) CaseSynthesis {
 
 	execBrief, techSummary := splitExecBrief(overall)
 	cs := CaseSynthesis{
@@ -1190,15 +1239,16 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 
 	for _, c := range clusters {
 		sc := SynthCluster{
-			ID:              c.ID,
-			StartTS:         c.StartTS,
-			EndTS:           c.EndTS,
-			AttackPhase:     c.AttackPhase,
-			Narrative:       c.Narrative,
-			MITRETechniques: clusterTechniqueUnion(c),
-			OpenQuestions:   c.OpenQuestions,
-			ActiveSearch:    c.ActiveSearch,
-			EvidenceFetches: c.EvidenceFetches,
+			ID:               c.ID,
+			StartTS:          c.StartTS,
+			EndTS:            c.EndTS,
+			AttackPhase:      c.AttackPhase,
+			Narrative:        c.Narrative,
+			MITRETechniques:  findingTechniqueUnion(c),
+			MITREUnconfirmed: clusterUnconfirmedTechniques(c),
+			OpenQuestions:    c.OpenQuestions,
+			ActiveSearch:     c.ActiveSearch,
+			EvidenceFetches:  c.EvidenceFetches,
 		}
 		for _, f := range c.Findings {
 			prov, conf := ProvenanceForSource(f.Source)
@@ -1214,28 +1264,52 @@ func buildCaseSynthesis(caseID string, _ []Finding, clusters []Cluster,
 		cs.Clusters = append(cs.Clusters, sc)
 	}
 
-	cs.MITREMapping = buildMITREMapping(clusters)
+	// Authoritative matrix = finding-derived, then split by corroboration: tags a
+	// high-impact technique needs case-level support for (web shell with no web
+	// server, PtH explained by a brute-force burst, timestomp on a reversed clock)
+	// are demoted to unconfirmed rather than asserted (issue #82, tasks 1/2/4).
+	confirmed, demoted, demoteNotes := splitCorroboratedMITRE(buildMITREMapping(clusters), gctx, lang)
+	cs.MITREMapping = confirmed
+	cs.MITREUnconfirmed = append(buildUnconfirmedMITRE(clusters), demoted...)
+	cs.MITREDemotionNotes = demoteNotes
 	cs.OpenQuestions = mergeAllOpenQuestions(clusters)
+	cs.TimelineReliability, cs.TimelineNotes = detectTimelineReliability(clusters, gctx.ClockReversed, lang)
+	cs.UngroundedMentions = findUngroundedMentions(execBrief+"\n"+techSummary, findings)
 	return cs
 }
 
-// clusterTechniqueUnion merges the LLM-suggested techniques with the
-// deterministic technique IDs each finding already carries from the rule
-// corpus. The per-cluster LLM call frequently returns an empty
-// mitre_techniques list (or fails to parse), so without folding in the
-// finding-level techniques cluster.MITRETechniques — and therefore the
-// whole case MITRE mapping — comes out empty even when the findings are
-// clearly tagged. This is what made the report's mitre.csv and the Web UI
-// MITRE map render empty after an e2e run.
-func clusterTechniqueUnion(c Cluster) []string {
-	out := append([]string(nil), c.MITRETechniques...)
-	for _, f := range c.Findings {
-		out = mergeUnique(out, f.MITRETechniques)
+// isBenignCluster reports whether a cluster was AFFIRMATIVELY classified as
+// pre-existing system / provisioning activity and must therefore be excluded
+// from the attack MITRE matrix and IOC derivation (issue #82, task 4 — stop a
+// benign boot/provisioning cluster from being double-counted as attacker
+// action). Unlike IsNoiseCluster it does NOT treat a merely empty/unknown
+// AttackPhase as benign: "not yet analysed" is not the same as "benign", and
+// findings with rule-tagged techniques in an unphased cluster must still count.
+func isBenignCluster(c Cluster, temporalOutlier bool) bool {
+	if temporalOutlier {
+		return true
 	}
-	return out
+	if strings.TrimSpace(strings.ToLower(c.AttackPhase)) == "noise" {
+		return true
+	}
+	lower := strings.ToLower(c.Narrative)
+	for _, kw := range noiseNarrativeKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
+// buildMITREMapping builds the authoritative, case-wide MITRE matrix from the
+// DETERMINISTIC finding-derived techniques only (findingTechniqueUnion), never
+// from the cluster LLM's free-form mitre_techniques — those go to
+// MITREUnconfirmed. Clusters classified benign (provisioning / temporal
+// outliers) are excluded so their techniques don't inflate the attack matrix
+// (issue #82, tasks 2 + 4).
 func buildMITREMapping(clusters []Cluster) []MITREEntry {
+	outliers := temporalOutlierClusters(clusters)
+
 	// technique -> authoritative tactic, learned from finding rule_meta
 	// (preferred over the cluster's coarse AttackPhase).
 	techTactic := map[string]string{}
@@ -1259,8 +1333,11 @@ func buildMITREMapping(clusters []Cluster) []MITREEntry {
 		tactic   string
 	}
 	bucket := map[k]*v{}
-	for _, c := range clusters {
-		for _, t := range clusterTechniqueUnion(c) {
+	for i, c := range clusters {
+		if isBenignCluster(c, outliers[i]) {
+			continue
+		}
+		for _, t := range findingTechniqueUnion(c) {
 			key := k{technique: t}
 			if bucket[key] == nil {
 				bucket[key] = &v{clusters: map[int]struct{}{}}
@@ -1289,6 +1366,44 @@ func buildMITREMapping(clusters []Cluster) []MITREEntry {
 			FindingCount: vv.count,
 			ClusterIDs:   ids,
 		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FindingCount != out[j].FindingCount {
+			return out[i].FindingCount > out[j].FindingCount
+		}
+		return out[i].Technique < out[j].Technique
+	})
+	return out
+}
+
+// buildUnconfirmedMITRE aggregates the techniques the cluster LLM narratives
+// proposed but NO finding backs (clusterUnconfirmedTechniques). These are the
+// "参考 / unconfirmed" entries the report shows separately from the
+// finding-derived matrix so an LLM guess (web shell, Pass-the-Hash) is never
+// silently promoted to a confirmed technique (issue #82, task 2).
+func buildUnconfirmedMITRE(clusters []Cluster) []MITREEntry {
+	type v struct {
+		count    int
+		clusters map[int]struct{}
+	}
+	bucket := map[string]*v{}
+	for _, c := range clusters {
+		for _, t := range clusterUnconfirmedTechniques(c) {
+			if bucket[t] == nil {
+				bucket[t] = &v{clusters: map[int]struct{}{}}
+			}
+			bucket[t].count++
+			bucket[t].clusters[c.ID] = struct{}{}
+		}
+	}
+	out := make([]MITREEntry, 0, len(bucket))
+	for tech, vv := range bucket {
+		ids := make([]int, 0, len(vv.clusters))
+		for cid := range vv.clusters {
+			ids = append(ids, cid)
+		}
+		sort.Ints(ids)
+		out = append(out, MITREEntry{Technique: tech, FindingCount: vv.count, ClusterIDs: ids})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].FindingCount != out[j].FindingCount {

@@ -87,5 +87,25 @@ from the "affected" lists in the Executive Brief.
 - Do not attribute to a specific threat actor or nation-state
 - Do not speculate beyond what the cluster narratives state
 - Be honest about gaps — "evidence does not show X" is a valid statement
+
+## Grounding & timeline reliability (non-negotiable)
+
+The user message may carry `mitre_techniques` (confirmed, finding-derived),
+`mitre_unconfirmed` (LLM guesses with no finding backing), and explicit
+`GROUNDING RULES` / `TIMELINE RELIABILITY` directives. Obey them:
+
+- Treat `mitre_techniques` as confirmed; treat `mitre_unconfirmed` as
+  **unverified** — never present them as the attack's techniques.
+- **Do not name a specific tool** (e.g. Mimikatz) or technique (web shell,
+  Pass-the-Hash) unless a cluster narrative supports it. A LOLBin/`comsvcs.dll`
+  LSASS dump is not Mimikatz; failed-logons-then-success is brute force
+  (`T1110.001`), not Pass-the-Hash, unless hash-theft evidence exists.
+- Do not claim credential theft, lateral movement, or **re-intrusion**
+  succeeded unless the evidence shows it.
+- If the timeline is flagged **UNRELIABLE** (clock jumps / years-apart
+  clusters): do **not** describe an attacker "rewinding the clock" or a
+  "second phase / re-intrusion". State the timeline needs re-anchoring and
+  that the inconsistency is most likely provisioning / OS-setup / clock
+  correction, then focus on the activity that is actually attributable.
 - Return ONLY the two sections and the marker. No JSON, no markdown fences,
   no preamble.
