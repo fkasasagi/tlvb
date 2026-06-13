@@ -213,8 +213,8 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 画面の構成:
 
 1. **ヘッダー**: ケースID・名前・調査者・作成日時。右上に「Delete case」ボタン
-2. **パイプライン操作バー**: 4 つのボタン (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
-3. **タブバー**: 6 つのタブ (`Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
+2. **パイプライン操作バー**: **🤖 Autopilot** ボタン (ワンクリック一気通貫実行) と、その後に各ステージのボタン (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
+3. **タブバー**: 8 つのタブ (`Status` / `Events` / `Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
 
 > **削除について**: 「Delete case」を押すとデータベース上のケース情報と
 > 作業ディレクトリ(`outputs/cases/<id>/`)が消えます。
@@ -224,11 +224,22 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 
 > **2026-05 追加機能**:
 > - **複数 Evidence 同時パース** (Issue #1 / v0.3 #1) — Parse モーダルで `+ Add evidence` ボタンで何件でも追加可能
-> - **Auto-pilot トグル** (Issue #11/#12) — Parse / Analyze モーダルに「Review Gate 0 をスキップ」チェックボックス。ON で人間レビューを飛ばして次に進む
+> - **Review Gate 0 スキップ チェックボックス** (Issue #11/#12) — Parse / Analyze モーダルにあり、ON で parse 結果を自動承認して手動レビューを飛ばす(全パイプラインを走らせる下記の **🤖 Autopilot** ボタンとは別物)
 > - **キャンセルボタン** (Issue #8) — 各ステップ実行中、進捗ブロックの下に **`✕ cancel`** ボタンが表示。誤実行や暴走時に途中中断可能(進捗バーが灰色イタリックの `canceled` 表示に切替)
 > - **LLM アクセス事前警告** — Analyze モーダルを開いた時点で `.env.local` に LLM トランスポート(Anthropic API または Vertex AI)が未設定なら赤色警告が出ます(以前は実行後に発覚した)
 
-調査は 4 ステップです。順番に実行する必要があります。
+#### 最短ルート: 🤖 Autopilot (ワンクリック)
+
+操作バーの左端に **🤖 Autopilot** ボタンがあります。これは全パイプライン —
+Parse → Analyze All → Synthesize → Generate Report — をワンクリックで一気通貫
+実行し(両 Review Gate を自動スキップ)、findings・タイムライン・完成レポートまで
+仕上げます。証拠を指定して開始し、進捗は **Status** タブで追えます。手早く全体を
+見たいときはこれ、各段を人間が確認したいときは下の個別ボタンを使います。
+
+#### 段階実行 (Review Gate を挟む)
+
+下の各ステージボタンは同じパイプラインを 1 段ずつ、間に Review Gate を挟んで
+実行します。順番に実行する必要があります。
 
 ```
 [Parse]  →  [Analyze All]      →  [Synthesize]   →  [Generate Report]
@@ -253,6 +264,10 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 | Evidence ID | `EV-001` (省略時は自動採番) |
 
 処理時間: 証拠データの量によりますが、通常 5〜30 分。
+
+> Parse が終わると、パースされたアーティファクトが **Events** タブに表示され、
+> 解析の前にそこで承認/却下します(**Review Gate 0**)。「Review Gate 0 をスキップ」
+> をチェックすれば自動承認も可能。**Status** タブは全ステージの進捗をライブ表示します。
 
 #### Step 2: Analyze All (解析 — Tier 1A + 任意で Tier 1B)
 
@@ -761,8 +776,10 @@ tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 ```
 /  (ダッシュボード)
 └─ #/cases/<id>  (ケース詳細)
-   ├─ ?tab=findings   (発見事項 + Approve/Reject)
-   ├─ ?tab=timeline   (時系列 + Kill Chain)
+   ├─ ?tab=status     (パイプライン進捗のライブ表示)
+   ├─ ?tab=events     (パース済みイベント + Review Gate 0)
+   ├─ ?tab=findings   (発見事項 + Approve/Reject = Review Gate 1A)
+   ├─ ?tab=timeline   (時系列 + Kill Chain + Review Gate 2)
    ├─ ?tab=iocs       (侵害指標)
    ├─ ?tab=mitre      (MITRE ATT&CK マップ)
    ├─ ?tab=report     (HTML/CSV/JSON レポート)
@@ -779,8 +796,10 @@ Tier 0 ─→ [Gate 0] ─→ Tier 1A/1B ─→ [Gate 1A/1B] ─→ Tier 2 ─�
                                     (Findings タブ)
 ```
 
-現在の Web UI で実装されているのは主に **Gate 1**(Findings タブの
-Approve/Reject)です。
+現在の Web UI は **Gate 0**(Events タブで parse 結果を承認)・**Gate 1A/1B**
+(Findings タブで findings を Approve/Reject)・**Gate 2**(Timeline タブで
+タイムラインエントリを承認/却下)を実装しています。🤖 Autopilot ボタンは
+Gate 0 と Gate 2 を自動スキップして全自動で走ります。
 
 ---
 

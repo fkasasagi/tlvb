@@ -217,8 +217,8 @@ URL: `http://<host>:8080/#/cases/<case-id>`
 Screen layout:
 
 1. **Header**: case ID, name, investigator, creation timestamp. A "Delete case" button in the top right
-2. **Pipeline action bar**: four buttons (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
-3. **Tab bar**: six tabs (`Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
+2. **Pipeline action bar**: a **🤖 Autopilot** button (one-click end-to-end run), then the four per-stage buttons (`Parse` → `Analyze All` → `Synthesize` → `Generate Report`)
+3. **Tab bar**: eight tabs (`Status` / `Events` / `Findings` / `Timeline` / `IOC` / `MITRE Map` / `Report` / `Audit`)
 
 > **About deletion**: pressing "Delete case" removes the case information in
 > the database and the working directory (`outputs/cases/<id>/`).
@@ -228,11 +228,23 @@ Screen layout:
 
 > **Features added 2026-05**:
 > - **Parse multiple evidence at once** (Issue #1 / v0.3 #1) — in the Parse modal, the `+ Add evidence` button lets you add as many items as you like
-> - **Auto-pilot toggle** (Issue #11/#12) — a "skip Review Gate 0" checkbox in the Parse / Analyze modals. When ON, it skips human review and proceeds to the next step
+> - **Skip Review Gate 0 checkbox** (Issue #11/#12) — in the Parse / Analyze modals. When ON, it auto-approves the parse results and proceeds without manual review (not to be confused with the **🤖 Autopilot** button below, which runs the whole pipeline)
 > - **Cancel button** (Issue #8) — while each step is running, an **`✕ cancel`** button appears below the progress block. You can abort partway through in case of a mistaken run or a runaway (the progress bar switches to a gray italic `canceled` display)
 > - **Up-front LLM-access warning** — the moment you open the Analyze modal, a red warning appears if no LLM transport is configured in `.env.local` (Anthropic API or Vertex AI) (previously this only surfaced after running)
 
-The investigation has four steps. They must be run in order.
+#### Quick path: 🤖 Autopilot (one click)
+
+At the left of the action bar is a **🤖 Autopilot** button. It runs the whole
+pipeline — Parse → Analyze All → Synthesize → Generate Report — end to end in a
+single click, auto-skipping both Review Gates, and leaves you with findings, a
+timeline, and a finished report. Point it at your evidence, start it, and follow
+progress on the **Status** tab. Use this for a fast first look; use the
+individual buttons below when you want to review each stage as a human.
+
+#### Step by step (with the Review Gates)
+
+The four per-stage buttons run that same pipeline one stage at a time, with the
+Review Gates in between. They must be run in order.
 
 ```
 [Parse]  →  [Analyze All]      →  [Synthesize]   →  [Generate Report]
@@ -261,6 +273,11 @@ Input modal:
 
 Processing time: depends on the amount of evidence data, but typically
 5–30 minutes.
+
+> Once Parse finishes, the parsed artifacts appear in the **Events** tab, where
+> you approve/reject them (**Review Gate 0**) before analysis — or tick "skip
+> Review Gate 0" to auto-approve. The **Status** tab shows live progress for
+> every stage.
 
 #### Step 2: Analyze All (analysis — Tier 1A + optionally Tier 1B)
 
@@ -787,8 +804,10 @@ Security and forensics jargon, in the order it appeared in this document.
 ```
 /  (dashboard)
 └─ #/cases/<id>  (case detail)
-   ├─ ?tab=findings   (findings + Approve/Reject)
-   ├─ ?tab=timeline   (chronological + Kill Chain)
+   ├─ ?tab=status     (live pipeline progress)
+   ├─ ?tab=events     (parsed events + Review Gate 0)
+   ├─ ?tab=findings   (findings + Approve/Reject = Review Gate 1A)
+   ├─ ?tab=timeline   (chronological + Kill Chain + Review Gate 2)
    ├─ ?tab=iocs       (indicators of compromise)
    ├─ ?tab=mitre      (MITRE ATT&CK map)
    ├─ ?tab=report     (HTML/CSV/JSON report)
@@ -805,8 +824,10 @@ Tier 0 ─→ [Gate 0] ─→ Tier 1A/1B ─→ [Gate 1A/1B] ─→ Tier 2 ─�
                                     (Findings tab)
 ```
 
-What is implemented in the current Web UI is mainly **Gate 1** (Approve/Reject
-in the Findings tab).
+The current Web UI implements **Gate 0** (approve parse results in the Events
+tab), **Gate 1A/1B** (approve/reject findings in the Findings tab), and **Gate 2**
+(approve/reject timeline entries in the Timeline tab). The 🤖 Autopilot button
+auto-skips Gate 0 and Gate 2 for a hands-off run.
 
 ---
 
