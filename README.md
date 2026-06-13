@@ -5,7 +5,9 @@
 
 *日本語版: [README.ja.md](README.ja.md)*
 
-An autonomous IR agent that combines Sigma / Hayabusa / ATT&CK STIX rules with skills-driven anomaly detection to extract traces of an attack from Windows forensic artifacts, then has an LLM reconstruct the attack chain and emit HTML/CSV/JSON reports.
+An autonomous IR agent that combines Sigma / Hayabusa / ATT&CK STIX rules with skills-driven anomaly detection to extract traces of an attack from Windows disk-forensic artifacts, then has an LLM reconstruct the attack chain and emit HTML/CSV/JSON reports.
+
+**Scope — Windows disk forensics for incident response.** TLVB operates on **disk-resident** Windows artifacts (MFT, EVTX, registry, prefetch, amcache, shimcache, shellbags, jumplists, LNK, SRUM, browser history, web-server logs, …) acquired as a triage collection or disk image (E01 / raw / VMDK / VHD / VHDX). Live **memory forensics** and **network / packet (PCAP) forensics** are out of scope — memory- and Sysmon-dependent rules stay disabled unless those artifacts happen to be present in the evidence.
 
 ## Status
 

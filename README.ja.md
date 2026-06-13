@@ -6,8 +6,15 @@
 *English: [README.md](README.md)*
 
 Sigma / Hayabusa / ATT&CK STIX / skills-driven anomaly detection を組み合わせて、
-Windows フォレンジック・アーティファクトから攻撃の痕跡を抽出し、
+Windows のディスクフォレンジック・アーティファクトから攻撃の痕跡を抽出し、
 LLM が攻撃チェーンを再構成して HTML/CSV/JSON レポートまで吐く自律型 IR エージェント。
+
+**スコープ — Windows インシデント対応のディスクフォレンジック。** TLVB が対象とするのは
+**ディスク常駐**の Windows アーティファクト(MFT / EVTX / レジストリ / prefetch / amcache /
+shimcache / shellbags / jumplists / LNK / SRUM / ブラウザ履歴 / Web サーバログ 等)で、
+triage 収集物またはディスクイメージ(E01 / raw / VMDK / VHD / VHDX)として取得したものを解析する。
+ライブの**メモリフォレンジック**や**ネットワーク / パケット(PCAP)フォレンジック**は対象外
+(メモリ・Sysmon 依存ルールは、当該アーティファクトが証拠に含まれていない限り無効のまま)。
 
 ## 状態
 

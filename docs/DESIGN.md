@@ -8,6 +8,19 @@ Tier 0 / 1A (build + runtime + Hayabusa pass-through) / 1B (MVP + 強化済 pref
 
 ## 0. 設計思想
 
+### スコープ — Windows インシデント対応のディスクフォレンジック
+
+TLVB が対象とするのは、**Windows のサイバーインシデント対応文脈における
+ディスクフォレンジック**である。具体的には、triage 収集物またはディスクイメージ
+(E01 / raw / VMDK / VHD / VHDX)として取得した**ディスク常駐**アーティファクト
+(MFT / EVTX / レジストリ / prefetch / amcache / shimcache / shellbags / jumplists
+/ LNK / SRUM / ブラウザ履歴 / Web サーバログ 等)を解析対象とする。
+
+ライブの**メモリフォレンジック**および**ネットワーク / パケット(PCAP)フォレンジック**は
+デフォルトで対象外。メモリ・Sysmon 依存ルールはルール側に `requires_artifact` メタを
+保持し、当該アーティファクトが証拠に含まれていない限り runtime で skip する
+(後日 Sysmon あり/メモリありケースが来れば再 build 不要で自動 ON)。
+
 TLVB は moai(Windows フォレンジック自律 IR エージェント)の構造を引き継ぎつつ、
 **「シグネチャ駆動 SQL + 抽象観察 + タイムライン解析」** の 3 層を明確に分離した
 リエンジニア版である。moai との根本的な差分:
