@@ -30,8 +30,8 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	maxRowsPerCluster := fs.Int("max-rows-per-cluster", 300,
 		"raw timeline rows per cluster (stratified across artifacts)")
 	timeoutMinutes := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
-	activeSearch := fs.Bool("active-search", false,
-		"enable hypothesis-driven SQL pass per cluster (LLM proposes SQL to answer open_questions, executes against unified_events, then writes an addendum to the narrative)")
+	activeSearch := fs.Bool("active-search", true,
+		"hypothesis-driven SQL pass per cluster (LLM proposes SQL to answer open_questions, executes against unified_events, self-corrects/re-sequences, then writes an addendum). ON by default — Tier 2 is already LLM-driven; pass --active-search=false to disable for a cheaper/faster run")
 	maxSelfCorrect := fs.Int("max-self-correct", 2,
 		"active-search SQL self-correction rounds when a proposed query fails or returns all-NULL (0 = disable; the agent feeds the failure back to the LLM and re-runs the revised SQL)")
 	maxReframe := fs.Int("max-reframe", 1,

@@ -44,10 +44,11 @@ Tier 3   Reporter                                             🟢
 ./scripts/setup.sh
 
 # Run every tier in one command (evidence location is up to you:
-#  zip / disk image / triage directory). --active-search turns on the
-#  self-correcting, re-sequencing Tier 2 agent (the autonomy showcase:
-#  it fixes its own failed queries and pivots when a query finds nothing).
-./bin/tlvb run MY-CASE-001 --tier all --evidence /path/to/triage.zip --active-search
+#  zip / disk image / triage directory). Tier 2's self-correcting,
+#  re-sequencing active-search agent (the autonomy showcase: it fixes its own
+#  failed queries and pivots when a query finds nothing) runs BY DEFAULT;
+#  add --no-active-search for a cheaper, non-agentic run.
+./bin/tlvb run MY-CASE-001 --tier all --evidence /path/to/triage.zip
 
 # Or run the tiers step by step (setup.sh has already imported the Tier 1A SQL cache)
 ./bin/tlvb case init --case-id MY-CASE-001 --name "Sep IR" --examiner alice
