@@ -2,6 +2,35 @@
 
 All notable changes to TLVB.
 
+## [Unreleased]
+
+### Fixed — Tier 2/3 synthesis guardrails (issue #82)
+
+Deterministic, case-agnostic guardrails that stop four hallucination modes an
+external evaluation found. Prompt changes are auxiliary; the enforcement is in
+code so it holds regardless of LLM output.
+
+- **Timeline honesty (task 1):** a non-monotonic timeline (clusters a year+ apart
+  — provisioning / `Set-Date` correction) now sets `timeline_reliability:
+  "unreliable"` and is presented as "re-anchor required", never as an attacker
+  timestomp (`T1070.006`) or a fabricated re-intrusion. Added a benign-`4616`
+  classifier (`LOCAL SERVICE` / `SYSTEM` / W32Time). `internal/tier2/synthesis_guard.go`.
+- **Grounding (task 2):** the authoritative MITRE matrix (`mitre_mapping`) is now
+  derived **only** from findings (rule→technique); LLM-narrative techniques move
+  to a separate `mitre_unconfirmed` list and never inflate the matrix.
+  Non-standard technique IDs are rejected. Tool/technique names asserted in the
+  summary without finding backing (Mimikatz, web shell, Pass-the-Hash) are
+  surfaced as `ungrounded_mentions`.
+- **Initial access (task 3):** new deterministic detector reconstructs a
+  single-account `4625` burst → `4624` success as password guessing
+  (`T1110.001`); a successful NTLM logon is no longer mislabelled Pass-the-Hash
+  (`T1550.002`) without hash-theft evidence. `internal/tier2/bruteforce.go`.
+- **Consistency (task 4):** clusters classified benign (provisioning / temporal
+  outliers) are excluded from the attack MITRE matrix, preventing the same
+  boot/provisioning events being double-counted as attacker activity.
+- **Report (Tier 3):** timeline-reliability banner, ungrounded-mention caution,
+  and an "unconfirmed techniques" table (ja/en).
+
 ## [v0.1] — 2026-05-29
 
 🎉 **TLVB v0.1**: Tier 0/1A/1B/2/3 + 横断機能 (CLI / Web UI / MCP) を含む主要

@@ -273,6 +273,10 @@ type labelDict struct {
 	ClusterCount               string
 	ExecutiveSummary           string
 	ExecSummaryFallbackWarning string
+	TimelineUnreliableHeading  string
+	UngroundedHeading          string
+	MITREUnconfirmedHeading    string
+	MITREUnconfirmedNote       string
 	NoiseBadge                 string
 	MITREMapping               string
 	Technique                  string
@@ -396,6 +400,10 @@ var dictJA = labelDict{
 	ClusterCount:               "クラスタ数",
 	ExecutiveSummary:           "エグゼクティブサマリ",
 	ExecSummaryFallbackWarning: "⚠️ LLM による全体合成が失敗したため、このサマリは攻撃クラスタ要約の自動連結で代替されています。攻撃チェーンとしての論理構成は行われていません。人手でのレビューおよび Tier 2 の再実行を推奨します。",
+	TimelineUnreliableHeading:  "⚠️ タイムライン信頼性: 要再アンカー",
+	UngroundedHeading:          "⚠️ 結論中に finding の裏付けが無いツール/手法名が含まれます (未確認・要検証):",
+	MITREUnconfirmedHeading:    "未確認の technique (参考)",
+	MITREUnconfirmedNote:       "※ 以下は LLM が叙述で言及したが finding(rule→technique)の裏付けが無い technique です。確定したマッピングではなく、要検証の仮説として扱ってください。",
 	NoiseBadge:                 "ノイズ候補",
 	MITREMapping:               "MITRE ATT&CK マッピング",
 	Technique:                  "Technique",
@@ -513,6 +521,10 @@ var dictEN = labelDict{
 	ClusterCount:               "Cluster count",
 	ExecutiveSummary:           "Executive Summary",
 	ExecSummaryFallbackWarning: "⚠️ The LLM overall synthesis failed, so this summary is an auto-stitch of the attack-cluster narratives — it has NOT been composed into a coherent attack chain. Manual review and a Tier 2 re-run are recommended.",
+	TimelineUnreliableHeading:  "⚠️ Timeline reliability: re-anchoring required",
+	UngroundedHeading:          "⚠️ The summary names tools/techniques with no supporting finding (unconfirmed — verify):",
+	MITREUnconfirmedHeading:    "Unconfirmed techniques (for reference)",
+	MITREUnconfirmedNote:       "Note: the following techniques were mentioned in LLM narrative but are NOT backed by any finding (rule→technique). Treat them as hypotheses to verify, not as a confirmed mapping.",
 	NoiseBadge:                 "Likely noise",
 	MITREMapping:               "MITRE ATT&CK Mapping",
 	Technique:                  "Technique",
@@ -883,6 +895,15 @@ const htmlTemplate = `<!DOCTYPE html>
   {{if .IsExecutiveSummaryFallback}}
   <div class="disclaimer">{{.Dict.ExecSummaryFallbackWarning}}</div>
   {{end}}
+  {{if eq .Case.TimelineReliability "unreliable"}}
+  <div class="disclaimer">
+    <strong>{{.Dict.TimelineUnreliableHeading}}</strong>
+    <ul>{{range .Case.TimelineNotes}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+  {{if .Case.UngroundedMentions}}
+  <div class="disclaimer">{{.Dict.UngroundedHeading}} {{join .Case.UngroundedMentions}}</div>
+  {{end}}
   {{if .ExecBrief}}
   <div class="exec-brief">
     <h3>{{.Dict.ExecBriefHeading}}</h3>
@@ -1126,6 +1147,21 @@ const htmlTemplate = `<!DOCTYPE html>
       {{end}}
     </tbody>
   </table>
+  {{if .Case.MITREUnconfirmed}}
+  <h3>{{.Dict.MITREUnconfirmedHeading}}</h3>
+  <p class="derived-note">{{.Dict.MITREUnconfirmedNote}}</p>
+  <table>
+    <thead><tr><th>{{.Dict.Technique}}</th><th>{{.Dict.ClusterIDs}}</th></tr></thead>
+    <tbody>
+      {{range .Case.MITREUnconfirmed}}
+      <tr>
+        <td><a href="https://attack.mitre.org/techniques/{{.Technique}}/" target="_blank" rel="noopener">{{.Technique}}</a></td>
+        <td>{{range $i, $cid := .ClusterIDs}}{{if $i}}, {{end}}#{{$cid}}{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
 </section>
 {{end}}
 

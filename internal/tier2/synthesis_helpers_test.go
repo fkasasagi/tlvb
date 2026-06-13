@@ -7,11 +7,18 @@ import (
 
 // buildMITREMapping aggregates technique hits across clusters and is what
 // feeds the report's MITRE table, so its dedup/count/sort contract matters.
+// Since issue #82 the matrix is built ONLY from finding-derived techniques, so
+// the techniques here live on findings (the cluster LLM's free-form list no
+// longer feeds the matrix — see TestBuildMITREMappingDropsLLMOnly).
 func TestBuildMITREMapping(t *testing.T) {
 	clusters := []Cluster{
-		{ID: 1, AttackPhase: "execution", MITRETechniques: []string{"T1059", "T1003"}},
-		{ID: 2, AttackPhase: "credential-access", MITRETechniques: []string{"T1003"}},
-		{ID: 3, MITRETechniques: []string{"T1059"}},
+		{ID: 1, AttackPhase: "execution", Findings: []Finding{
+			{MITRETechniques: []string{"T1059", "T1003"}, MITRETactic: "execution"},
+		}},
+		{ID: 2, AttackPhase: "credential-access", Findings: []Finding{
+			{MITRETechniques: []string{"T1003"}, MITRETactic: "credential-access"},
+		}},
+		{ID: 3, Findings: []Finding{{MITRETechniques: []string{"T1059"}}}},
 	}
 	got := buildMITREMapping(clusters)
 

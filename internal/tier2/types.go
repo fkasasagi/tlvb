@@ -163,6 +163,24 @@ type CaseSynthesis struct {
 	// sniff remains only for synthesis.json written before this field.
 	OverallStoryFallback bool         `json:"overall_story_fallback,omitempty"`
 	MITREMapping         []MITREEntry `json:"mitre_mapping"`
+	// MITREUnconfirmed holds techniques the Tier 2 cluster LLM mentioned in its
+	// narrative but which NO Tier 1 finding (rule→technique) backs. They are kept
+	// separate from MITREMapping so the authoritative matrix stays finding-derived
+	// and unbacked LLM guesses are never silently promoted (issue #82, task 2).
+	MITREUnconfirmed []MITREEntry `json:"mitre_unconfirmed,omitempty"`
+	// TimelineReliability is "reliable" or "unreliable". "unreliable" means a
+	// deterministic check found the case timeline is internally inconsistent
+	// (clusters separated by clock jumps / years-apart provisioning activity), so
+	// any "attacker rewound the clock / re-intrusion" reading must be treated as a
+	// re-anchoring problem first, not as an anti-forensic attack (issue #82, task 1).
+	TimelineReliability string `json:"timeline_reliability,omitempty"`
+	// TimelineNotes carries the human-readable reasons behind TimelineReliability.
+	TimelineNotes []string `json:"timeline_notes,omitempty"`
+	// UngroundedMentions lists named offensive tools / techniques that appear in
+	// the executive/technical summary prose without any supporting finding. The
+	// report renders them as "unconfirmed" rather than asserting them (issue #82,
+	// task 2).
+	UngroundedMentions []string `json:"ungrounded_mentions,omitempty"`
 	// OpenQuestions is the flat, deduplicated union of every cluster's open
 	// questions (kept for backward compatibility and as the fallback view).
 	OpenQuestions []string `json:"open_questions,omitempty"`
@@ -198,15 +216,20 @@ func (o OpenQuestionsSynthesis) IsEmpty() bool {
 // SynthCluster is the cluster shape in synthesis.json. Drops the heavy
 // fields (raw timeline excerpt) — those stay only as Tier 2 input.
 type SynthCluster struct {
-	ID              int                  `json:"id"`
-	StartTS         time.Time            `json:"start_ts"`
-	EndTS           time.Time            `json:"end_ts"`
-	AttackPhase     string               `json:"attack_phase,omitempty"`
-	Narrative       string               `json:"narrative"`
-	FindingRefs     []FindingRef         `json:"finding_refs"`
-	MITRETechniques []string             `json:"mitre_techniques,omitempty"`
-	OpenQuestions   []string             `json:"open_questions,omitempty"`
-	ActiveSearch    []ActiveSearchResult `json:"active_search,omitempty"`
+	ID          int          `json:"id"`
+	StartTS     time.Time    `json:"start_ts"`
+	EndTS       time.Time    `json:"end_ts"`
+	AttackPhase string       `json:"attack_phase,omitempty"`
+	Narrative   string       `json:"narrative"`
+	FindingRefs []FindingRef `json:"finding_refs"`
+	// MITRETechniques is the finding-derived (confirmed) technique set for the
+	// cluster. MITREUnconfirmed holds techniques the cluster LLM narrative added
+	// that no finding backs — kept separate so the report can label them as
+	// inference rather than confirmed detection (issue #82, task 2).
+	MITRETechniques  []string             `json:"mitre_techniques,omitempty"`
+	MITREUnconfirmed []string             `json:"mitre_unconfirmed,omitempty"`
+	OpenQuestions    []string             `json:"open_questions,omitempty"`
+	ActiveSearch     []ActiveSearchResult `json:"active_search,omitempty"`
 	// EvidenceFetches surfaces, per cluster, which files the agent read from the
 	// disk image to reach its narrative (audit trail for Review Gate 2 / Web).
 	EvidenceFetches []evidencex.FetchSummary `json:"evidence_fetches,omitempty"`
@@ -235,6 +258,10 @@ func ProvenanceForSource(source string) (provenance, confidence string) {
 	switch source {
 	case "anomaly_hunter", "tier1b":
 		return "anomaly-llm", "inferred"
+	case "heuristic":
+		// Tier 2 deterministic heuristic over real logged events (e.g. the 4625
+		// brute-force burst detector). Not an LLM judgement — confirmed.
+		return "heuristic", "confirmed"
 	default: // sigma | hayabusa | stix | custom
 		return "signature", "confirmed"
 	}
