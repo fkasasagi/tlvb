@@ -174,14 +174,28 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	// single-account 4625 burst → 4624 success is password guessing (T1110.001)
 	// the signature corpus can miss. Best-effort — a DB/extract failure is logged
 	// and the pipeline continues.
+	gctx := groundingContext{BruteForcedAccounts: map[string]bool{}}
 	if bf, bfErr := detectBruteForceFindings(ctx, db, cfg.CaseID); bfErr != nil {
 		emit(cfg, Event{Phase: "loading",
 			Message: fmt.Sprintf("brute-force heuristic skipped: %v", bfErr)})
 	} else if len(bf) > 0 {
 		findings = append(findings, bf...)
 		rep.TotalFindings = len(findings)
+		gctx.BruteForcedAccounts = bruteForcedAccountsOf(bf)
 		emit(cfg, Event{Phase: "loading",
 			Message: fmt.Sprintf("brute-force heuristic added %d finding(s)", len(bf))})
+	}
+
+	// Grounding context for the corroboration layer (issue #82, tasks 1/2/4):
+	// whether the case has a web server (for web-shell / public-facing claims) and
+	// whether the clock was stepped backward (timeline non-monotonic). Best-effort.
+	if arts, aerr := listArtifacts(ctx, db, cfg.CaseID); aerr == nil {
+		gctx.HasWebArtifact = containsWebArtifact(arts)
+	}
+	if rev, rerr := detectClockReversal(ctx, db, cfg.CaseID); rerr == nil && rev {
+		gctx.ClockReversed = true
+		emit(cfg, Event{Phase: "loading",
+			Message: "clock reversal detected (4616 backward jump) — timeline flagged unreliable"})
 	}
 
 	emit(cfg, Event{Phase: "clustering",
@@ -251,7 +265,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err2 != nil {
 		overallSkillBytes = skillBytes // fall back to the cluster skill if absent
 	}
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit)
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit, gctx.ClockReversed)
 	overallFallback := false
 	if err != nil {
 		// Fall back to a deterministic per-cluster stitch so the report
@@ -274,7 +288,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	emit(cfg, Event{Phase: "writing",
 		Message: fmt.Sprintf("writing %s", cfg.OutputPath)})
-	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit, cfg.Language)
+	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit, cfg.Language, gctx)
 	cs.OverallStoryFallback = overallFallback
 	if !oqSynth.IsEmpty() {
 		cs.OpenQuestionsSynth = oqSynth
@@ -380,7 +394,10 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 	start := time.Now()
 	var audit SynthAudit
 	rep := &OverallRegenReport{OutputPath: cfg.OutputPath}
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit)
+	// Reuse the reliability the full run already stored to keep steering the
+	// regenerated summary away from clock-reversal hallucinations.
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit,
+		cs.TimelineReliability == "unreliable")
 	if err != nil {
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
@@ -574,7 +591,7 @@ func countOKSummaries(s []evidencex.FetchSummary) int {
 }
 
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
-	systemPrompt string, audit *SynthAudit) (string, error) {
+	systemPrompt string, audit *SynthAudit, clockReversed bool) (string, error) {
 
 	// The overall call aggregates EVERY cluster's narrative, so it routinely
 	// needs more wall-clock than a single per-cluster call. Giving it the flat
@@ -605,7 +622,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// token counters.
 	for attempt := 1; attempt <= 2; attempt++ {
 		compacted := attempt == 2
-		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language)
+		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, clockReversed)
 		if err != nil {
 			return "", err
 		}
@@ -1033,7 +1050,7 @@ ClusterContext:
 	return prelude + string(body), nil
 }
 
-func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool) (string, error) {
 	type clite struct {
 		ID               int      `json:"cluster_id"`
 		AttackPhase      string   `json:"attack_phase,omitempty"`
@@ -1089,7 +1106,7 @@ GROUNDING RULES (must follow):
 - Do NOT name a specific offensive tool (e.g. Mimikatz) or technique (e.g. web shell, Pass-the-Hash) unless a cluster narrative or finding explicitly supports it. If unsupported, omit it or mark it as an open question.
 - Do NOT claim credential theft / lateral movement / re-intrusion succeeded unless the evidence shows it; "evidence does not show X" is a valid statement.
 `)
-	if rel, notes := detectTimelineReliability(clusters, lang); rel == "unreliable" {
+	if rel, notes := detectTimelineReliability(clusters, clockReversed, lang); rel == "unreliable" {
 		directives.WriteString("- TIMELINE RELIABILITY: UNRELIABLE. ")
 		directives.WriteString(strings.Join(notes, " "))
 		directives.WriteString("\n  Do NOT attribute time reversals/jumps to an attacker timestomp or a later re-intrusion. Treat them as re-anchoring / provisioning artifacts first.\n")
@@ -1206,7 +1223,7 @@ func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (
 // ----------------------------------------------------------------------------
 
 func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
-	overall string, audit SynthAudit, lang string) CaseSynthesis {
+	overall string, audit SynthAudit, lang string, gctx groundingContext) CaseSynthesis {
 
 	execBrief, techSummary := splitExecBrief(overall)
 	cs := CaseSynthesis{
@@ -1247,10 +1264,16 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 		cs.Clusters = append(cs.Clusters, sc)
 	}
 
-	cs.MITREMapping = buildMITREMapping(clusters)
-	cs.MITREUnconfirmed = buildUnconfirmedMITRE(clusters)
+	// Authoritative matrix = finding-derived, then split by corroboration: tags a
+	// high-impact technique needs case-level support for (web shell with no web
+	// server, PtH explained by a brute-force burst, timestomp on a reversed clock)
+	// are demoted to unconfirmed rather than asserted (issue #82, tasks 1/2/4).
+	confirmed, demoted, demoteNotes := splitCorroboratedMITRE(buildMITREMapping(clusters), gctx, lang)
+	cs.MITREMapping = confirmed
+	cs.MITREUnconfirmed = append(buildUnconfirmedMITRE(clusters), demoted...)
+	cs.MITREDemotionNotes = demoteNotes
 	cs.OpenQuestions = mergeAllOpenQuestions(clusters)
-	cs.TimelineReliability, cs.TimelineNotes = detectTimelineReliability(clusters, lang)
+	cs.TimelineReliability, cs.TimelineNotes = detectTimelineReliability(clusters, gctx.ClockReversed, lang)
 	cs.UngroundedMentions = findUngroundedMentions(execBrief+"\n"+techSummary, findings)
 	return cs
 }

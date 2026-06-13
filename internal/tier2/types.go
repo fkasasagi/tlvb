@@ -163,11 +163,17 @@ type CaseSynthesis struct {
 	// sniff remains only for synthesis.json written before this field.
 	OverallStoryFallback bool         `json:"overall_story_fallback,omitempty"`
 	MITREMapping         []MITREEntry `json:"mitre_mapping"`
-	// MITREUnconfirmed holds techniques the Tier 2 cluster LLM mentioned in its
-	// narrative but which NO Tier 1 finding (rule→technique) backs. They are kept
-	// separate from MITREMapping so the authoritative matrix stays finding-derived
-	// and unbacked LLM guesses are never silently promoted (issue #82, task 2).
+	// MITREUnconfirmed holds techniques that are NOT asserted as confirmed: either
+	// the Tier 2 cluster LLM proposed them with no finding backing, or a
+	// finding-derived technique was demoted because the case lacks the
+	// corroboration a high-impact, FP-prone tag needs (web shell with no web
+	// server, Pass-the-Hash explained by a brute-force burst, timestomp on an
+	// unreliable clock). Kept separate so the authoritative matrix is not inflated
+	// by misleading signature tags (issue #82, tasks 2-4).
 	MITREUnconfirmed []MITREEntry `json:"mitre_unconfirmed,omitempty"`
+	// MITREDemotionNotes explains, in human-readable form, why finding-derived
+	// techniques were demoted to MITREUnconfirmed. Empty when nothing was demoted.
+	MITREDemotionNotes []string `json:"mitre_demotion_notes,omitempty"`
 	// TimelineReliability is "reliable" or "unreliable". "unreliable" means a
 	// deterministic check found the case timeline is internally inconsistent
 	// (clusters separated by clock jumps / years-apart provisioning activity), so

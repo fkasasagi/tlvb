@@ -22,7 +22,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		},
 	}
 	// Without compaction: narrative preserved as-is.
-	full, err := buildOverallUserMessage(clusters, false, "ja")
+	full, err := buildOverallUserMessage(clusters, false, "ja", false)
 	if err != nil {
 		t.Fatalf("full: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		t.Error("non-compact build should preserve full narrative")
 	}
 	// With compaction: narrative truncated to 1500 + marker.
-	compact, err := buildOverallUserMessage(clusters, true, "ja")
+	compact, err := buildOverallUserMessage(clusters, true, "ja", false)
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestOverallSynthTimeout(t *testing.T) {
 	if got := overallSynthTimeout(base, 1); got != 10*time.Minute+30*time.Second {
 		t.Errorf("1 cluster: got %v", got)
 	}
-	// 11 clusters (tamu2_3): 10m + 5m30s = 15m30s — comfortably above the flat
+	// 11 clusters (advm2_3): 10m + 5m30s = 15m30s — comfortably above the flat
 	// 5-min budget that caused the timeout-driven fallback.
 	if got := overallSynthTimeout(base, 11); got != 15*time.Minute+30*time.Second {
 		t.Errorf("11 clusters: got %v", got)
@@ -270,7 +270,7 @@ func TestBuildOverallUserMessageValidJSON(t *testing.T) {
 		{ID: 1, AttackPhase: "execution", Narrative: "a"},
 		{ID: 2, AttackPhase: "impact", Narrative: "b"},
 	}
-	msg, err := buildOverallUserMessage(clusters, false, "ja")
+	msg, err := buildOverallUserMessage(clusters, false, "ja", false)
 	if err != nil {
 		t.Fatal(err)
 	}

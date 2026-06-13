@@ -28,6 +28,18 @@ code so it holds regardless of LLM output.
 - **Consistency (task 4):** clusters classified benign (provisioning / temporal
   outliers) are excluded from the attack MITRE matrix, preventing the same
   boot/provisioning events being double-counted as attacker activity.
+- **Corroboration layer (real-case follow-up):** on the actual evaluation case
+  the misleading techniques were *real Sigma-rule matches with wrong tags* (a PnP
+  driver event matched "Antivirus Web Shell Detection"; "Pass the Hash Activity
+  2" fired on the brute-force success; "Unauthorized System Time Modification"
+  fired on the lab Set-Date), so finding-derived alone did not remove them. A
+  general corroboration layer (`splitCorroboratedMITRE`) now demotes high-impact,
+  FP-prone tags when the case lacks support: web shell / public-facing exploit
+  (T1190, T1505.003) with no web-server artifact; Pass-the-Hash (T1550.002)
+  explained by a detected brute-force burst; timestomp (T1070.006) on a reversed
+  clock. Demotions and reasons are recorded in `mitre_unconfirmed` /
+  `mitre_demotion_notes`. New `detectClockReversal` flags a same-day backward
+  clock step (4616) that the year-apart heuristic misses.
 - **Report (Tier 3):** timeline-reliability banner, ungrounded-mention caution,
   and an "unconfirmed techniques" table (ja/en).
 

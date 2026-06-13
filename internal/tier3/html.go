@@ -1150,6 +1150,9 @@ const htmlTemplate = `<!DOCTYPE html>
   {{if .Case.MITREUnconfirmed}}
   <h3>{{.Dict.MITREUnconfirmedHeading}}</h3>
   <p class="derived-note">{{.Dict.MITREUnconfirmedNote}}</p>
+  {{if .Case.MITREDemotionNotes}}
+  <ul class="derived-note">{{range .Case.MITREDemotionNotes}}<li>{{.}}</li>{{end}}</ul>
+  {{end}}
   <table>
     <thead><tr><th>{{.Dict.Technique}}</th><th>{{.Dict.ClusterIDs}}</th></tr></thead>
     <tbody>

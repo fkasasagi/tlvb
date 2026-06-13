@@ -108,14 +108,18 @@ func timeChangeSubjectBenign(subjectSID, subjectUser string) bool {
 // timeline is internally inconsistent and any "attacker manipulated the clock /
 // re-entered later" reading should be treated as a re-anchoring problem first.
 //
-// The deterministic signal is a cluster whose time window sits more than a year
-// from the median cluster (temporalOutlierClusters) — the fingerprint of
-// provisioning / VM-creation activity or a Set-Date correction bundled into the
-// same case as the real incident, where record order and timestamp order
-// diverge. No threshold from the evaluation case is hard-coded.
-func detectTimelineReliability(clusters []Cluster, lang string) (string, []string) {
+// Two deterministic signals, either of which makes the timeline unreliable:
+//   - a cluster whose time window sits more than a year from the median cluster
+//     (temporalOutlierClusters) — provisioning / VM-creation bundled into the
+//     same case, where record order and timestamp order diverge; and
+//   - a clock reversal (a Security 4616 whose time was stepped backward beyond a
+//     threshold — clockReversed, computed from the raw events). This catches the
+//     same-day "16 hours back" lab Set-Date that the year-apart heuristic misses.
+//
+// No threshold from the evaluation case is hard-coded.
+func detectTimelineReliability(clusters []Cluster, clockReversed bool, lang string) (string, []string) {
 	outliers := temporalOutlierClusters(clusters)
-	any := false
+	any := clockReversed
 	for _, o := range outliers {
 		if o {
 			any = true
@@ -258,4 +262,116 @@ func findingTechniqueSet(findings []Finding) map[string]bool {
 		}
 	}
 	return set
+}
+
+// groundingContext carries the case-level facts the corroboration layer needs.
+// Computed once per run from the events/findings, never from a specific case's
+// values.
+type groundingContext struct {
+	// HasWebArtifact is true when the case contains any web-server artifact
+	// (IIS/Apache/nginx/Tomcat). A web shell / public-facing-app exploit cannot
+	// be confirmed without one.
+	HasWebArtifact bool
+	// BruteForcedAccounts is the set of accounts (lowercased, domain-stripped)
+	// for which a 4625 burst was detected — i.e. whose successful logon is
+	// explained by password guessing, not Pass-the-Hash.
+	BruteForcedAccounts map[string]bool
+	// ClockReversed is true when a Security 4616 stepped the clock backward
+	// beyond the reversal threshold — the timeline is non-monotonic.
+	ClockReversed bool
+}
+
+// webServerArtifacts are the artifact_ids that evidence a web server in the case.
+var webServerArtifacts = map[string]bool{
+	"w3c_iis": true, "iis_module": true,
+	"apache_access": true, "apache_error": true,
+	"nginx": true, "nginx_access": true, "nginx_error": true,
+	"tomcat": true,
+}
+
+func containsWebArtifact(arts []string) bool {
+	for _, a := range arts {
+		if webServerArtifacts[strings.ToLower(strings.TrimSpace(a))] {
+			return true
+		}
+	}
+	return false
+}
+
+// techniqueDemotionReason decides whether a finding-derived technique should be
+// demoted from the confirmed matrix because the case lacks the corroboration the
+// technique needs. These are general DFIR principles, NOT case-specific values:
+//
+//   - T1190 / T1505.003 (public-facing exploit / web shell) require a web server
+//     in the case — you cannot have a web shell with no web server (the
+//     evaluation case's "Antivirus Web Shell Detection" hit actually matched an
+//     unrelated PnP driver event);
+//   - T1550.002 (Pass-the-Hash) is demoted when the same environment shows a
+//     brute-force burst — the NTLM success is then password authentication, and
+//     PtH needs separate hash-theft/use evidence (issue #82, task 3);
+//   - T1070.006 (timestomp / clock change) is demoted when the timeline carries a
+//     clock reversal — the change is explained by provisioning / Set-Date and
+//     cannot be confirmed as an attacker anti-forensic act (issue #82, task 1).
+//
+// Returns (reason, true) to demote, ("", false) to keep confirmed.
+func techniqueDemotionReason(tech string, ctx groundingContext, ja bool) (string, bool) {
+	switch tech {
+	case "T1190", "T1505.003":
+		if !ctx.HasWebArtifact {
+			if ja {
+				return tech + ": Web サーバ由来アーティファクト (IIS/Apache/nginx 等) がケースに存在せず、Web シェル/公開アプリ侵害を裏付けられないため未確認に降格。", true
+			}
+			return tech + ": no web-server artifact (IIS/Apache/nginx) in the case to corroborate a web shell / public-facing-app exploit — demoted to unconfirmed.", true
+		}
+	case "T1550.002":
+		if len(ctx.BruteForcedAccounts) > 0 {
+			if ja {
+				return tech + ": 同一環境でパスワード推測 (4625 バースト→成功) を検出。NTLM 成功はパスワード認証で説明可能で、ハッシュ窃取/利用の具体証跡が無いため Pass-the-Hash を未確認に降格。", true
+			}
+			return tech + ": password guessing (4625 burst→success) was detected; the NTLM logon is password authentication, and no hash-theft/use evidence confirms Pass-the-Hash — demoted to unconfirmed.", true
+		}
+	case "T1070.006":
+		if ctx.ClockReversed {
+			if ja {
+				return tech + ": タイムラインに時刻巻き戻し (4616 後方ジャンプ) があり、プロビジョニング/時刻補正で説明可能。攻撃者の timestomp と断定できないため未確認に降格。", true
+			}
+			return tech + ": the timeline has a clock reversal (4616 backward jump) explainable by provisioning / time correction — not confirmable as an attacker timestomp, demoted to unconfirmed.", true
+		}
+	}
+	return "", false
+}
+
+// splitCorroboratedMITRE partitions the finding-derived matrix into the entries
+// that stay confirmed and the entries demoted to unconfirmed for lack of
+// corroboration, returning the demotion reasons for the report.
+func splitCorroboratedMITRE(entries []MITREEntry, ctx groundingContext, lang string) (keep, demoted []MITREEntry, notes []string) {
+	ja := strings.ToLower(lang) != "en"
+	for _, e := range entries {
+		if reason, demote := techniqueDemotionReason(e.Technique, ctx, ja); demote {
+			demoted = append(demoted, e)
+			notes = append(notes, reason)
+			continue
+		}
+		keep = append(keep, e)
+	}
+	return keep, demoted, notes
+}
+
+// bruteForcedAccountsOf collects the accounts a brute-force heuristic finding
+// attributed a burst to (from the synthetic finding's evidence).
+func bruteForcedAccountsOf(findings []Finding) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range findings {
+		if f.RuleID != "TLVB-BRUTEFORCE-4625" {
+			continue
+		}
+		for _, e := range f.Evidence {
+			if u, ok := e.Extra["TargetUserName"].(string); ok {
+				if n := normUser(u); n != "" {
+					out[n] = true
+				}
+			}
+		}
+	}
+	return out
 }

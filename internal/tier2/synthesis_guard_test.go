@@ -94,8 +94,13 @@ func TestDetectTimelineReliability(t *testing.T) {
 		{ID: 2, StartTS: base.Add(time.Hour), EndTS: base.Add(time.Hour)},
 		{ID: 3, StartTS: base.Add(2 * time.Hour), EndTS: base.Add(2 * time.Hour)},
 	}
-	if r, _ := detectTimelineReliability(reliable, "en"); r != "reliable" {
+	if r, _ := detectTimelineReliability(reliable, false, "en"); r != "reliable" {
 		t.Errorf("monotonic clusters should be reliable, got %q", r)
+	}
+
+	// A same-day clock reversal (no year-apart cluster) still makes it unreliable.
+	if r, notes := detectTimelineReliability(reliable, true, "en"); r != "unreliable" || len(notes) == 0 {
+		t.Errorf("clock reversal should make timeline unreliable with notes, got %q/%d", r, len(notes))
 	}
 
 	withOutlier := []Cluster{
@@ -103,7 +108,7 @@ func TestDetectTimelineReliability(t *testing.T) {
 		{ID: 2, StartTS: base.Add(time.Hour), EndTS: base.Add(time.Hour)},
 		{ID: 3, StartTS: base.AddDate(-2, 0, 0), EndTS: base.AddDate(-2, 0, 0)}, // provisioning 2y earlier
 	}
-	r, notes := detectTimelineReliability(withOutlier, "en")
+	r, notes := detectTimelineReliability(withOutlier, false, "en")
 	if r != "unreliable" {
 		t.Fatalf("year-apart cluster should make timeline unreliable, got %q", r)
 	}
@@ -153,5 +158,78 @@ func TestFindUngroundedMentions(t *testing.T) {
 	pth := []Finding{{Title: "NTLM hash reuse", MITRETechniques: []string{"T1550.002"}}}
 	if got := findUngroundedMentions("evidence of Pass-the-Hash", pth); len(got) != 0 {
 		t.Errorf("Pass-the-Hash backed by T1550.002 should not be ungrounded: %v", got)
+	}
+}
+
+// The corroboration layer demotes finding-derived but FP-prone technique tags
+// when the case lacks supporting context — the distrib_winrm_spray failure mode
+// where real Sigma rules tagged web shell / PtH / timestomp on unrelated events.
+func TestSplitCorroboratedMITRE(t *testing.T) {
+	entries := []MITREEntry{
+		{Technique: "T1110.001"}, // brute force — always kept
+		{Technique: "T1190"},     // public-facing exploit
+		{Technique: "T1505.003"}, // web shell
+		{Technique: "T1550.002"}, // pass-the-hash
+		{Technique: "T1070.006"}, // timestomp
+		{Technique: "T1003.001"}, // LSASS dump — kept
+	}
+
+	// No web server, a brute-forced account, and a reversed clock → the three
+	// uncorroborated tags are demoted; the rest stay confirmed.
+	ctx := groundingContext{
+		HasWebArtifact:      false,
+		BruteForcedAccounts: map[string]bool{"administrator": true},
+		ClockReversed:       true,
+	}
+	keep, demoted, notes := splitCorroboratedMITRE(entries, ctx, "en")
+	keptIDs := techIDs(keep)
+	demIDs := techIDs(demoted)
+	if !reflect.DeepEqual(keptIDs, []string{"T1110.001", "T1003.001"}) {
+		t.Errorf("kept = %v, want [T1110.001 T1003.001]", keptIDs)
+	}
+	if !reflect.DeepEqual(demIDs, []string{"T1190", "T1505.003", "T1550.002", "T1070.006"}) {
+		t.Errorf("demoted = %v, want the four uncorroborated tags", demIDs)
+	}
+	if len(notes) != 4 {
+		t.Errorf("want 4 demotion notes, got %d", len(notes))
+	}
+
+	// With a web server, no brute force, and a reliable clock → nothing demoted.
+	ctx2 := groundingContext{HasWebArtifact: true, BruteForcedAccounts: map[string]bool{}, ClockReversed: false}
+	keep2, demoted2, _ := splitCorroboratedMITRE(entries, ctx2, "en")
+	if len(demoted2) != 0 || len(keep2) != len(entries) {
+		t.Errorf("fully corroborated case demoted %d (want 0)", len(demoted2))
+	}
+}
+
+func techIDs(es []MITREEntry) []string {
+	out := []string{}
+	for _, e := range es {
+		out = append(out, e.Technique)
+	}
+	return out
+}
+
+func TestContainsWebArtifact(t *testing.T) {
+	if !containsWebArtifact([]string{"evtx", "w3c_iis", "mft"}) {
+		t.Error("w3c_iis should be recognised as a web artifact")
+	}
+	if containsWebArtifact([]string{"evtx", "amcache", "registry", "mft", "usn_journal"}) {
+		t.Error("a case with no web server must not report a web artifact")
+	}
+}
+
+func TestBruteForcedAccountsOf(t *testing.T) {
+	findings := []Finding{
+		{RuleID: "TLVB-BRUTEFORCE-4625", Evidence: []FindingEvidence{
+			{Extra: map[string]any{"TargetUserName": `CORP\Administrator`}},
+		}},
+		{RuleID: "some-sigma-rule", Evidence: []FindingEvidence{
+			{Extra: map[string]any{"TargetUserName": "bob"}},
+		}},
+	}
+	got := bruteForcedAccountsOf(findings)
+	if !got["administrator"] || got["bob"] {
+		t.Errorf("brute-forced accounts = %v, want only administrator", got)
 	}
 }
