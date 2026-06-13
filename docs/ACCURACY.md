@@ -93,6 +93,15 @@ can never silently fabricate a finding:
   interpretation step is told *"a result with an error field FAILED — do not
   treat its NULL values as evidence."* The same failure drives the
   **self-correction** loop instead of being narrated as a fact.
+- **A 0-row query is an honest negative, never a fabricated one.** When an
+  active-search query runs cleanly but matches nothing, TLVB does not invent an
+  answer: the agent judges whether "nothing here" is the genuine result or a
+  wrong-angle query and, if the latter, **re-sequences** to a different
+  artifact/field/hypothesis (an `active_search_reframe`); otherwise the gap is
+  recorded as an open question. On a real triage case this re-sequencing fired
+  **six times unprompted** (no fault injection) — e.g. a query found 0 rows and
+  the pivoted retry found 51 events — demonstrating genuine runtime course
+  correction rather than confident guessing (see `EXECUTION_LOG.md` §5).
 - **`confirmed` vs `inferred` labels.** Every finding is tagged `confirmed` (a
   deterministic signature matched real logged events) or `inferred` (a Tier 1B
   LLM judgement), shown in the report's *Confidence* column and the Review UI,
