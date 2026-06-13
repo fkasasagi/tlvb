@@ -230,7 +230,7 @@ Screen layout:
 > - **Parse multiple evidence at once** (Issue #1 / v0.3 #1) — in the Parse modal, the `+ Add evidence` button lets you add as many items as you like
 > - **Auto-pilot toggle** (Issue #11/#12) — a "skip Review Gate 0" checkbox in the Parse / Analyze modals. When ON, it skips human review and proceeds to the next step
 > - **Cancel button** (Issue #8) — while each step is running, an **`✕ cancel`** button appears below the progress block. You can abort partway through in case of a mistaken run or a runaway (the progress bar switches to a gray italic `canceled` display)
-> - **Up-front LLM-access warning** — the moment you open the Analyze modal, a red warning appears if neither the `claude` CLI nor `ANTHROPIC_API_KEY` is present (previously this only surfaced after running)
+> - **Up-front LLM-access warning** — the moment you open the Analyze modal, a red warning appears if no LLM transport is configured in `.env.local` (Anthropic API or Vertex AI) (previously this only surfaced after running)
 
 The investigation has four steps. They must be run in order.
 
@@ -275,7 +275,7 @@ Input modal:
 | Field | Description |
 |---|---|
 | Also run Tier 1B (anomaly_hunter, LLM) | When checked, the Tier 1B anomaly hunter also runs (incurs LLM charges). OFF by default |
-| Tier 1B model | Leave empty for the claude CLI's default model |
+| Tier 1B model | Leave empty for the default model |
 
 > **Note**: Tier 1A needs no LLM and is free. Only when you enable Tier 1B
 > does it call an AI model, so a token usage fee (around $1 per case) applies.
@@ -589,8 +589,10 @@ Help: `tlvb --help`
 ### Q. Analyze fails immediately
 
 - Parse must have completed first
-- To use the `claude-code` engine, the `claude` command is required
-- To use the `anthropic-api` engine, `export ANTHROPIC_API_KEY=sk-ant-xxx`
+- The LLM stages (Tier 1B / Tier 2) need an LLM transport configured in
+  `.env.local` at the repository root: either the **Anthropic API**
+  (`ANTHROPIC_API_KEY=sk-ant-...`) or **Vertex AI** (a service-account key — see
+  the FAQ below). Tier 1A is unaffected (it never calls an LLM).
 
 ### Q. Synthesize says no findings were found
 
@@ -622,10 +624,21 @@ Help: `tlvb --help`
 - Click → confirm → the job is aborted and goes to the `canceled` state
 - DuckDB / partial output is left in place, so you can resume from the next Parse / Analyze
 
-### Q. Doing `export ANTHROPIC_API_KEY=...` every time is a hassle
+### Q. Configuring the LLM transport every time is a hassle
 
-- If you create a `.env.local` file at the root of the repository and write `ANTHROPIC_API_KEY=sk-ant-...`, it is loaded automatically when `tlvb serve` starts (added 2026-05)
-- A value explicitly `export`ed in the shell takes precedence, so a temporary override is also possible
+- Create a `.env.local` file at the root of the repository and configure your
+  transport there once; TLVB reads it at startup for **every** subcommand
+  (`tlvb serve`, `analyze`, `synthesize`, `run`, ...). Override the file path
+  with `TLVB_ENV_FILE` if needed.
+- For the **Anthropic API**, write `ANTHROPIC_API_KEY=sk-ant-...`.
+- For **Vertex AI** (Anthropic on Google Cloud), write
+  `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json` (or inline the
+  key with `GOOGLE_APPLICATION_CREDENTIALS_JSON={...}`), optionally with
+  `ANTHROPIC_VERTEX_PROJECT_ID` / `CLOUD_ML_REGION` (default `us-east5`) /
+  `TLVB_VERTEX_MODEL`.
+- If both are present, the Anthropic API key takes priority. A value explicitly
+  `export`ed in the shell takes precedence over the file, so a temporary
+  override is also possible.
 
 ---
 

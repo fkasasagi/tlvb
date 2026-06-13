@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/llm"
 	"github.com/tlvb/tlvb/internal/rulebuild"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/rulesrepo"
@@ -68,8 +69,8 @@ func runRulesBuild(args []string) error {
 		"override the model id recorded in the cache signature (default: --model). "+
 			"Set to the existing rows' model to fill gaps with a different --model "+
 			"without invalidating them (e.g. --model claude-opus-4-8 --cache-model-id claude-sonnet-4-6)")
-	engine := fs.String("engine", "claude-code",
-		"build engine: claude-code (uses local `claude` CLI, no API key needed) | anthropic-api")
+	engine := fs.String("engine", "auto",
+		"build engine (default auto: resolves from .env.local — ANTHROPIC_API_KEY > Vertex service account)")
 	timeoutSec := fs.Int("timeout-seconds", 0,
 		"per-rule LLM timeout in seconds (0 = engine default 300). Raise for rules "+
 			"that trigger long chain-of-thought and get killed at the default.")
@@ -97,23 +98,27 @@ func runRulesBuild(args []string) error {
 	}
 	defer db.Close()
 
-	var builder rulebuild.Builder
-	switch *engine {
-	case "anthropic-api":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if !*dryRun && apiKey == "" {
-			return fmt.Errorf("--engine anthropic-api requires ANTHROPIC_API_KEY (use --dry-run to plan, or --engine claude-code)")
-		}
-		b := rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
+	applyCommon := func(b *rulebuild.AnthropicBuilder) {
 		b.SignatureModel = *cacheModelID
 		if *timeoutSec > 0 {
 			b.Timeout = time.Duration(*timeoutSec) * time.Second
 		}
-		builder = b
-	case "claude-code":
+	}
+	newAnthropic := func(apiKey string) *rulebuild.AnthropicBuilder {
+		b := rulebuild.NewAnthropicBuilder(apiKey, *model, casedb.SchemaDoc())
+		applyCommon(b)
+		return b
+	}
+	newVertex := func(t *llm.Transport) *rulebuild.AnthropicBuilder {
+		b := rulebuild.NewAnthropicBuilder("", *model, casedb.SchemaDoc())
+		b.Transport = t
+		applyCommon(b)
+		return b
+	}
+	newCLI := func() (rulebuild.Builder, error) {
 		if !*dryRun {
 			if _, err := exec.LookPath("claude"); err != nil {
-				return fmt.Errorf("--engine claude-code requires the `claude` binary on PATH (install Claude Code CLI, or use --engine anthropic-api)")
+				return nil, fmt.Errorf("no LLM transport configured: put ANTHROPIC_API_KEY or a Vertex service-account key in .env.local (the local claude fallback was also not found on PATH)")
 			}
 		}
 		b := rulebuild.NewClaudeCodeBuilder(*model, casedb.SchemaDoc())
@@ -121,9 +126,40 @@ func runRulesBuild(args []string) error {
 		if *timeoutSec > 0 {
 			b.Timeout = time.Duration(*timeoutSec) * time.Second
 		}
-		builder = b
+		return b, nil
+	}
+
+	var builder rulebuild.Builder
+	switch *engine {
+	case "auto", "":
+		switch t := llm.Resolve(); t.Kind {
+		case llm.KindVertex:
+			builder = newVertex(t)
+		case llm.KindAnthropic:
+			builder = newAnthropic(t.APIKey())
+		default:
+			if builder, err = newCLI(); err != nil {
+				return err
+			}
+		}
+	case "anthropic-api":
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if !*dryRun && apiKey == "" {
+			return fmt.Errorf("--engine anthropic-api requires ANTHROPIC_API_KEY (use --dry-run to plan)")
+		}
+		builder = newAnthropic(apiKey)
+	case "vertex":
+		t := llm.Resolve()
+		if t.Kind != llm.KindVertex {
+			return fmt.Errorf("--engine vertex requires a Vertex service-account key (GOOGLE_APPLICATION_CREDENTIALS[_JSON] + project)")
+		}
+		builder = newVertex(t)
+	case "claude-code":
+		if builder, err = newCLI(); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("unknown --engine %q (want claude-code | anthropic-api)", *engine)
+		return fmt.Errorf("unknown --engine %q (want auto | anthropic-api | vertex | claude-code)", *engine)
 	}
 	// Runtime compile-check gate (known issue #6): reject generated SQL that
 	// won't execute against unified_events before it's cached as "built".

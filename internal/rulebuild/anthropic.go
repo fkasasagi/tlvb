@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tlvb/tlvb/internal/llm"
 	"github.com/tlvb/tlvb/internal/rulesrepo"
 )
 
@@ -33,6 +34,10 @@ type AnthropicBuilder struct {
 	MaxTokens      int
 	Timeout        time.Duration
 	SchemaDoc      string // injected into the system prompt
+
+	// Transport, when set to a Vertex transport, routes the build through
+	// Anthropic on Vertex AI. nil means the direct Anthropic API (x-api-key).
+	Transport *llm.Transport
 
 	httpClient *http.Client
 }
@@ -59,7 +64,8 @@ func (b *AnthropicBuilder) ModelID() string {
 }
 
 func (b *AnthropicBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule, schemaDoc string) (*BuiltSQL, error) {
-	if b.APIKey == "" {
+	vertex := b.Transport != nil && b.Transport.Kind == llm.KindVertex
+	if b.APIKey == "" && !vertex {
 		return nil, fmt.Errorf("AnthropicBuilder: APIKey is empty")
 	}
 	if b.httpClient == nil {
@@ -77,7 +83,6 @@ func (b *AnthropicBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule,
 	userMsg := BuildUserMessage(rule)
 
 	body := msgRequest{
-		Model:     b.Model,
 		MaxTokens: b.MaxTokens,
 		System: []sysBlock{
 			{Type: "text", Text: systemPrompt, CacheControl: &cacheControl{Type: "ephemeral"}},
@@ -86,18 +91,31 @@ func (b *AnthropicBuilder) BuildSQL(ctx context.Context, rule rulesrepo.RawRule,
 			{Role: "user", Content: userMsg},
 		},
 	}
+	endpoint := anthropicAPIURL
+	if vertex {
+		body.AnthropicVersion = llm.VertexAnthropicVersion // model goes in the URL
+		endpoint = b.Transport.VertexURL(b.Model)
+	} else {
+		body.Model = b.Model
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", b.APIKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
+	if vertex {
+		if err := b.Transport.ApplyAuth(ctx, req); err != nil {
+			return nil, err
+		}
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", b.APIKey)
+		req.Header.Set("anthropic-version", anthropicVersion)
+	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
@@ -253,10 +271,13 @@ func truncate(s string, n int) string {
 // ----------------------------------------------------------------------------
 
 type msgRequest struct {
-	Model     string     `json:"model"`
-	MaxTokens int        `json:"max_tokens"`
-	System    []sysBlock `json:"system,omitempty"`
-	Messages  []msgItem  `json:"messages"`
+	// Model is set for the direct API; for Vertex it is omitted (the model is
+	// named in the URL) and AnthropicVersion is set instead.
+	Model            string     `json:"model,omitempty"`
+	AnthropicVersion string     `json:"anthropic_version,omitempty"`
+	MaxTokens        int        `json:"max_tokens"`
+	System           []sysBlock `json:"system,omitempty"`
+	Messages         []msgItem  `json:"messages"`
 }
 
 type sysBlock struct {

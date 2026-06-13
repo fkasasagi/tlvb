@@ -17,6 +17,7 @@ import (
 	"github.com/tlvb/tlvb/internal/agents"
 	"github.com/tlvb/tlvb/internal/casedb"
 	"github.com/tlvb/tlvb/internal/common"
+	"github.com/tlvb/tlvb/internal/llm"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/tier1a"
 	"github.com/tlvb/tlvb/internal/tier1b"
@@ -909,7 +910,7 @@ func (s *Server) handleStartAnalyzeOne(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = decodeJSON(r, &req)
 	if req.Engine == "" {
-		req.Engine = "claude-code"
+		req.Engine = "auto"
 	}
 
 	caseID := id
@@ -963,7 +964,7 @@ func (s *Server) handleStartAnalyzeArtifact(w http.ResponseWriter, r *http.Reque
 	}
 	_ = decodeJSON(r, &req)
 	if req.Engine == "" {
-		req.Engine = "claude-code"
+		req.Engine = "auto"
 	}
 
 	relevant := agents.TacticsForArtifact(artifact)
@@ -1594,10 +1595,14 @@ func deleteCase(ctx context.Context, m *casedb.Manager, caseID string) error {
 //	  "ok":             bool   // claude_cli OR api_key_set (analyze can run)
 //	}
 func (s *Server) handleHealthLLM(w http.ResponseWriter, r *http.Request) {
+	transport := llm.Resolve()
 	out := map[string]any{
 		"claude_cli":     false,
 		"claude_version": "",
-		"api_key_set":    os.Getenv("ANTHROPIC_API_KEY") != "",
+		// api_key_set stays the wire name for back-compat, but now reflects any
+		// configured API transport (Anthropic API or Vertex AI).
+		"api_key_set": transport.Active(),
+		"transport":   transport.Label(),
 	}
 	if path, err := exec.LookPath("claude"); err == nil {
 		out["claude_cli"] = true

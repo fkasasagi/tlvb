@@ -2,7 +2,7 @@
 
 This document is a step-by-step guide for anyone who wants to actually run TLVB.
 It assumes SIFT Workstation as the primary environment, but it works anywhere as
-long as Linux + the Claude Code CLI are installed.
+long as Linux is installed.
 
 *日本語版: [QUICKSTART.ja.md](QUICKSTART.ja.md)*
 
@@ -25,17 +25,40 @@ Estimated time:
 ## Prerequisites
 
 ```bash
-which claude && claude --version    # Claude Code CLI (for --engine claude-code, recommended)
 which go && go version              # Go 1.25.5+ (apt install golang-go is fine)
 which python3 && python3 --version  # 3.11+
 which dotnet && dotnet --version    # 9.x (to run EZ Tools)
 ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # required parser (standard SIFT path)
 ```
 
-`ANTHROPIC_API_KEY` is **not required**. TLVB reuses the Claude Code CLI's session
-authentication as-is, so LLM calls go through without setting a separate key
-(if you want to run in API mode, use `--engine anthropic-api` +
-`export ANTHROPIC_API_KEY=...`).
+### Configure credentials (`.env.local`)
+
+TLVB is **API-first**: the LLM stages (Tier 1B / Tier 2) talk to Claude over the
+Anthropic API or Vertex AI. Create a `.env.local` at the repository root and
+configure **one** transport. TLVB reads it at startup for every subcommand
+(override the path with `TLVB_ENV_FILE`); a value `export`ed in the shell wins
+over the file.
+
+```
+# TLVB reads .env.local from the repo root at startup. Shell env vars win over the file.
+# Configure ONE transport. If both are present, the Anthropic API key takes priority.
+
+# --- Anthropic API (preferred) ---
+ANTHROPIC_API_KEY=sk-ant-...
+
+# --- OR Vertex AI (Anthropic on Google Cloud, service-account key) ---
+# Either point to a service-account JSON key file:
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# ...or inline the key as a single-line JSON string instead of the path:
+# GOOGLE_APPLICATION_CREDENTIALS_JSON={"type":"service_account", ...}
+ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project   # optional: else GOOGLE_CLOUD_PROJECT, else the key's project_id
+CLOUD_ML_REGION=global                          # optional: Vertex region; use "global" if your project's Claude access is the global endpoint (else e.g. us-east5)
+# TLVB_VERTEX_MODEL=claude-opus-4-8             # optional: exact Vertex publisher model id for your region
+```
+
+> Tier 1A is signature-only and never calls an LLM, so Steps 0–3 below run
+> without any credentials. You only need `.env.local` configured for the LLM
+> stages (Tier 1B and Tier 2 — Steps 3's optional 1B and Step 4 onward).
 
 ---
 
@@ -53,10 +76,8 @@ authentication as-is, so LLM calls go through without setting a separate key
 > automatically via sudo apt (without that flag, you only get a message
 > prompting you to install it manually).
 
-> If you routinely use `--engine anthropic-api`, place a `.env.local` at the
-> repository root containing `ANTHROPIC_API_KEY=...`, and start with
-> `tlvb serve --env-file .env.local`; the browser UI will then automatically
-> run via the API too.
+> Once `.env.local` is in place (see "Configure credentials" above), the browser
+> UI picks up the same credentials automatically — just start `tlvb serve`.
 
 ### 0a-bis. About altpf (the Prefetch primary engine)
 
@@ -263,7 +284,7 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 # 3-3: Tier 1A — execute the cached signature SQL (no LLM, seconds to tens of seconds)
 ./bin/tlvb analyze MY-TEST-001 --tier 1a
 
-# Optional: Tier 1B — the anomaly hunter (LLM, ~a few minutes). Uses the claude CLI, no API key needed
+# Optional: Tier 1B — the anomaly hunter (LLM, ~a few minutes). Needs .env.local configured
 ./bin/tlvb analyze MY-TEST-001 --tier 1b --skill anomaly_hunter
 
 # 3-4: look at the output (Tier 1A is under by-rule/, Tier 1B under by-skill/)
@@ -271,9 +292,9 @@ ls -R outputs/cases/MY-TEST-001/findings/
 cat outputs/cases/MY-TEST-001/findings/by-rule/sigma/*.json | python3 -m json.tool | head -50
 ```
 
-Tier 1A does not call the LLM, so it needs neither an API key nor the claude CLI.
-Only Tier 1B uses the LLM, and it runs without an API key if the `claude` CLI is
-present.
+Tier 1A does not call the LLM at all, so it needs no credentials. Only Tier 1B
+uses the LLM, which requires `.env.local` to be configured (Anthropic API or
+Vertex AI).
 
 ---
 
@@ -362,8 +383,7 @@ collector.log are picked up automatically if present).
     --evidence /path/to/triage_collector.zip \
     --evidence-id EV-COLL-001 \
     --name "ACME-Corp-IR-Sep" \
-    --examiner alice \
-    --engine claude-code
+    --examiner alice
 ```
 
 The zip is extracted to `outputs/cases/<id>/extractions/extracted/` (the
@@ -442,19 +462,12 @@ For details, see [`USER_GUIDE.md`](USER_GUIDE.md).
 
 ## 8. When things don't work (Troubleshooting)
 
-### `claude: command not found`
-The Claude Code CLI is not on PATH. Check whether it is at `/usr/bin/claude` or
-`~/.local/bin/claude`. If not, install it with
-`npm install -g @anthropic-ai/claude-code`. As an alternative, use
-`--engine anthropic-api` + the `ANTHROPIC_API_KEY` environment variable.
-
-### `engine=anthropic-api requires ANTHROPIC_API_KEY`
-Either pass `--engine claude-code` explicitly, or run
-`export ANTHROPIC_API_KEY=sk-ant-...` before invoking.
-
-### `claude CLI failed (...): Not logged in · Please run /login`
-You are passing `--bare` to Claude Code, or this is the first launch. Start
-`claude` interactively once and run `/login` to create a session.
+### An LLM stage (Tier 1B / Tier 2) fails with a credentials error
+No transport is configured. Create a `.env.local` at the repository root with
+either `ANTHROPIC_API_KEY=sk-ant-...` (Anthropic API) or the Vertex AI keys (see
+"Configure credentials" in the Prerequisites). TLVB reads `.env.local` at
+startup; a value `export`ed in the shell takes precedence over the file. Tier 1A
+is unaffected — it never calls an LLM.
 
 ### `xdg-open: no method available`
 A browser cannot be launched from a headless shell (e.g. via Claude Code). Run

@@ -26,7 +26,7 @@ Tier 1A  Signature-driven (★ runtime LLM ゼロ)                🟢
   ↓     → findings/by-rule/<source>/<rule_id>.json
 Tier 1B  Skills-driven Anomaly                                🟢
           off-hours / 不審 path / rare process / adjacency
-          で 5×N サンプルを LLM (claude CLI) に渡し抽象パターン抽出
+          で 5×N サンプルを LLM に渡し抽象パターン抽出
   ↓     → findings/by-skill/<skill>.json
 Tier 2   Timeline Analysis                                    🟢
           findings を 30 分 gap でクラスタリング、±5 分 raw
@@ -59,15 +59,36 @@ Tier 3   Reporter                                             🟢
 # (任意) ルールを自前で再生成するときだけ submodule + LLM が必要。
 #   setup.sh が vendored の SQL cache を import 済みなので通常は不要。
 git submodule update --init --recursive          # Sigma / Hayabusa / mitre-attack
-./bin/tlvb rules build --engine claude-code --max-rules 100
+./bin/tlvb rules build --max-rules 100
 
 # Web UI / MCP server
 ./bin/tlvb serve --port 8080     # http://localhost:8080
 ./bin/tlvb mcp-serve              # stdio で MCP クライアントから接続
 ```
 
-LLM は **claude CLI**(無料、サブスクで利用)と **Anthropic API**(`ANTHROPIC_API_KEY`)
-の両方をサポート。詳細は `docs/DESIGN.md` 参照。
+TLVB は **API ファースト**:LLM トランスポートはリポジトリルートの `.env.local`
+に一度だけ設定します。TLVB は全サブコマンドの起動時にこれを読み込みます。
+**Anthropic API**(`ANTHROPIC_API_KEY`)または **Vertex AI**(Google Cloud 上の
+Anthropic、サービスアカウントキー経由)を使います。
+
+```
+# TLVB はリポジトリルートの .env.local を起動時に読み込む。シェル環境変数がファイルより優先。
+# トランスポートは1つだけ設定する。両方ある場合は Anthropic API キーが優先される。
+
+# --- Anthropic API (推奨) ---
+ANTHROPIC_API_KEY=sk-ant-...
+
+# --- または Vertex AI (Google Cloud 上の Anthropic、サービスアカウントキー) ---
+# サービスアカウント JSON キーファイルのパスを指す:
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# ...またはパスの代わりにキーを単一行 JSON 文字列でインライン指定:
+# GOOGLE_APPLICATION_CREDENTIALS_JSON={"type":"service_account", ...}
+ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project   # 任意: 無ければ GOOGLE_CLOUD_PROJECT、さらに無ければキーの project_id
+CLOUD_ML_REGION=global                          # 任意: Vertex リージョン。Claude が global エンドポイント提供なら "global"(それ以外は us-east5 等)
+# TLVB_VERTEX_MODEL=claude-opus-4-8             # 任意: 自分のリージョンの正確な Vertex publisher model id
+```
+
+詳細は `docs/DESIGN.md` 参照。
 
 ## 検出能力(2026-05-29 実機検証)
 

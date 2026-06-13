@@ -22,7 +22,7 @@ Tier 1A  Signature-driven (★ zero runtime LLM)                🟢
   ↓     → findings/by-rule/<source>/<rule_id>.json
 Tier 1B  Skills-driven Anomaly                                🟢
           off-hours / suspicious path / rare process / adjacency
-          feeds 5×N samples to the LLM (claude CLI) to extract
+          feeds 5×N samples to the LLM to extract
           abstract patterns
   ↓     → findings/by-skill/<skill>.json
 Tier 2   Timeline Analysis                                    🟢
@@ -62,14 +62,33 @@ Tier 3   Reporter                                             🟢
 #   regenerate the rules yourself. setup.sh has already imported the vendored
 #   SQL cache, so this is normally unnecessary.
 git submodule update --init --recursive          # Sigma / Hayabusa / mitre-attack
-./bin/tlvb rules build --engine claude-code --max-rules 100
+./bin/tlvb rules build --max-rules 100
 
 # Web UI / MCP server
 ./bin/tlvb serve --port 8080     # http://localhost:8080
 ./bin/tlvb mcp-serve              # connect from an MCP client over stdio
 ```
 
-For the LLM, TLVB supports both the **claude CLI** (free, used via your subscription) and the **Anthropic API** (`ANTHROPIC_API_KEY`). For a step-by-step walkthrough with expected output, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md); the full design is in [`docs/DESIGN.md`](docs/DESIGN.md).
+TLVB is **API-first**: configure your LLM transport once in a `.env.local` at the repository root. TLVB reads it at startup for every subcommand. Use the **Anthropic API** (`ANTHROPIC_API_KEY`) or **Vertex AI** (Anthropic on Google Cloud, via a service-account key).
+
+```
+# TLVB reads .env.local from the repo root at startup. Shell env vars win over the file.
+# Configure ONE transport. If both are present, the Anthropic API key takes priority.
+
+# --- Anthropic API (preferred) ---
+ANTHROPIC_API_KEY=sk-ant-...
+
+# --- OR Vertex AI (Anthropic on Google Cloud, service-account key) ---
+# Either point to a service-account JSON key file:
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# ...or inline the key as a single-line JSON string instead of the path:
+# GOOGLE_APPLICATION_CREDENTIALS_JSON={"type":"service_account", ...}
+ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project   # optional: else GOOGLE_CLOUD_PROJECT, else the key's project_id
+CLOUD_ML_REGION=global                          # optional: Vertex region; use "global" if your project's Claude access is the global endpoint (else e.g. us-east5)
+# TLVB_VERTEX_MODEL=claude-opus-4-8             # optional: exact Vertex publisher model id for your region
+```
+
+For a step-by-step walkthrough with expected output, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md); the full design is in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Detection capability (real-machine validation, 2026-05-29)
 

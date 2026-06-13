@@ -1,7 +1,7 @@
 # TLVB Quickstart — 自分で試してみる
 
 このドキュメントは「TLVB を実際に動かしてみたい」人向けの手順書です。
-SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI が
+SIFT Workstation を主な前提にしていますが、Linux が
 入っていればどこでも動きます。
 
 すべてのコマンドは **このリポジトリのクローン先で(リポジトリのルート)** 実行する前提で書いています。
@@ -23,16 +23,40 @@ SIFT Workstation を主な前提にしていますが、Linux + Claude Code CLI 
 ## 前提
 
 ```bash
-which claude && claude --version    # Claude Code CLI(--engine claude-code 用、推奨)
 which go && go version              # Go 1.25.5+(apt install golang-go で OK)
 which python3 && python3 --version  # 3.11+
 which dotnet && dotnet --version    # 9.x(EZ Tools 実行用)
 ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # 必須パーサ(SIFT 標準パス)
 ```
 
-`ANTHROPIC_API_KEY` は **不要** です。Claude Code CLI のセッション認証を
-そのまま使うので、別途キーをセットしなくても LLM 呼び出しが走ります
-(API モードで動かしたい場合は `--engine anthropic-api` + `export ANTHROPIC_API_KEY=...`)。
+### 認証情報を設定する(`.env.local`)
+
+TLVB は **API ファースト**:LLM ステージ(Tier 1B / Tier 2)は Anthropic API
+または Vertex AI 経由で Claude と通信します。リポジトリルートに `.env.local`
+を作り、トランスポートを **1 つだけ** 設定してください。TLVB は全サブコマンドの
+起動時にこれを読み込みます(パスは `TLVB_ENV_FILE` で上書き可)。シェルで
+`export` した値はファイルより優先されます。
+
+```
+# TLVB はリポジトリルートの .env.local を起動時に読み込む。シェル環境変数がファイルより優先。
+# トランスポートは1つだけ設定する。両方ある場合は Anthropic API キーが優先される。
+
+# --- Anthropic API (推奨) ---
+ANTHROPIC_API_KEY=sk-ant-...
+
+# --- または Vertex AI (Google Cloud 上の Anthropic、サービスアカウントキー) ---
+# サービスアカウント JSON キーファイルのパスを指す:
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# ...またはパスの代わりにキーを単一行 JSON 文字列でインライン指定:
+# GOOGLE_APPLICATION_CREDENTIALS_JSON={"type":"service_account", ...}
+ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project   # 任意: 無ければ GOOGLE_CLOUD_PROJECT、さらに無ければキーの project_id
+CLOUD_ML_REGION=global                          # 任意: Vertex リージョン。Claude が global エンドポイント提供なら "global"(それ以外は us-east5 等)
+# TLVB_VERTEX_MODEL=claude-opus-4-8             # 任意: 自分のリージョンの正確な Vertex publisher model id
+```
+
+> Tier 1A は署名のみで LLM を一切呼ばないので、以下の Step 0〜3 は認証情報
+> 無しで動きます。`.env.local` の設定が要るのは LLM ステージ(Tier 1B と
+> Tier 2 — Step 3 の任意 1B と Step 4 以降)だけです。
 
 ---
 
@@ -49,9 +73,8 @@ ls /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll   # 必須パーサ(SIFT 標準パ�
 > `./scripts/setup.sh --auto-install-deps` を渡すと sudo apt 越しに自動導入します
 > (それ以外のフラグなしの場合は手動導入を促すメッセージのみ)。
 
-> `--engine anthropic-api` を常用する場合は、リポジトリルートに `.env.local`
-> を置いて `ANTHROPIC_API_KEY=...` を書き、`tlvb serve --env-file .env.local`
-> で起動するとブラウザ UI からも自動的に API 経由で動きます。
+> `.env.local` を置いておけば(上の「認証情報を設定する」を参照)、ブラウザ UI
+> も同じ認証情報を自動で拾います — `tlvb serve` を起動するだけです。
 
 ### 0a-bis. altpf (Prefetch primary engine) について
 
@@ -249,7 +272,7 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 # 3-3: Tier 1A — キャッシュ済み署名 SQL を実行 (LLM 不要・数秒〜数十秒)
 ./bin/tlvb analyze MY-TEST-001 --tier 1a
 
-# 任意: Tier 1B — 異常ハンター (LLM、~数分)。API key 不要の claude CLI を使用
+# 任意: Tier 1B — 異常ハンター (LLM、~数分)。.env.local の設定が必要
 ./bin/tlvb analyze MY-TEST-001 --tier 1b --skill anomaly_hunter
 
 # 3-4: 出力を見る (Tier 1A は by-rule/、Tier 1B は by-skill/)
@@ -257,8 +280,8 @@ ls -R outputs/cases/MY-TEST-001/findings/
 cat outputs/cases/MY-TEST-001/findings/by-rule/sigma/*.json | python3 -m json.tool | head -50
 ```
 
-Tier 1A は LLM を呼ばないので API key も claude CLI も不要です。Tier 1B のみ
-LLM を使い、`claude` CLI があれば API key 無しで動きます。
+Tier 1A は LLM を一切呼ばないので認証情報は不要です。Tier 1B のみ LLM を使い、
+`.env.local` の設定(Anthropic API または Vertex AI)が必要です。
 
 ---
 
@@ -297,8 +320,8 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
 # Tier 1A/1B までは終わった、Tier 2 から
 ./bin/tlvb run MY-FULL-001 --tier all --skip-parse --skip-1a --skip-1b
 
-# Tier 2 の能動探索を有効化 (広域 SQL)
-./bin/tlvb run MY-FULL-001 --tier all --skip-parse --active-search
+# Tier 2 の能動探索を無効化 (安価・高速; 既定は ON)
+./bin/tlvb run MY-FULL-001 --tier all --skip-parse --no-active-search
 ```
 
 完了後:
@@ -337,8 +360,7 @@ auxiliary ファイルがあれば自動で拾います)。
     --evidence /path/to/triage_collector.zip \
     --evidence-id EV-COLL-001 \
     --name "ACME-Corp-IR-Sep" \
-    --examiner alice \
-    --engine claude-code
+    --examiner alice
 ```
 
 zip は `outputs/cases/<id>/extractions/extracted/` に展開されます (元
@@ -417,18 +439,12 @@ WebUI 側では:
 
 ## 8. うまく動かない時 (Troubleshooting)
 
-### `claude: command not found`
-Claude Code CLI が PATH に無い。`/usr/bin/claude` か `~/.local/bin/claude`
-にあるか確認。なければ `npm install -g @anthropic-ai/claude-code` で導入。
-代替として `--engine anthropic-api` + `ANTHROPIC_API_KEY` 環境変数。
-
-### `engine=anthropic-api requires ANTHROPIC_API_KEY`
-`--engine claude-code` を明示するか、`export ANTHROPIC_API_KEY=sk-ant-...`
-してから実行。
-
-### `claude CLI failed (...): Not logged in · Please run /login`
-Claude Code に `--bare` を渡している、または初回起動。`claude` を
-インタラクティブに 1 回起動して `/login` するとセッションが生まれる。
+### LLM ステージ (Tier 1B / Tier 2) が認証エラーで失敗する
+トランスポートが未設定です。リポジトリルートに `.env.local` を作り、
+`ANTHROPIC_API_KEY=sk-ant-...`(Anthropic API)または Vertex AI のキー群
+(前提の「認証情報を設定する」を参照)のどちらかを書いてください。TLVB は
+起動時に `.env.local` を読み込み、シェルで `export` した値がファイルより
+優先されます。Tier 1A は LLM を呼ばないので影響を受けません。
 
 ### `xdg-open: no method available`
 ヘッドレスシェル(Claude Code 経由など)からブラウザを起動できない。

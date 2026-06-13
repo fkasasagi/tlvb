@@ -65,7 +65,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	engine := req.Engine
 	if engine == "" {
-		engine = "claude-code"
+		engine = "auto"
 	}
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if engine == "anthropic-api" && apiKey == "" {

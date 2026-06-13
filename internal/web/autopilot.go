@@ -36,11 +36,11 @@ import (
 func (s *Server) handleStartAutopilot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Evidence   string `json:"evidence"`     // input path (file or dir)
-		EvidenceID string `json:"evidence_id"`  // optional
-		Engine     string `json:"engine"`       // claude-code | anthropic-api
-		Language   string `json:"language"`     // ja | en (report locale)
-		CaseName   string `json:"case_name"`    // optional, for first-time init
+		Evidence   string `json:"evidence"`    // input path (file or dir)
+		EvidenceID string `json:"evidence_id"` // optional
+		Engine     string `json:"engine"`      // auto (default) | anthropic-api | vertex
+		Language   string `json:"language"`    // ja | en (report locale)
+		CaseName   string `json:"case_name"`   // optional, for first-time init
 	}
 	_ = decodeJSON(r, &req)
 	if req.Evidence == "" {
@@ -48,16 +48,16 @@ func (s *Server) handleStartAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Engine == "" {
-		req.Engine = "claude-code"
+		req.Engine = "auto"
 	}
 	// Wave 39 bug C fix: engine validation. Without this, `engine=
 	// "nonsense"` was accepted with HTTP 202 and the subprocess
 	// failed late, leaving the examiner with a vague "exit 1" error.
 	switch req.Engine {
-	case "claude-code", "anthropic-api":
+	case "auto", "anthropic-api", "vertex", "claude-code":
 		// ok
 	default:
-		writeError(w, 400, "unknown engine %q (allowed: claude-code, anthropic-api)", req.Engine)
+		writeError(w, 400, "unknown engine %q (allowed: auto, anthropic-api, vertex, claude-code)", req.Engine)
 		return
 	}
 	if req.Language == "" {

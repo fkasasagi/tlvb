@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/llm"
 )
 
 // AnomalyHunter is Tier 1.5 — runs after the 10 Tactic Agents, looks for
@@ -19,25 +21,25 @@ import (
 // MITRE ATT&CK technique definitions.
 //
 // Architecturally distinct from a Tactic Agent in that:
-//   1. It consumes existing findings as input (Tactic Agents don't see
-//      each other's output).
-//   2. The harness pre-computes anomaly candidates from the FULL
-//      unified_events table — not from the per-tactic SQL filter.
-//   3. Output uses tactic_id="ANOM" so Synthesizer can aggregate it
-//      alongside the Tactic Reports without special-casing.
+//  1. It consumes existing findings as input (Tactic Agents don't see
+//     each other's output).
+//  2. The harness pre-computes anomaly candidates from the FULL
+//     unified_events table — not from the per-tactic SQL filter.
+//  3. Output uses tactic_id="ANOM" so Synthesizer can aggregate it
+//     alongside the Tactic Reports without special-casing.
 type AnomalyHunter struct {
 	cfg AnomalyConfig
 }
 
 type AnomalyConfig struct {
-	CaseID       string
-	EvidenceID   string
+	CaseID     string
+	EvidenceID string
 	// EvidenceIDs is the full set of evidences in scope (★v0.3 #7).
 	// Stamped into the resulting TacticReport for cross-evidence correlation.
-	EvidenceIDs  []string
-	SkillsDir    string  // default "skills"
-	FindingsDir  string  // where to read prior findings + write anomaly_hunter.json
-	DBPath       string
+	EvidenceIDs []string
+	SkillsDir   string // default "skills"
+	FindingsDir string // where to read prior findings + write anomaly_hunter.json
+	DBPath      string
 
 	Engine    string
 	APIKey    string
@@ -76,18 +78,18 @@ func NewAnomalyHunter(cfg AnomalyConfig) (*AnomalyHunter, error) {
 // AnomalyContext is what the harness exposes in the user message. JSON
 // shape is stable so the skill prompt can reference the field names.
 type AnomalyContext struct {
-	CaseID                 string         `json:"case_id"`
-	EvidenceID             string         `json:"evidence_id"`
-	TacticFindingsSummary  map[string]int `json:"tactic_findings_summary"`
-	KeyFindingTimestamps   []string       `json:"key_finding_timestamps"`
-	ExistingAuditIDs       []string       `json:"existing_audit_ids"`
-	CandidateLenses        []string       `json:"lenses_applied"`
-	EventsTotalScanned     int            `json:"events_total_scanned"`
-	EventsInWindow         int            `json:"events_in_window"`
-	Truncated              bool           `json:"truncated"`
-	WindowMin              string         `json:"window_min"`
-	WindowMax              string         `json:"window_max"`
-	Events                 []EventForLLM  `json:"events"`
+	CaseID                string         `json:"case_id"`
+	EvidenceID            string         `json:"evidence_id"`
+	TacticFindingsSummary map[string]int `json:"tactic_findings_summary"`
+	KeyFindingTimestamps  []string       `json:"key_finding_timestamps"`
+	ExistingAuditIDs      []string       `json:"existing_audit_ids"`
+	CandidateLenses       []string       `json:"lenses_applied"`
+	EventsTotalScanned    int            `json:"events_total_scanned"`
+	EventsInWindow        int            `json:"events_in_window"`
+	Truncated             bool           `json:"truncated"`
+	WindowMin             string         `json:"window_min"`
+	WindowMax             string         `json:"window_max"`
+	Events                []EventForLLM  `json:"events"`
 }
 
 // AnomalyDryRunInfo is what DryRun() returns so callers can inspect what
@@ -371,7 +373,17 @@ func newEngineForConfig(
 		model = "claude-sonnet-4-6"
 	}
 	switch engine {
-	case "claude-code", "":
+	case "auto", "":
+		// API-first: ANTHROPIC_API_KEY > Vertex service account > hidden CLI.
+		switch t := llm.Resolve(); t.Kind {
+		case llm.KindVertex:
+			return newVertexClient(t, model, maxTokens, timeout), nil
+		case llm.KindAnthropic:
+			return newAnthropicClient(t.APIKey(), model, maxTokens, timeout), nil
+		default:
+			return newClaudeCodeClient(model, timeout), nil
+		}
+	case "claude-code":
 		return newClaudeCodeClient(model, timeout), nil
 	case "anthropic-api":
 		if apiKey == "" {
@@ -379,6 +391,11 @@ func newEngineForConfig(
 				"engine=anthropic-api requires ANTHROPIC_API_KEY")
 		}
 		return newAnthropicClient(apiKey, model, maxTokens, timeout), nil
+	case "vertex":
+		if t := llm.Resolve(); t.Kind == llm.KindVertex {
+			return newVertexClient(t, model, maxTokens, timeout), nil
+		}
+		return nil, fmt.Errorf("engine=vertex requires a Vertex service-account key")
 	default:
 		return nil, fmt.Errorf("unknown engine %q", engine)
 	}
