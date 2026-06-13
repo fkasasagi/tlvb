@@ -557,9 +557,9 @@ tlvb synthesize INC-2026-0042
 # Step 4: report — Tier 3
 tlvb report INC-2026-0042 --format html,csv,json --language ja
 
-# All steps at once (Tier 0→1A→1B→2→3). --active-search enables the
-# self-correcting / re-sequencing Tier 2 agent (the autonomy showcase; recommended).
-tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto" --active-search
+# All steps at once (Tier 0→1A→1B→2→3). The self-correcting / re-sequencing
+# Tier 2 agent runs by default; add --no-active-search to disable it.
+tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto"
 
 # Interactively Approve/Reject
 tlvb review INC-2026-0042 --gate 1a --examiner tanaka

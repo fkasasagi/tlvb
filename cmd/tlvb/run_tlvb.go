@@ -12,7 +12,7 @@ import (
 //
 //	tlvb run CASE_ID --tier all [--evidence PATH] [--evidence-id EV-001]
 //	   [--skip-parse] [--skip-1a] [--skip-1b] [--skip-2] [--skip-report]
-//	   [--active-search] [--max-self-correct N] [--max-reframe N] [--format html,csv,json] [--language ja|en]
+//	   [--no-active-search] [--max-self-correct N] [--max-reframe N] [--format html,csv,json] [--language ja|en]
 //	   [--include-info-level]
 //
 // It chains the existing TLVB CLI sub-flows in order:
@@ -20,7 +20,7 @@ import (
 //  2. parse (Tier 0) — unless --skip-parse
 //  3. analyze --tier 1a — cached SQL + Hayabusa pass-through
 //  4. analyze --tier 1b — Skills-driven Anomaly
-//  5. synthesize --tier 2 — Timeline Analysis (optionally with --active-search)
+//  5. synthesize --tier 2 — Timeline Analysis (active-search ON by default; --no-active-search to disable)
 //  6. report --tier 3 — HTML / CSV / JSON
 //
 // Failure policy:
@@ -41,7 +41,7 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		skip1B            bool
 		skip2             bool
 		skipReport        bool
-		activeSearch      bool
+		activeSearch      = true // Tier 2 active-search ON by default; --no-active-search disables
 		maxSelfCorrect    string // forwarded verbatim to synthesize; "" = synthesize default
 		maxReframe        string // forwarded verbatim to synthesize; "" = synthesize default
 		reproduceLLMFault bool
@@ -129,6 +129,8 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 			skipReport = true
 		case a == "--active-search":
 			activeSearch = true
+		case a == "--no-active-search":
+			activeSearch = false
 		case a == "--max-self-correct":
 			if v, ok := next(); ok {
 				maxSelfCorrect = v
@@ -230,8 +232,12 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 	} else {
 		banner("Step 5/6  synthesize --tier 2  (Timeline Analysis)")
 		args2 := []string{caseID, "--tier", "2", "--db", dbPath}
+		// Forward explicitly: synthesize also defaults active-search ON, so we must
+		// pass =false when the operator disabled it via --no-active-search.
 		if activeSearch {
 			args2 = append(args2, "--active-search")
+		} else {
+			args2 = append(args2, "--active-search=false")
 		}
 		if maxSelfCorrect != "" {
 			args2 = append(args2, "--max-self-correct", maxSelfCorrect)

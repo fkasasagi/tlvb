@@ -286,16 +286,15 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
     --tier all \
     --evidence "$EVTX_DIR/Other" \
     --name "first-full-run" \
-    --examiner "$USER" \
-    --active-search
+    --examiner "$USER"
 ```
 
-`--active-search` turns on the self-correcting Tier 2 agent — the autonomy
-showcase. It proposes SQL to answer each cluster's open questions and recovers
+Tier 2's self-correcting active-search agent — the autonomy showcase — runs **by
+default**. It proposes SQL to answer each cluster's open questions and recovers
 with no human in the loop two ways: it **fixes** a query that errors or returns
 all-NULL, and when a query runs clean but finds **0 rows** it **re-sequences**
-to a different artifact/field/hypothesis. Every attempt lands in
-`actions.jsonl`. Drop the flag for a cheaper, non-agentic run.
+to a different artifact/field/hypothesis. Every attempt lands in `actions.jsonl`.
+Add `--no-active-search` for a cheaper, non-agentic run.
 
 This single command runs Tier 0→1A→1B→2→3:
 
@@ -322,8 +321,8 @@ To skip only certain stages (`--skip-1a` / `--skip-1b` / `--skip-2` /
 # Tier 1A/1B are done, start from Tier 2
 ./bin/tlvb run MY-FULL-001 --tier all --skip-parse --skip-1a --skip-1b
 
-# Enable Tier 2 active search (wide-range SQL)
-./bin/tlvb run MY-FULL-001 --tier all --skip-parse --active-search
+# Disable Tier 2 active search (cheaper / faster; it is ON by default)
+./bin/tlvb run MY-FULL-001 --tier all --skip-parse --no-active-search
 ```
 
 When it finishes:
@@ -403,7 +402,7 @@ CASE=MY-FULL-001    # your case ID
 # Additionally run Tier 1B (anomaly_hunter) on an existing case
 ./bin/tlvb analyze $CASE --tier 1b --skill anomaly_hunter
 
-# Re-synthesize with Tier 2 (default; use --active-search for wide-range exploration)
+# Re-synthesize with Tier 2 (active-search ON by default; add --active-search=false to disable)
 ./bin/tlvb synthesize $CASE
 
 # Regenerate the report (Tier 3 by default)
