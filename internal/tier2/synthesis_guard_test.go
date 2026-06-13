@@ -73,10 +73,16 @@ func TestIsBenignCluster(t *testing.T) {
 		want    bool
 	}{
 		{"temporal outlier", Cluster{AttackPhase: "execution"}, true, true},
-		{"explicit noise phase", Cluster{AttackPhase: "noise"}, false, true},
-		{"sysprep narrative", Cluster{AttackPhase: "execution", Narrative: "This is Sysprep first boot activity"}, false, true},
+		{"noise phase, no high finding", Cluster{AttackPhase: "noise", Findings: []Finding{{Severity: "low"}}}, false, true},
+		{"noise phase but HIGH finding stays", Cluster{AttackPhase: "noise", Findings: []Finding{{Severity: "high"}}}, false, false},
 		{"empty phase is NOT benign", Cluster{AttackPhase: ""}, false, false},
 		{"real attack", Cluster{AttackPhase: "credential-access", Narrative: "LSASS dump attempt"}, false, false},
+		// Robust contract: narrative wording never drives exclusion. A real attack
+		// cluster that merely NOTES a per-finding false positive (誤検知) or explains
+		// provisioning/boot context must NOT be excluded wholesale — that dropped
+		// the credential-access and defense-evasion clusters in distrib_winrm_spray.
+		{"attack noting a FP is NOT benign", Cluster{AttackPhase: "credential-access", Narrative: "ブルートフォース成功。なお一部の署名は誤検知である。"}, false, false},
+		{"attack explaining boot context is NOT benign", Cluster{AttackPhase: "defense-evasion", Narrative: "起動シーケンス後にクロックが巻き戻された"}, false, false},
 	}
 	for _, tc := range cases {
 		if got := isBenignCluster(tc.c, tc.outlier); got != tc.want {
@@ -141,23 +147,30 @@ func TestFindUngroundedMentions(t *testing.T) {
 	findings := []Finding{
 		{Title: "comsvcs.dll LSASS dump attempt", MITRETechniques: []string{"T1003.001"}},
 	}
+	confirmed := map[string]bool{"T1003.001": true} // confirmed matrix has no PtH / web shell
 	prose := "The attacker used Mimikatz to dump credentials and dropped a web shell for persistence; they also performed Pass-the-Hash."
-	got := findUngroundedMentions(prose, findings)
+	got := findUngroundedMentions(prose, findings, confirmed)
 	want := []string{"Mimikatz", "Web shell", "Pass-the-Hash"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ungrounded = %v, want %v", got, want)
 	}
 
-	// Grounded by a finding that names the tool → not reported.
+	// Tool name grounded by a finding that names the tool → not reported.
 	grounded := []Finding{{Title: "Mimikatz execution detected", MITRETechniques: []string{"T1003.001"}}}
-	if got := findUngroundedMentions("Mimikatz was run", grounded); len(got) != 0 {
+	if got := findUngroundedMentions("Mimikatz was run", grounded, confirmed); len(got) != 0 {
 		t.Errorf("Mimikatz is backed by a finding, should not be ungrounded: %v", got)
 	}
 
-	// Grounded by a corroborating technique tag → not reported.
-	pth := []Finding{{Title: "NTLM hash reuse", MITRETechniques: []string{"T1550.002"}}}
-	if got := findUngroundedMentions("evidence of Pass-the-Hash", pth); len(got) != 0 {
-		t.Errorf("Pass-the-Hash backed by T1550.002 should not be ungrounded: %v", got)
+	// Technique phrase grounded by a CONFIRMED technique → not reported.
+	if got := findUngroundedMentions("evidence of Pass-the-Hash", nil, map[string]bool{"T1550.002": true}); len(got) != 0 {
+		t.Errorf("Pass-the-Hash backed by a confirmed T1550.002 should not be ungrounded: %v", got)
+	}
+
+	// Regression: a finding NAMED "Pass the Hash Activity" but DEMOTED (T1550.002
+	// not in the confirmed set) must NOT ground the phrase — it stays flagged.
+	namedButDemoted := []Finding{{Title: "Pass the Hash Activity 2", MITRETechniques: []string{"T1550.002"}}}
+	if got := findUngroundedMentions("evidence of Pass-the-Hash", namedButDemoted, map[string]bool{}); !reflect.DeepEqual(got, []string{"Pass-the-Hash"}) {
+		t.Errorf("a demoted PtH must stay flagged despite the finding name, got %v", got)
 	}
 }
 

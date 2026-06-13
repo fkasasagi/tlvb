@@ -4,6 +4,40 @@ All notable changes to TLVB.
 
 ## [Unreleased]
 
+### Fixed — synthesis guardrails: real-run hardening (issue #82 follow-up)
+
+Found by actually re-running `synthesize` on the real `distrib_winrm_spray` case
+(the deterministic guardrails were correct, but interacted badly with the live
+LLM narratives):
+
+- **Benign-cluster over-exclusion (critical).** `isBenignCluster` reused the
+  noise-narrative keywords, which include per-finding "false positive" words
+  (誤検知 / false positive). An analyst routinely notes that a *few* findings in a
+  real attack cluster are FPs, so the whole credential-access cluster (brute
+  force + recon, 32 findings) was dropped from the MITRE matrix — taking
+  T1110.001 with it (confirmed fell to 8). `isBenignCluster` now keys only off a
+  temporal outlier or an explicit "noise" phase, and a "noise" phase excludes a
+  cluster ONLY when it has no high/critical finding (a real attack cluster, which
+  always carries high-severity hits, can never be silently dropped).
+- **Prose grounding consistency.** `findUngroundedMentions` grounded a technique
+  phrase if any finding merely *carried or was named after* it — so a demoted
+  Pass-the-Hash stayed unflagged because a finding was literally titled "Pass the
+  Hash Activity 2". Technique phrases are now grounded only by the
+  POST-corroboration confirmed matrix, so demoted web-shell / PtH claims in the
+  prose are flagged as unconfirmed.
+- **Per-cluster timeline steering.** The clock-reversal warning is now injected
+  into each per-cluster narrative prompt (previously only the overall call got
+  it), and the cluster phase enum gained a "noise" option for genuinely benign
+  clusters. This removed the clock-rewind / Mimikatz / web-shell language from the
+  generated prose.
+- **Timeline note text** no longer claims a "year-apart cluster" when the actual
+  trigger was a same-day clock reversal.
+
+Real-run result: confirmed MITRE 40 → 31 (T1110.001 brute force included), the
+four FP tags demoted with reasons, Web shell / Pass-the-Hash flagged as
+ungrounded, executive brief correctly calls the 06-13 boot benign and the clock
+shift a config artifact (not an attacker timestomp / re-intrusion).
+
 ### Fixed — Tier 2/3 synthesis guardrails (issue #82)
 
 Deterministic, case-agnostic guardrails that stop four hallucination modes an

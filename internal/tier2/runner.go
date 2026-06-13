@@ -234,7 +234,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	audit := SynthAudit{ClustersAnalysed: 0, SkillSHA256: skillSHAHex}
 	for i := range clusters {
-		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit, db); err != nil {
+		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit, db, gctx.ClockReversed); err != nil {
 			// graceful: skip the cluster but keep going
 			audit.ClustersSkippedNoLLM++
 			emit(cfg, Event{Phase: "llm",
@@ -438,10 +438,10 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 // ----------------------------------------------------------------------------
 
 func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt string,
-	audit *SynthAudit, db *sql.DB) error {
+	audit *SynthAudit, db *sql.DB, clockReversed bool) error {
 
 	evidenceEnabled := cfg.EvidenceFetch && db != nil
-	userMsg, err := buildClusterUserMessage(c, cfg.Language, evidenceEnabled)
+	userMsg, err := buildClusterUserMessage(c, cfg.Language, evidenceEnabled, clockReversed)
 	if err != nil {
 		return err
 	}
@@ -947,7 +947,7 @@ func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
 	return &out, nil
 }
 
-func buildClusterUserMessage(c *Cluster, lang string, evidenceEnabled bool) (string, error) {
+func buildClusterUserMessage(c *Cluster, lang string, evidenceEnabled, clockReversed bool) (string, error) {
 	type fLite struct {
 		Source          string   `json:"source"`
 		RuleID          string   `json:"rule_id"`
@@ -1035,7 +1035,7 @@ Return ONLY a single JSON object:
 
   {
     "narrative": "(1-3 paragraphs for a human reader. Do NOT embed rule_ids, audit_ids, or UUIDs in the prose — those belong in the evidence arrays only. Mention tools, accounts, and techniques by descriptive name.)",
-    "attack_phase": "(one of: initial-access | execution | persistence | privilege-escalation | defense-evasion | credential-access | discovery | lateral-movement | collection | command-and-control | exfiltration | impact | reconnaissance | unknown)",
+    "attack_phase": "(one of: initial-access | execution | persistence | privilege-escalation | defense-evasion | credential-access | discovery | lateral-movement | collection | command-and-control | exfiltration | impact | reconnaissance | noise | unknown. Use \"noise\" ONLY when the ENTIRE cluster is benign pre-existing system activity — e.g. a pure OS-boot sequence or provisioning with no attacker action mixed in. If the cluster contains ANY attacker activity (recon, execution, credential access) alongside a benign event like a clock change, classify it by the ATTACK phase, not noise.)",
     "mitre_techniques": ["T1059", "T1003.001"],
     "open_questions": [
       "(specific evidence gap or unresolved question — same language as narrative)",
@@ -1043,11 +1043,29 @@ Return ONLY a single JSON object:
     ]` + reqFilesKey + `
   }
 
-No markdown fences, no text outside the JSON.` + reqFilesRule + `
+No markdown fences, no text outside the JSON.` + reqFilesRule + clusterTimelineWarning(clockReversed) + `
 
 ClusterContext:
 `
 	return prelude + string(body), nil
+}
+
+// clusterTimelineWarning steers a per-cluster narrative away from the
+// clock-reversal hallucination (attacker timestomp / re-intrusion) when the case
+// timeline is known to be non-monotonic. Empty when the clock is reliable.
+func clusterTimelineWarning(clockReversed bool) string {
+	if !clockReversed {
+		return ""
+	}
+	return `
+
+TIMELINE WARNING: this case's clock was stepped backward (a system time change),
+so event timestamps are NOT a reliable order and may sit out of sequence. Do NOT
+describe an attacker "rewinding the clock", a "re-intrusion", or a "second phase"
+to explain out-of-order events — treat a backward time change as most likely
+provisioning / OS-setup / a Set-Date correction unless an attacker-context process
+demonstrably called a time-change API. Prefer "timeline unreliable / re-anchor
+required" over an anti-forensic conclusion.`
 }
 
 func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool) (string, error) {
@@ -1077,7 +1095,10 @@ func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang st
 			MITRETechniques:  findingTechniqueUnion(c),
 			MITREUnconfirmed: clusterUnconfirmedTechniques(c),
 			FindingCount:     len(c.Findings),
-			IsNoiseCandidate: IsNoiseCluster(c.AttackPhase, c.Narrative) || temporalOutlier[i],
+			// Use the STRICT benign predicate (not IsNoiseCluster): a cluster that
+			// merely notes a per-finding false positive must not be flagged "noise"
+			// to the overall LLM, or it drops the real attack from the summary.
+			IsNoiseCandidate: isBenignCluster(c, temporalOutlier[i]),
 		}
 		if !c.StartTS.IsZero() {
 			cl.WindowStart = c.StartTS.Format(time.RFC3339)
@@ -1274,27 +1295,54 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 	cs.MITREDemotionNotes = demoteNotes
 	cs.OpenQuestions = mergeAllOpenQuestions(clusters)
 	cs.TimelineReliability, cs.TimelineNotes = detectTimelineReliability(clusters, gctx.ClockReversed, lang)
-	cs.UngroundedMentions = findUngroundedMentions(execBrief+"\n"+techSummary, findings)
+	confirmedTech := map[string]bool{}
+	for _, e := range confirmed {
+		confirmedTech[e.Technique] = true
+	}
+	cs.UngroundedMentions = findUngroundedMentions(execBrief+"\n"+techSummary, findings, confirmedTech)
 	return cs
 }
 
-// isBenignCluster reports whether a cluster was AFFIRMATIVELY classified as
-// pre-existing system / provisioning activity and must therefore be excluded
-// from the attack MITRE matrix and IOC derivation (issue #82, task 4 — stop a
-// benign boot/provisioning cluster from being double-counted as attacker
-// action). Unlike IsNoiseCluster it does NOT treat a merely empty/unknown
-// AttackPhase as benign: "not yet analysed" is not the same as "benign", and
-// findings with rule-tagged techniques in an unphased cluster must still count.
+// isBenignCluster reports whether a cluster must be excluded from the attack
+// MITRE matrix and IOC derivation because it is pre-existing system /
+// provisioning activity (issue #82, task 4 — stop benign boot/provisioning being
+// double-counted as attacker action).
+//
+// It keys ONLY off robust, unambiguous signals: a temporal outlier (a cluster a
+// year+ from the others = provisioning bundled into the case) or an explicit
+// "noise" AttackPhase (the LLM's affirmative judgment). It deliberately does NOT
+// sniff narrative keywords: the LLM routinely discusses provisioning / boot /
+// false-positive context INSIDE a genuine attack cluster, and a single such word
+// must never exclude a real attack wholesale. (Regression caught in the
+// distrib_winrm_spray run: the credential-access cluster — brute force + recon —
+// was dropped because its narrative mentioned 誤検知 for one signature, taking
+// T1110.001 with it; the defense-evasion cluster was dropped for mentioning the
+// provisioning context.) The corroboration layer (splitCorroboratedMITRE) is the
+// transparent path for demoting specific FP-prone technique tags with a recorded
+// reason, rather than silently dropping a cluster.
 func isBenignCluster(c Cluster, temporalOutlier bool) bool {
 	if temporalOutlier {
 		return true
 	}
+	// An LLM "noise" label only excludes a cluster that carries NO high/critical
+	// signature finding. This is the deterministic safety net: a real attack
+	// cluster always carries high-severity Tier 1 hits, so even if the LLM
+	// mislabels it "noise" (it over-applied the label to a WinRM attack session
+	// that merely started with a benign clock change in the distrib_winrm_spray
+	// run), its techniques are never silently dropped from the matrix.
 	if strings.TrimSpace(strings.ToLower(c.AttackPhase)) == "noise" {
-		return true
+		return !clusterHasSignificantFinding(c)
 	}
-	lower := strings.ToLower(c.Narrative)
-	for _, kw := range noiseNarrativeKeywords {
-		if strings.Contains(lower, kw) {
+	return false
+}
+
+// clusterHasSignificantFinding reports whether any finding in the cluster is
+// high or critical severity — the signal that real attacker activity is present
+// regardless of how the LLM phased the cluster.
+func clusterHasSignificantFinding(c Cluster) bool {
+	for _, f := range c.Findings {
+		switch strings.ToLower(strings.TrimSpace(f.Severity)) {
+		case "high", "critical":
 			return true
 		}
 	}
