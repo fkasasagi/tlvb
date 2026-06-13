@@ -12,7 +12,7 @@ import (
 //
 //	tlvb run CASE_ID --tier all [--evidence PATH] [--evidence-id EV-001]
 //	   [--skip-parse] [--skip-1a] [--skip-1b] [--skip-2] [--skip-report]
-//	   [--active-search] [--max-self-correct N] [--format html,csv,json] [--language ja|en]
+//	   [--active-search] [--max-self-correct N] [--max-reframe N] [--format html,csv,json] [--language ja|en]
 //	   [--include-info-level]
 //
 // It chains the existing TLVB CLI sub-flows in order:
@@ -31,25 +31,26 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 	// Manually parse our flags then forward residual args to nothing
 	// (we call each TLVB stage with the args it needs).
 	var (
-		evPath           string
-		evID             = "EV-001"
-		caseName         = "TLVB pipeline " + caseID
-		examiner         = ""
-		dbPath           = "outputs/cases.duckdb"
-		skipParse        bool
-		skip1A           bool
-		skip1B           bool
-		skip2            bool
-		skipReport       bool
-		activeSearch     bool
-		maxSelfCorrect   string // forwarded verbatim to synthesize; "" = synthesize default
-		demoInjectFault  bool
-		noEvidenceFetch  bool // disable on-demand file extraction in Tier 1B/2
-		includeInfoLevel bool
-		format           = "html,csv,json"
-		language         = "ja"
-		model            string
-		timezone         = "UTC"
+		evPath            string
+		evID              = "EV-001"
+		caseName          = "TLVB pipeline " + caseID
+		examiner          = ""
+		dbPath            = "outputs/cases.duckdb"
+		skipParse         bool
+		skip1A            bool
+		skip1B            bool
+		skip2             bool
+		skipReport        bool
+		activeSearch      bool
+		maxSelfCorrect    string // forwarded verbatim to synthesize; "" = synthesize default
+		maxReframe        string // forwarded verbatim to synthesize; "" = synthesize default
+		reproduceLLMFault bool
+		noEvidenceFetch   bool // disable on-demand file extraction in Tier 1B/2
+		includeInfoLevel  bool
+		format            = "html,csv,json"
+		language          = "ja"
+		model             string
+		timezone          = "UTC"
 	)
 	args := rawArgs
 	for i := 0; i < len(args); i++ {
@@ -134,8 +135,14 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 			}
 		case strings.HasPrefix(a, "--max-self-correct="):
 			maxSelfCorrect = strings.TrimPrefix(a, "--max-self-correct=")
-		case a == "--demo-inject-sql-fault":
-			demoInjectFault = true
+		case a == "--max-reframe":
+			if v, ok := next(); ok {
+				maxReframe = v
+			}
+		case strings.HasPrefix(a, "--max-reframe="):
+			maxReframe = strings.TrimPrefix(a, "--max-reframe=")
+		case a == "--reproduce-llm-fault":
+			reproduceLLMFault = true
 		case a == "--no-evidence-fetch":
 			noEvidenceFetch = true
 		case a == "--include-info-level":
@@ -229,8 +236,11 @@ func runPipelineTLVB(caseID string, rawArgs []string) error {
 		if maxSelfCorrect != "" {
 			args2 = append(args2, "--max-self-correct", maxSelfCorrect)
 		}
-		if demoInjectFault {
-			args2 = append(args2, "--demo-inject-sql-fault")
+		if maxReframe != "" {
+			args2 = append(args2, "--max-reframe", maxReframe)
+		}
+		if reproduceLLMFault {
+			args2 = append(args2, "--reproduce-llm-fault")
 		}
 		if model != "" {
 			args2 = append(args2, "--model", model)

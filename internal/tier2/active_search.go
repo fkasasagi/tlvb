@@ -636,7 +636,7 @@ If no meaningful correction is possible, return {"sql":""} and we stop.`
 // correctActiveSearchSQL asks the LLM to repair one failed query. ss may be nil
 // (the system prompt still carries the EVTX guidance).
 func correctActiveSearchSQL(ctx context.Context, cfg Config, question, failedSQL,
-	failureReason string, attempt int, ss *schemaSamples, audit *SynthAudit) (string, error) {
+	failureReason string, attempt, clusterID int, ss *schemaSamples, audit *SynthAudit) (string, error) {
 
 	type correctionCtx struct {
 		Question      string         `json:"question"`
@@ -665,7 +665,7 @@ func correctActiveSearchSQL(ctx context.Context, cfg Config, question, failedSQL
 	// Emit with the attempt number so the audit trail pairs each correction
 	// round with the active_sql attempt it was trying to fix.
 	corrAction := auditlog.Action{Actor: "tier2", Kind: "llm_call", Detail: "active_search_correct",
-		Attempt: attempt, Model: cfg.Model, DurationSeconds: dur.Seconds()}
+		ClusterID: clusterID, Attempt: attempt, Model: cfg.Model, DurationSeconds: dur.Seconds()}
 	if err != nil {
 		corrAction.Success = auditlog.BoolPtr(false)
 		corrAction.Error = truncate(err.Error(), 200)
@@ -696,24 +696,131 @@ func parseActiveSearchCorrection(text string) (activeSearchSQLEntry, error) {
 	return e, nil
 }
 
+// activeSearchReframeSystemPrompt drives an investigative pivot. The previous
+// SQL was syntactically and semantically valid but matched 0 rows. The model
+// must decide whether "nothing here" is the true answer or whether the question
+// was asked from the wrong angle, and, if the latter, re-issue from a DIFFERENT
+// artifact / field / hypothesis. This is the re-sequencing arc, not a syntax fix.
+const activeSearchReframeSystemPrompt = `You are in TLVB Tier 2 ACTIVE-SEARCH REFRAME mode.
+
+A DuckDB SELECT you proposed ran cleanly (no error) but returned 0 ROWS. Decide:
+
+(a) "Nothing here" is the genuine, honest answer to the open question (e.g. the
+    activity truly did not occur, or the data simply was not collected). In that
+    case DO NOT invent a pivot — return {"sql":""} and we record an honest negative.
+
+(b) The query asked from the WRONG ANGLE — wrong artifact, wrong field, wrong
+    EventId, too-narrow time window, or the wrong hypothesis. In that case
+    re-issue ONE SELECT from a genuinely DIFFERENT angle. You MUST change at
+    least one of: artifact_id, the projected/filtered field, or the hypothesis.
+    A reworded version of the same query is NOT allowed.
+
+Return ONLY a single JSON object (no array, no markdown fences, no prose):
+  {"question":"<unchanged open_question>","rationale":"<which angle you changed and why, or why 0 rows is the real answer>","sql":"<a different-angle SELECT, or empty string>"}
+
+Re-apply EVERY hard requirement to any SQL you return:
+- starts with SELECT or WITH; no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/ATTACH/PRAGMA; no semicolon
+- the first WHERE predicate is literally: case_id = ?   (exactly ONE ? placeholder)
+- output columns start with: audit_id, ts_utc, artifact_id, event_type
+- end with LIMIT N (N <= 500)
+- use only keys/values present in the provided schema_samples (for EVTX prefer
+  $.PayloadDataN, or $.raw.Payload via regexp_extract for eventdata fields).`
+
+// reframeActiveSearchSQL asks the LLM whether a 0-row result is a true negative
+// or a wrong-angle query, and, if the latter, returns a different-angle SELECT.
+// Returns "" when the model judges 0 rows the honest answer. ss may be nil.
+func reframeActiveSearchSQL(ctx context.Context, cfg Config, question, emptySQL,
+	reason string, attempt, clusterID int, ss *schemaSamples, audit *SynthAudit) (string, error) {
+
+	type reframeCtx struct {
+		Question       string         `json:"question"`
+		EmptyResultSQL string         `json:"empty_result_sql"`
+		Reason         string         `json:"reason"`
+		RowCount       int            `json:"row_count"`
+		Attempt        int            `json:"attempt"`
+		SchemaSamples  *schemaSamples `json:"schema_samples,omitempty"`
+	}
+	body, err := json.MarshalIndent(reframeCtx{
+		Question:       question,
+		EmptyResultSQL: emptySQL,
+		Reason:         reason,
+		RowCount:       0,
+		Attempt:        attempt,
+		SchemaSamples:  ss,
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
+	defer cancel()
+	startedAt := time.Now()
+	out, err := callClaude(subCtx, cfg, activeSearchReframeSystemPrompt, string(body))
+	dur := time.Since(startedAt)
+	audit.LLMCallsTotal++
+	audit.LLMDurationS += dur.Seconds()
+	// Emit with the attempt number so the audit trail pairs each reframe with
+	// the empty (no_evidence) attempt it pivoted away from. Distinct detail from
+	// active_search_correct so the two arcs are separable in the log and Web UI.
+	rfAction := auditlog.Action{Actor: "tier2", Kind: "llm_call", Detail: "active_search_reframe",
+		ClusterID: clusterID, Attempt: attempt, Model: cfg.Model, DurationSeconds: dur.Seconds()}
+	if err != nil {
+		rfAction.Success = auditlog.BoolPtr(false)
+		rfAction.Error = truncate(err.Error(), 200)
+	} else if out != nil {
+		rfAction.Success = auditlog.BoolPtr(true)
+		rfAction.InputTokens = out.Usage.InputTokens
+		rfAction.OutputTokens = out.Usage.OutputTokens
+		rfAction.CacheReadTokens = out.Usage.CacheReadInputTokens
+		rfAction.CostUSD = out.TotalCostUSD
+	}
+	cfg.al.Append(rfAction)
+	if err != nil {
+		return "", err
+	}
+	audit.addUsage(out)
+	entry, err := parseActiveSearchCorrection(out.Result)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(entry.SQL), nil
+}
+
 // sqlCorrector asks for a revised SQL given the previous SQL and why it failed.
 // The production impl calls the LLM; tests inject a stub. Returning "" (or the
 // same SQL, or an error) signals "give up — finalise as failed".
 type sqlCorrector func(ctx context.Context, prevSQL, failureReason string, attempt int) (string, error)
 
-// runActiveSQLWithSelfCorrection executes one open-question SQL with up to
-// maxCorrect self-correction rounds. Attempt 1 is the LLM's original SQL; on a
-// validation / execution / null-result failure it asks `correct` for a revision
-// and re-executes, recording every attempt on the result. This is TLVB's
-// runtime self-correction: the agent detects its own failed query and fixes it
-// without human intervention. The audit counters distinguish first-try success
-// from corrected success from unrecoverable failure.
+// sqlReframer asks for a DIFFERENT-angle SQL after a query ran cleanly but
+// returned 0 rows — an investigative pivot, not an error fix. Same signature as
+// sqlCorrector (a distinct type so call sites and stubs can't be confused).
+// Returning "" (or the same SQL, or an error) means "0 rows is the genuine
+// answer; do not pivot".
+type sqlReframer func(ctx context.Context, prevSQL, reason string, attempt int) (string, error)
+
+// runActiveSQLWithSelfCorrection executes one open-question SQL with two kinds of
+// runtime recovery, both without human intervention:
+//
+//   - self-correction (up to maxCorrect rounds): on a validation / execution /
+//     null-result FAILURE it asks `correct` to fix the same query and re-executes.
+//   - reframe / investigative pivot (up to maxReframe rounds): when a query runs
+//     cleanly but returns 0 ROWS, it asks `reframe` whether "nothing here" is the
+//     honest answer or the wrong angle; a different-angle SELECT re-sequences the
+//     investigation (different artifact/field/hypothesis) and re-executes.
+//
+// Attempt 1 is the LLM's original SQL. Every attempt is recorded on the result
+// and streamed to the audit log, so the full arc — hypothesis, empty/failed
+// result, the agent noticing, and its corrected or re-sequenced retry — is
+// reconstructable from the logs alone. The audit counters distinguish first-try
+// success, corrected success, a re-sequenced pivot, and an honest negative.
 func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 	question, initialSQL string, maxCorrect int, correct sqlCorrector,
+	reframe sqlReframer, maxReframe int,
 	audit *SynthAudit, al *auditlog.Logger, clusterID int) ActiveSearchResult {
 
 	res := ActiveSearchResult{Question: question, SQL: initialSQL}
 	sqlText := strings.TrimSpace(initialSQL)
+	corrUsed, reframeUsed := 0, 0
+	var didCorrect, didReframe bool
 
 	for attempt := 1; ; attempt++ {
 		at := SQLAttempt{N: attempt, SQL: sqlText}
@@ -722,7 +829,12 @@ func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 			at.Outcome, at.Error = "validation_error", verr.Error()
 		} else if n, rows, eerr := execActiveSQL(ctx, db, caseID, sqlText, 50); eerr != nil {
 			at.Outcome, at.Error = "execute_error", eerr.Error()
-		} else if n > 0 && allProjectedColumnsNull(rows) {
+		} else if n == 0 {
+			// Executed cleanly but matched nothing. Not an error — either the
+			// honest answer is "nothing here" or the query asked from the wrong
+			// angle. The reframe step below decides which.
+			at.Outcome, at.Hits = "no_evidence", 0
+		} else if allProjectedColumnsNull(rows) {
 			// Executed but every projected column is NULL — the classic wrong
 			// JSON path. "Executes" yet answers nothing, so treat as a failure
 			// the agent should try to correct.
@@ -734,9 +846,9 @@ func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 		}
 		res.Attempts = append(res.Attempts, at)
 		// Stream each attempt to the unified log the moment it happens, so the
-		// audit chronology is true: the correction LLM call lands between a
-		// failed attempt and its successful retry, not before both. (al is
-		// nil-safe — a no-op in unit tests.)
+		// audit chronology is true: the correction / reframe LLM call lands
+		// between an empty-or-failed attempt and its retry, not before both. (al
+		// is nil-safe — a no-op in unit tests.)
 		hits := at.Hits
 		al.Append(auditlog.Action{
 			Actor: "tier2", Kind: "active_sql", ClusterID: clusterID,
@@ -745,56 +857,90 @@ func runActiveSQLWithSelfCorrection(ctx context.Context, db *sql.DB, caseID,
 			Success: auditlog.BoolPtr(at.Outcome == "ok"),
 		})
 
-		if at.Outcome == "ok" {
+		switch at.Outcome {
+		case "ok":
 			res.SQL, res.Hits, res.Evidence, res.Error = sqlText, at.Hits, okEvidence, ""
-			if attempt > 1 {
-				res.Corrected = true
+			res.Corrected, res.Reframed = didCorrect, didReframe
+			if didCorrect {
 				audit.ActiveSQLSelfCorrected++
 			}
 			audit.ActiveSQLSucceeded++
 			return res
-		}
 
-		// Failed this attempt. Stop if we have no correction budget left.
-		if attempt > maxCorrect {
-			res.SQL, res.Hits = sqlText, at.Hits
-			res.Error = at.Outcome + ": " + at.Error
-			if at.Outcome == "null_result" {
-				audit.ActiveSQLNullResult++
+		case "no_evidence":
+			// Investigative pivot: ask whether 0 rows is the genuine answer or
+			// the wrong angle. A different, valid SELECT re-sequences the search.
+			if reframeUsed < maxReframe {
+				reframeUsed++
+				pivoted, rerr := reframe(ctx, sqlText, at.Outcome+": query executed but returned 0 rows", attempt)
+				pivoted = strings.TrimSpace(pivoted)
+				if rerr == nil && pivoted != "" && pivoted != sqlText &&
+					validateActiveSearchSQL(pivoted) == nil {
+					didReframe = true
+					audit.ActiveSQLReframed++
+					sqlText = pivoted
+					continue
+				}
 			}
+			// True negative (pivot declined, exhausted, or also empty): a clean
+			// 0-row result is the honest answer, not a failure.
+			res.SQL, res.Hits, res.Evidence, res.Error = sqlText, 0, nil, ""
+			res.Reframed = didReframe
+			audit.ActiveSQLNoEvidence++
+			audit.ActiveSQLSucceeded++
 			return res
-		}
-		audit.ActiveSQLCorrectionRounds++
-		corrected, cerr := correct(ctx, sqlText, at.Outcome+": "+at.Error, attempt)
-		corrected = strings.TrimSpace(corrected)
-		if cerr != nil || corrected == "" || corrected == sqlText {
-			res.SQL, res.Hits = sqlText, at.Hits
-			res.Error = at.Outcome + ": " + at.Error + " (self-correction produced no new query)"
-			if at.Outcome == "null_result" {
-				audit.ActiveSQLNullResult++
+
+		default: // validation_error | execute_error | null_result
+			if corrUsed >= maxCorrect {
+				res.SQL, res.Hits, res.Reframed = sqlText, at.Hits, didReframe
+				res.Error = at.Outcome + ": " + at.Error
+				if at.Outcome == "null_result" {
+					audit.ActiveSQLNullResult++
+				}
+				return res
 			}
-			return res
+			corrUsed++
+			audit.ActiveSQLCorrectionRounds++
+			corrected, cerr := correct(ctx, sqlText, at.Outcome+": "+at.Error, attempt)
+			corrected = strings.TrimSpace(corrected)
+			if cerr != nil || corrected == "" || corrected == sqlText {
+				res.SQL, res.Hits, res.Reframed = sqlText, at.Hits, didReframe
+				res.Error = at.Outcome + ": " + at.Error + " (self-correction produced no new query)"
+				if at.Outcome == "null_result" {
+					audit.ActiveSQLNullResult++
+				}
+				return res
+			}
+			didCorrect = true
+			sqlText = corrected
 		}
-		sqlText = corrected
 	}
 }
 
-// demoInjectSQLFault deliberately corrupts a query so the self-correction loop
-// has something to recover from. Used ONLY when Config.DemoInjectSQLFault is set
-// (a labelled fault-injection switch for demos — never default). It splices in a
-// predicate referencing a non-existent column right after the case_id binding;
-// DuckDB rejects that at execution (execute_error, "column not found" — a very
-// common real LLM SQL mistake), and the correction round removes it and recovers.
-// Returns the SQL unchanged when the canonical "case_id = ?" anchor is absent so
-// the demo degrades gracefully instead of producing un-fixable SQL.
-func demoInjectSQLFault(sqlText string) string {
+// injectRealisticLLMFault rewrites a query to REPRODUCE the single most common
+// real active-search LLM mistake: treating a Windows EventData field name as a
+// queryable top-level column. It splices `AND TargetUserName IS NOT NULL` right
+// after the case_id binding; DuckDB rejects that at execution ("Referenced
+// column TargetUserName not found" — exactly the schema mistake the system
+// prompt 5a warns against), and the self-correction round rewrites it to the
+// correct json_extract_string($.PayloadDataN / $.raw.Payload) form and recovers.
+//
+// Used ONLY when Config.ReproduceLLMFault is set — a labelled reproduction aid
+// (never default) so the natural error→correction arc is guaranteed to appear
+// once on camera within a short demo. Unlike a synthetic marker column, the
+// failed attempt is indistinguishable from a genuine LLM miss in the audit log;
+// the switch is disclosed in docs/DEMO_SCRIPT.md and docs/ACCURACY.md so the
+// injection is never passed off as a spontaneous recovery. Returns the SQL
+// unchanged when the canonical "case_id = ?" anchor is absent so it degrades
+// gracefully instead of producing un-fixable SQL.
+func injectRealisticLLMFault(sqlText string) string {
 	const anchor = "case_id = ?"
 	idx := strings.Index(sqlText, anchor)
 	if idx < 0 {
 		return sqlText
 	}
 	pos := idx + len(anchor)
-	return sqlText[:pos] + " AND __demo_injected_fault__ = 1" + sqlText[pos:]
+	return sqlText[:pos] + " AND TargetUserName IS NOT NULL" + sqlText[pos:]
 }
 
 // ----------------------------------------------------------------------------
@@ -816,6 +962,13 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 	case maxCorrect < 0:
 		maxCorrect = 0 // explicitly disabled
 	}
+	maxReframe := cfg.MaxReframe
+	switch {
+	case maxReframe == 0:
+		maxReframe = 1 // default: up to 1 investigative pivot per 0-row query
+	case maxReframe < 0:
+		maxReframe = 0 // explicitly disabled
+	}
 	for i := range clusters {
 		c := &clusters[i]
 		if len(c.OpenQuestions) == 0 {
@@ -835,15 +988,19 @@ func RunActiveSearch(ctx context.Context, cfg Config, db *sql.DB,
 			audit.ActiveSQLAttempted++
 			question := e.Question
 			initialSQL := e.SQL
-			if cfg.DemoInjectSQLFault && ei == 0 {
-				// Demo: break the first query of each cluster so the loop recovers.
-				initialSQL = demoInjectSQLFault(e.SQL)
+			if cfg.ReproduceLLMFault && ei == 0 {
+				// Reproduction aid: reproduce a realistic field-as-column mistake
+				// on the first query of each cluster so the loop visibly recovers.
+				initialSQL = injectRealisticLLMFault(e.SQL)
 			}
 			correct := func(cctx context.Context, prevSQL, failureReason string, attempt int) (string, error) {
-				return correctActiveSearchSQL(cctx, cfg, question, prevSQL, failureReason, attempt, ss, audit)
+				return correctActiveSearchSQL(cctx, cfg, question, prevSQL, failureReason, attempt, c.ID, ss, audit)
+			}
+			reframe := func(cctx context.Context, prevSQL, reason string, attempt int) (string, error) {
+				return reframeActiveSearchSQL(cctx, cfg, question, prevSQL, reason, attempt, c.ID, ss, audit)
 			}
 			res := runActiveSQLWithSelfCorrection(ctx, db, cfg.CaseID, question, initialSQL,
-				maxCorrect, correct, audit, cfg.al, c.ID)
+				maxCorrect, correct, reframe, maxReframe, audit, cfg.al, c.ID)
 			results = append(results, res)
 		}
 		c.ActiveSearch = results
