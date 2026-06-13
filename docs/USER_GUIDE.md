@@ -51,6 +51,12 @@ takes anywhere from a few days to a few weeks.
 TLVB hands that **initial triage** off to an **AI agent** to automate it, so
 that the human only needs to review the "things that look important."
 
+> **Scope**: TLVB covers **disk forensics for Windows incident response**.
+> It works on **disk-resident** artifacts (event logs, registry, the file
+> system, execution traces, browser history, and the like) collected from a PC
+> as a triage ZIP or a disk image. Live **memory forensics** and **network /
+> packet (PCAP) forensics** are out of scope.
+
 ```
 [data from a PC suspected of being attacked] → [TLVB] → [list of suspicious points]
                                        ↓

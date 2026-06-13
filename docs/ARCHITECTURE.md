@@ -1,7 +1,13 @@
 # TLVB — Architecture
 
-*Timeline Longa, Vita Brevis* — an autonomous Windows-forensics IR agent that
-runs on a Linux terminal / SIFT Workstation.
+*Timeline Longa, Vita Brevis* — an autonomous **Windows disk-forensics** IR
+agent that runs on a Linux terminal / SIFT Workstation.
+
+**Scope.** TLVB analyzes **disk-resident** Windows artifacts acquired as a triage
+collection or disk image (E01 / raw / VMDK / VHD / VHDX) — see the evidence
+sources in §1. Live **memory forensics** and **network / packet (PCAP)
+forensics** are out of scope by default; memory- and Sysmon-dependent rules stay
+disabled unless those artifacts are present in the evidence.
 
 This document is the **architecture diagram** for the FIND EVIL! submission. It
 shows how the **evidence sources**, **SIFT tools**, **analysis agents**, the
