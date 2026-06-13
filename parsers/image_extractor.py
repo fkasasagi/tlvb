@@ -472,7 +472,7 @@ def extract(
 
     with extract_log.open("w", encoding="utf-8") as fh:
         fh.write(json.dumps({
-            "schema": "findevil/extract-log/v1",
+            "schema": "tlvb/extract-log/v1",
             "evidence_id": evidence_id or "",
             "image_path": str(image_path),
             "image_format": fmt,

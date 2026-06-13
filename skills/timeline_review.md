@@ -304,7 +304,7 @@ prose, no markdown fences. The Synthesizer parses your reply with
 
 ```json
 {
-  "schema": "findevil/timeline-review/v1",
+  "schema": "tlvb/timeline-review/v1",
   "case_id": "<from input>",
   "evidence_ids": ["<from input>"],
   "language": "ja | en",

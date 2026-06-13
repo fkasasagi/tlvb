@@ -14,7 +14,7 @@ func writeExtractLog(t *testing.T, path, evidenceID, imagePath string, targets .
 		t.Fatal(err)
 	}
 	lines := []string{
-		`{"schema":"findevil/extract-log/v1","evidence_id":"` + evidenceID +
+		`{"schema":"tlvb/extract-log/v1","evidence_id":"` + evidenceID +
 			`","image_path":"` + imagePath + `","image_format":"ewf","mount_method":"ewfmount"}`,
 	}
 	for _, tg := range targets {

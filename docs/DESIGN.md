@@ -8,11 +8,11 @@ Tier 0 / 1A (build + runtime + Hayabusa pass-through) / 1B (MVP + 強化済 pref
 
 ## 0. 設計思想
 
-TLVB は findevil(Windows フォレンジック自律 IR エージェント)の構造を引き継ぎつつ、
+TLVB は moai(Windows フォレンジック自律 IR エージェント)の構造を引き継ぎつつ、
 **「シグネチャ駆動 SQL + 抽象観察 + タイムライン解析」** の 3 層を明確に分離した
-リエンジニア版である。findevil との根本的な差分:
+リエンジニア版である。moai との根本的な差分:
 
-| 観点 | findevil | TLVB |
+| 観点 | moai | TLVB |
 |---|---|---|
 | Tier 1 の単位 | 10 ATT&CK tactic に固定、tactic ごとに LLM が SQL を生成 | rule 単位、build 時に 1 度だけ LLM で SQL 化して cache |
 | Runtime LLM コスト | 1 ケースあたり Tier 1 で 10 回呼ぶ | Tier 1A で 0 回。Tier 1B のみ |
@@ -26,7 +26,7 @@ INPUT (collector zip / disk image / live triage)
   ↓
 Tier 0   Parser ×N (Python)
          → DuckDB cases.duckdb の unified_events に正規化
-         ※ findevil から流用
+         ※ moai から流用
   ↓
 ─────────────────── 【Build 時 (lazy, model/corpus 更新で増分)】 ────
   rules/sigma/upstream/**.yml         (git submodule)
@@ -45,7 +45,7 @@ Tier 1A  Signature-driven Runtime (★LLM ゼロ)
          → findings/by-rule/<rule_source>/<rule_id>.json
   ↓
 Tier 1B  Skills-driven Anomaly
-         skills/*.md (findevil 12 個流用) 由来の cached SQL 実行
+         skills/*.md (moai 12 個流用) 由来の cached SQL 実行
          + 1A findings を context として LLM が抽象パターン推論
          + LLM が必要なら新 SQL 考案 → cache 追記 (LLM 自身が hit/新規判定)
          → findings/by-skill/<skill>.json
@@ -55,10 +55,10 @@ Tier 2   Timeline Analysis Agent
          能動: 仮説駆動 wide-range SQL で広域探索
          → synthesis.json (attack chain + 矛盾解消)
   ↓
-Tier 3   Reporter (HTML / CSV / JSON, ja/en, findevil 流用)
+Tier 3   Reporter (HTML / CSV / JSON, ja/en, moai 流用)
 ```
 
-## 2. Tier 0 — Parser 層 (findevil 流用)
+## 2. Tier 0 — Parser 層 (moai 流用)
 
 17 アーティファクト + 5 skeleton。`parsers/orchestrator.py` がディスパッチ。
 各パーサは Python サブプロセスで EZ Tools / Hayabusa / Plaso 等を呼び、
@@ -190,7 +190,7 @@ v0.1 では sysmon を含めない方針 (CLI flag `--include-sysmon` で opt-in
 
 ## 4. Tier 1B — Skills-driven Anomaly Agent (MVP 実装済)
 
-findevil の `skills/*.md` 12 個 (10 tactic + anomaly_hunter + timeline_review)
+moai の `skills/*.md` 12 個 (10 tactic + anomaly_hunter + timeline_review)
 をそのまま流用。v0.1 MVP では skill 1 つ (`anomaly_hunter.md`) のみ active。
 
 実装: `internal/tier1b/`(runner / prior / prefilter / types)
@@ -317,12 +317,12 @@ synthesis.json を入力に、3 形式の output を `outputs/cases/<id>/reports
 CLI: `tlvb report CASE_ID --tier 3 [--format html,csv,json] [--language ja|en]
                                    [--synthesis PATH] [--out-dir DIR]`
 
-注: 旧 `internal/reporter/` (findevil の TacticReport 用) はそのまま残置、
+注: 旧 `internal/reporter/` (moai の TacticReport 用) はそのまま残置、
 v0.1 では `--tier 3` の付かない `tlvb report` で起動可能(legacy 経路)。
 
 ## 7. データモデル
 
-### 7.1 `cases.duckdb` (findevil 流用)
+### 7.1 `cases.duckdb` (moai 流用)
 - `cases` (case_id PK, name, examiner, timezone, created_at, status)
 - `evidence` (evidence_id, case_id, path, sha256, size_bytes, ...)
 - `parse_results` (case_id, evidence_id, artifact_id PK, started_at, exit_code, row_count, ...)
@@ -353,10 +353,10 @@ outputs/cases/<id>/
 
 | Gate | 対象 | 形式 |
 |---|---|---|
-| Gate 0 | Tier 0 parse_results | findevil 流用、artifact 単位で OK/EMPTY/NOT_PRESENT/FAIL |
+| Gate 0 | Tier 0 parse_results | moai 流用、artifact 単位で OK/EMPTY/NOT_PRESENT/FAIL |
 | Gate 1A | Tier 1A findings | severity (Sigma `level:`) で auto-approve、手動 override 可、cluster 単位バルク可 |
 | Gate 1B | Tier 1B findings | 全件 Examiner レビュー (件数が少ない想定) |
-| Gate 2 | Tier 2 timeline | findevil 流用 |
+| Gate 2 | Tier 2 timeline | moai 流用 |
 
 ## 9. MCP server
 
@@ -374,8 +374,8 @@ outputs/cases/<id>/
 ## 10. CLI
 
 ```
-tlvb case init|export|import|vacuum ...          (findevil 流用)
-tlvb parse --case-id ... --input PATH            (findevil 流用)
+tlvb case init|export|import|vacuum ...          (moai 流用)
+tlvb parse --case-id ... --input PATH            (moai 流用)
 tlvb rules build [--engine claude-code|anthropic-api] [--dry-run]
                  [--budget-yen N] [--max-rules N] [--source S]
                  [--rule-ids ID1,ID2,...] [--force]
@@ -395,7 +395,7 @@ tlvb review CASE_ID [--gate 0|1a|1b|2] [--examiner NAME]
 tlvb run CASE_ID --tier all --evidence PATH                        TLVB one-shot
        [--skip-parse|--skip-1a|--skip-1b|--skip-2|--skip-report]
        [--active-search] [--format html,csv,json] [--language ja|en]
-tlvb run CASE_ID --evidence PATH                                   legacy findevil pipeline
+tlvb run CASE_ID --evidence PATH                                   legacy moai pipeline
 tlvb status CASE_ID [-v] [--db PATH] [--rules-db PATH] [--case-root DIR]
 tlvb serve [--port 8080]                                           Web UI
 tlvb mcp-serve                                                     MCP server (stdio)
@@ -420,14 +420,15 @@ tlvb version
 5. **(d) Review UI Gate 1A** 未実装。CLI でも `tlvb review CASE_ID --gate 1a`
    経由で承認可能だが、Web UI 経由の severity badge + cluster 単位バルク UI
    は v0.2 候補。
-6. **findevil → TLVB のリネーム移行**: ドキュメント / scripts に findevil
-   名義が残存。CLAUDE.md「★ findevil → TLVB リネーム移行中」参照。
+6. **共有基盤の旧名残置**: 一部のコード / doc に共有基盤由来の旧名 (findevil) が
+   残る場合は `tlvb` と読み替える。姉妹プロジェクト moai (旧 findevil) との関係は
+   CLAUDE.md「★ moai との関係 — sibling project」を参照。
 
 ## 12. v0.1 実装サマリ
 
 | 区分 | パッケージ / ファイル | 目的 |
 |---|---|---|
-| Tier 0 | `parsers/`, `internal/casedb/` | 17 アーティファクトパース、unified_events ingest (findevil 流用) |
+| Tier 0 | `parsers/`, `internal/casedb/` | 17 アーティファクトパース、unified_events ingest (moai 流用) |
 | Tier 1A build | `internal/rulesrepo/`, `internal/rulebuild/`, `internal/rulesdb/` | Sigma/Hayabusa/STIX loader, LLM → SQL, rule_sql_cache |
 | Tier 1A runtime | `internal/tier1a/` | cached SQL 実行、Hayabusa pass-through |
 | Tier 1B | `internal/tier1b/` | skill-driven prefilter + LLM 推論 |

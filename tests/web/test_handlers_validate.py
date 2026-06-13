@@ -1,11 +1,11 @@
 """Web handler smoke tests — focus on the 400/422 validation paths.
 
-We spin up a real `bin/findevil serve` process on an ephemeral port and
+We spin up a real `bin/tlvb serve` process on an ephemeral port and
 poke it with urllib (no extra dependencies). Validation logic is in Go
 and not directly importable from Python; these tests are the closest
 we get to unit-testing it without adding *_test.go files.
 
-The whole suite skips automatically when `bin/findevil` isn't built —
+The whole suite skips automatically when `bin/tlvb` isn't built —
 intentional, so a fresh clone running `pytest` doesn't error before
 `make build`.
 """
@@ -25,7 +25,7 @@ import pytest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-BINARY    = REPO_ROOT / "bin" / "findevil"
+BINARY    = REPO_ROOT / "bin" / "tlvb"
 
 
 def _free_port() -> int:
@@ -36,13 +36,13 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
-    """Boot `findevil serve` once per module — fast, no DB persistence."""
+    """Boot `tlvb serve` once per module — fast, no DB persistence."""
     if not BINARY.is_file():
         pytest.skip(f"{BINARY} not built — run `make build` first")
     workdir = tmp_path_factory.mktemp("server")
     db_path = workdir / "case.duckdb"
     port    = _free_port()
-    env     = {**os.environ, "FINDEVIL_PYTHON": "/projects/findevil/.venv/bin/python3"}
+    env     = {**os.environ, "TLVB_PYTHON": "/projects/tlvb/.venv/bin/python3"}
     proc = subprocess.Popen(
         [str(BINARY), "serve",
          "--addr", f"127.0.0.1:{port}",
@@ -137,7 +137,7 @@ def test_parse_accepts_image_mode_with_auto_format(server):
     (queued) or 5xx (job rejected later); we ONLY assert it's not a 400."""
     _create_case(server, "TST-VAL-5")
     code, _ = _post(server, "/api/cases/TST-VAL-5/parse",
-        {"evidences": [{"evidence_path": "/tmp/findevil-no-such-file.E01"}],
+        {"evidences": [{"evidence_path": "/tmp/tlvb-no-such-file.E01"}],
          "input_mode": "image", "image_format": "auto"})
     assert code != 400
 

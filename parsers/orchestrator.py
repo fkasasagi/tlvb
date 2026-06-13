@@ -19,7 +19,7 @@ Run from CLI as::
         --db outputs/cases.duckdb \
         --workspace outputs/cases/INC-2026-0001
 
-The orchestrator is invoked from Go via subprocess (``findevil parse``).
+The orchestrator is invoked from Go via subprocess (``tlvb parse``).
 """
 
 from __future__ import annotations

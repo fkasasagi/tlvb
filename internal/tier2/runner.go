@@ -38,12 +38,14 @@ type Config struct {
 	PerClusterTimeout time.Duration // default 5 min
 	ActiveSearch      bool          // enable hypothesis-driven SQL pass per cluster
 	MaxSelfCorrect    int           // active-search SQL self-correction rounds (0 = default 2; <0 disables)
-	// DemoInjectSQLFault corrupts the first active-search SQL per cluster so the
-	// self-correction loop visibly fires. Labelled fault-injection for demos /
+	MaxReframe        int           // active-search investigative-pivot rounds on a 0-row query (0 = default 1; <0 disables)
+	// ReproduceLLMFault rewrites the first active-search SQL per cluster to
+	// reproduce a realistic field-as-column LLM mistake so the self-correction
+	// loop visibly fires. A labelled reproduction aid for filming the demo /
 	// the "show self-correction at least once" requirement — never on by default.
-	DemoInjectSQLFault bool
-	DryRun             bool
-	ProgressFn         func(Event)
+	ReproduceLLMFault bool
+	DryRun            bool
+	ProgressFn        func(Event)
 
 	// --- On-demand evidence extraction (agent-driven file fetch) ---
 	// When enabled, a cluster analysis may list files in `requested_files`; the
@@ -90,6 +92,8 @@ type Report struct {
 	ActiveSQLSucceeded        int
 	ActiveSQLSelfCorrected    int
 	ActiveSQLCorrectionRounds int
+	ActiveSQLReframed         int
+	ActiveSQLNoEvidence       int
 
 	// On-demand evidence extraction accounting.
 	EvidenceRounds int
@@ -274,6 +278,8 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	rep.ActiveSQLSucceeded = audit.ActiveSQLSucceeded
 	rep.ActiveSQLSelfCorrected = audit.ActiveSQLSelfCorrected
 	rep.ActiveSQLCorrectionRounds = audit.ActiveSQLCorrectionRounds
+	rep.ActiveSQLReframed = audit.ActiveSQLReframed
+	rep.ActiveSQLNoEvidence = audit.ActiveSQLNoEvidence
 	rep.EvidenceRounds = audit.EvidenceRounds
 	rep.FilesRequested = audit.EvidenceFilesRequest
 	rep.FilesExtracted = audit.EvidenceFilesGot
@@ -557,7 +563,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 
 	// The overall call aggregates EVERY cluster's narrative, so it routinely
 	// needs more wall-clock than a single per-cluster call. Giving it the flat
-	// per-cluster timeout made multi-cluster cases (e.g. tamu2_3 with 11
+	// per-cluster timeout made multi-cluster cases (e.g. advm2_3 with 11
 	// clusters) consistently hit "context deadline exceeded" and fall back to
 	// the deterministic stitch — the root cause behind issue #51's "executive
 	// summary not functioning". Scale the budget with the cluster count.

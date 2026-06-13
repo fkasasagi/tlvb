@@ -286,8 +286,16 @@ EVTX_DIR=${EVTX_DIR:-./evtx-samples}
     --tier all \
     --evidence "$EVTX_DIR/Other" \
     --name "first-full-run" \
-    --examiner "$USER"
+    --examiner "$USER" \
+    --active-search
 ```
+
+`--active-search` turns on the self-correcting Tier 2 agent — the autonomy
+showcase. It proposes SQL to answer each cluster's open questions and recovers
+with no human in the loop two ways: it **fixes** a query that errors or returns
+all-NULL, and when a query runs clean but finds **0 rows** it **re-sequences**
+to a different artifact/field/hypothesis. Every attempt lands in
+`actions.jsonl`. Drop the flag for a cheaper, non-agentic run.
 
 This single command runs Tier 0→1A→1B→2→3:
 

@@ -13,7 +13,7 @@ import (
 
 func TestAnomalyHunter_HasDryRunMethod(t *testing.T) {
 	// Reflection check: a DryRun method must exist on *AnomalyHunter so
-	// the CLI branch (cmd/findevil/main.go) and any future caller can
+	// the CLI branch (cmd/tlvb/main.go) and any future caller can
 	// invoke it without going through Runner.DryRun.
 	typ := reflect.TypeOf(&AnomalyHunter{})
 	_, ok := typ.MethodByName("DryRun")

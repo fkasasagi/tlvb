@@ -13,7 +13,7 @@
 # provenance:  MCP > HOOK > SHELL > NONE。本ファイルで定義する全パーサーは MCP 経由なので MCP
 
 version: "0.1.0"
-schema: "findevil/artifacts/v1"
+schema: "tlvb/artifacts/v1"
 
 # ============================================================================
 # P0 (MVP 必須)
@@ -788,7 +788,7 @@ defaults:
   timeout_seconds: 600       # 1 アーティファクトあたりの最大実行時間
   output_encoding: utf-8
   timezone: UTC              # 全タイムスタンプを UTC で正規化
-  unified_event_schema: "findevil/unified-event/v1"
+  unified_event_schema: "tlvb/unified-event/v1"
 
 # UnifiedEvent JSON Lines 出力共通フィールド (パーサーが必ず出力)
 unified_event_required_fields:

@@ -136,9 +136,9 @@ Usage:
   tlvb analyze CASE_ID --tactic NAME [--engine claude-code|anthropic-api]    # legacy tactic-based
   tlvb analyze CASE_ID --tier 1a [--source S] [--rule R] [--max-evidence N]   # Tier 1A signature SQL runtime
   tlvb synthesize CASE_ID [--active-search] [--model M]                     # Tier 2 timeline analysis (LLM; default)
-  tlvb synthesize CASE_ID --legacy [--correct]                              # legacy findevil synthesizer (no LLM)
+  tlvb synthesize CASE_ID --legacy [--correct]                              # legacy moai synthesizer (no LLM)
   tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]   # Tier 3 DFIR report (default)
-  tlvb report CASE_ID --legacy                                              # legacy findevil reporter
+  tlvb report CASE_ID --legacy                                              # legacy moai reporter
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
   tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy tactic-based pipeline
   tlvb run CASE_ID --tier all --evidence PATH [--active-search]              # TLVB v0.1 one-shot pipeline
@@ -986,7 +986,7 @@ func runReport(args []string) error {
 	}
 
 	// Renderer selection (TLVB): the Tier 3 DFIR reporter (default) renders
-	// the tier2 CaseSynthesis. The legacy findevil reporter (TacticReport
+	// the tier2 CaseSynthesis. The legacy moai reporter (TacticReport
 	// schema) is opt-in via --legacy (alias --tier 1). --tier 3 is accepted
 	// as an explicit no-op for the default. (legacy retired 2026-06-03.)
 	legacy := false
@@ -1087,7 +1087,7 @@ func runSynthesize(args []string) error {
 
 	// Agent selection (TLVB): the Tier 2 Timeline Analysis Agent (default)
 	// clusters Tier 1 findings and analyses each cluster's timeline with an
-	// LLM. The legacy findevil synthesizer (deterministic, no LLM) is opt-in
+	// LLM. The legacy moai synthesizer (deterministic, no LLM) is opt-in
 	// via --legacy (alias --tier 1). --tier 2 is accepted as an explicit
 	// no-op for the default. NOTE: the default now calls the LLM (cost).
 	// (legacy retired 2026-06-03.)
@@ -1412,7 +1412,7 @@ func runFullPipeline(args []string) error {
 
 	// TLVB v0.1: `tlvb run CASE_ID --tier all --evidence PATH` runs the
 	// new TLVB pipeline (parse → analyze 1a → analyze 1b → synthesize 2
-	// → report 3). Without --tier, the legacy findevil tactic-based
+	// → report 3). Without --tier, the legacy moai tactic-based
 	// pipeline runs. Same prescan pattern as analyze / synthesize / report.
 	for i, a := range rest {
 		if a == "--tier" && i+1 < len(rest) && strings.ToLower(rest[i+1]) == "all" {

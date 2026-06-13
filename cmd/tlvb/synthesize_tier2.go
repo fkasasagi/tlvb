@@ -34,8 +34,10 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		"enable hypothesis-driven SQL pass per cluster (LLM proposes SQL to answer open_questions, executes against unified_events, then writes an addendum to the narrative)")
 	maxSelfCorrect := fs.Int("max-self-correct", 2,
 		"active-search SQL self-correction rounds when a proposed query fails or returns all-NULL (0 = disable; the agent feeds the failure back to the LLM and re-runs the revised SQL)")
-	demoInjectFault := fs.Bool("demo-inject-sql-fault", false,
-		"DEMO ONLY: deliberately corrupt the first active-search SQL per cluster (references a non-existent column) so the self-correction loop visibly fires; the agent detects the DB error and recovers")
+	maxReframe := fs.Int("max-reframe", 1,
+		"active-search investigative-pivot rounds when a query runs cleanly but returns 0 rows (0 = disable; the agent judges true-negative vs wrong-angle and re-issues from a different artifact/field/hypothesis)")
+	reproduceLLMFault := fs.Bool("reproduce-llm-fault", false,
+		"FILMING AID (never default): rewrite the first active-search SQL per cluster to reproduce the most common real LLM mistake — treating an EventData field (TargetUserName) as a top-level column — so the natural error→self-correction arc is guaranteed to appear once on camera. Indistinguishable from a genuine miss in the audit log; disclosed in docs/DEMO_SCRIPT.md")
 	dryRun := fs.Bool("dry-run", false, "skip LLM calls")
 	overallOnly := fs.Bool("overall-only", false,
 		"regenerate ONLY the case-wide executive summary (overall_story) in an existing synthesis.json and write it back in place — cheap refresh after a prompt/timeout change, no re-clustering / per-cluster / active-search")
@@ -70,28 +72,34 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	if msc <= 0 {
 		msc = -1
 	}
+	// Same mapping for the reframe (investigative-pivot) budget.
+	mrf := *maxReframe
+	if mrf <= 0 {
+		mrf = -1
+	}
 
 	cfg := tier2.Config{
-		CaseID:             caseID,
-		FindingsBaseDir:    *findingsBase,
-		OutputPath:         *outPath,
-		DBPath:             *dbPath,
-		SkillsDir:          *skillsDir,
-		SkillName:          *skillName,
-		Model:              *model,
-		Language:           *language,
-		ClusterGap:         time.Duration(*gapMinutes) * time.Minute,
-		TimelineWindow:     time.Duration(*windowMinutes) * time.Minute,
-		MaxRowsPerCluster:  *maxRowsPerCluster,
-		PerClusterTimeout:  time.Duration(*timeoutMinutes) * time.Minute,
-		ActiveSearch:       *activeSearch,
-		MaxSelfCorrect:     msc,
-		DemoInjectSQLFault: *demoInjectFault,
-		DryRun:             *dryRun,
-		EvidenceFetch:      *evidenceFetch,
-		MaxEvidenceRounds:  *maxEvidenceRounds,
-		MaxEvidenceFiles:   *maxEvidenceFiles,
-		PythonBin:          pyBin,
+		CaseID:            caseID,
+		FindingsBaseDir:   *findingsBase,
+		OutputPath:        *outPath,
+		DBPath:            *dbPath,
+		SkillsDir:         *skillsDir,
+		SkillName:         *skillName,
+		Model:             *model,
+		Language:          *language,
+		ClusterGap:        time.Duration(*gapMinutes) * time.Minute,
+		TimelineWindow:    time.Duration(*windowMinutes) * time.Minute,
+		MaxRowsPerCluster: *maxRowsPerCluster,
+		PerClusterTimeout: time.Duration(*timeoutMinutes) * time.Minute,
+		ActiveSearch:      *activeSearch,
+		MaxSelfCorrect:    msc,
+		MaxReframe:        mrf,
+		ReproduceLLMFault: *reproduceLLMFault,
+		DryRun:            *dryRun,
+		EvidenceFetch:     *evidenceFetch,
+		MaxEvidenceRounds: *maxEvidenceRounds,
+		MaxEvidenceFiles:  *maxEvidenceFiles,
+		PythonBin:         pyBin,
 		ProgressFn: func(ev tier2.Event) {
 			fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Phase, ev.Message)
 		},
@@ -130,6 +138,8 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		fmt.Printf("  active-search:     %d attempted / %d ok / %d self-corrected (%d correction rounds)\n",
 			rep.ActiveSQLAttempted, rep.ActiveSQLSucceeded,
 			rep.ActiveSQLSelfCorrected, rep.ActiveSQLCorrectionRounds)
+		fmt.Printf("  reframe (pivots):  %d re-sequenced / %d honest-negative (0-row)\n",
+			rep.ActiveSQLReframed, rep.ActiveSQLNoEvidence)
 	}
 	if rep.FilesRequested > 0 {
 		fmt.Printf("  evidence fetch:    %d requested / %d extracted (%d round(s))\n",

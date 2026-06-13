@@ -17,7 +17,7 @@
 //
 // Deferred to v0.2:
 //   - Active wide-range SQL generation (hypothesis-driven exploration)
-//   - Consistency rules R1-R4 (findevil-style)
+//   - Consistency rules R1-R4 (moai-style)
 //   - Cross-evidence correlation across multiple evidences in one case
 package tier2
 
@@ -111,6 +111,10 @@ type ActiveSearchResult struct {
 	// Corrected is true when the query failed on attempt 1 but a self-correction
 	// round produced a working query.
 	Corrected bool `json:"corrected,omitempty"`
+	// Reframed is true when a query that ran cleanly but returned 0 rows was
+	// re-issued from a different angle (artifact/field/hypothesis) — an
+	// investigative pivot, distinct from fixing a broken query (Corrected).
+	Reframed bool `json:"reframed,omitempty"`
 }
 
 // SQLAttempt records one execution attempt of an active-search query, including
@@ -119,7 +123,7 @@ type ActiveSearchResult struct {
 type SQLAttempt struct {
 	N       int    `json:"n"`               // 1-based attempt number
 	SQL     string `json:"sql"`             // the SQL executed this attempt
-	Outcome string `json:"outcome"`         // ok | validation_error | execute_error | null_result
+	Outcome string `json:"outcome"`         // ok | no_evidence | validation_error | execute_error | null_result
 	Error   string `json:"error,omitempty"` // failure detail (empty when ok)
 	Hits    int    `json:"hits"`            // rows returned this attempt
 }
@@ -272,8 +276,17 @@ type SynthAudit struct {
 	ActiveSQLSelfCorrected int `json:"active_sql_self_corrected,omitempty"`
 	// ActiveSQLCorrectionRounds is the total number of self-correction LLM calls
 	// made across all queries (the cost side of self-correction).
-	ActiveSQLCorrectionRounds int    `json:"active_sql_correction_rounds,omitempty"`
-	SkillSHA256               string `json:"skill_sha256,omitempty"`
+	ActiveSQLCorrectionRounds int `json:"active_sql_correction_rounds,omitempty"`
+	// ActiveSQLReframed counts queries that executed cleanly, returned 0 rows,
+	// and were re-issued from a different artifact/field/hypothesis (an
+	// investigative pivot). The headline metric for "recognised the result did
+	// not answer the question and changed approach mid-run".
+	ActiveSQLReframed int `json:"active_sql_reframed,omitempty"`
+	// ActiveSQLNoEvidence counts 0-row queries the agent judged a TRUE negative
+	// (the honest answer is "nothing here") — either no pivot was taken or the
+	// pivot also found nothing. An honest-negative signal, not a failure.
+	ActiveSQLNoEvidence int    `json:"active_sql_no_evidence,omitempty"`
+	SkillSHA256         string `json:"skill_sha256,omitempty"`
 
 	// On-demand evidence extraction accounting (across all clusters).
 	EvidenceRounds       int `json:"evidence_rounds,omitempty"`

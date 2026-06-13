@@ -33,7 +33,7 @@ end-to-end で検知・再構成・レポート出力できることを確認済
 | Tier 3 | self-contained HTML 26 KB |
 | 全工程 | ~5 分 (parse 除く analyze+synthesize+report) |
 
-### Tier 0 — Parser 層 (findevil から流用)
+### Tier 0 — Parser 層 (moai から流用)
 
 - 17 アーティファクトパーサ (evtx/amcache/prefetch/registry/scheduled_tasks/
   shimcache/mft/shellbags/jumplists/lnk/recyclebin/win10timeline/usn_journal/
@@ -74,7 +74,7 @@ end-to-end で検知・再構成・レポート出力できることを確認済
 - Stratified per-artifact sampling (high-volume MFT が小 artifact を crowd out
   しないように), EVTX ノイズ EID (4656/4658/4663/4703/5152/5156/5158 等) を
   SQL レベルで除外
-- skill: `skills/anomaly_hunter.md` (findevil 流用)
+- skill: `skills/anomaly_hunter.md` (moai 流用)
 - 出力: `findings/by-skill/anomaly_hunter.json` (AnomalyReport, 複数 finding を
   配列で)
 - CLI: `tlvb analyze CASE_ID --tier 1b`
@@ -89,7 +89,7 @@ end-to-end で検知・再構成・レポート出力できることを確認済
   サンプリング (artifact-aware shrinkPayload で Excerpt 化)
 - per-cluster LLM call → narrative + attack_phase + mitre_techniques + open_questions
 - overall LLM call → case-wide story
-- skill: `skills/timeline_review.md` (findevil 流用)
+- skill: `skills/timeline_review.md` (moai 流用)
 
 #### 能動モード (`--active-search`)
 - 各 cluster の open_questions に対し LLM が SQL を最大 3 本提案
@@ -129,7 +129,7 @@ CLI: `tlvb synthesize CASE_ID --tier 2 [--active-search]`
 - **Inspection**: `tlvb status CASE_ID [-v]` — case metadata + parse_results +
   findings (by source/severity) + synthesis 状態 + rule SQL cache 集計 +
   reports/ ファイル一覧
-- **MCP server**: read-only (`tlvb mcp-serve`)、Tier 0 の 10 tool は findevil
+- **MCP server**: read-only (`tlvb mcp-serve`)、Tier 0 の 10 tool は moai
   から流用
 - **Web UI**: `tlvb serve --port 8080`
 

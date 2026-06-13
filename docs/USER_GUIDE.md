@@ -557,8 +557,9 @@ tlvb synthesize INC-2026-0042
 # Step 4: report — Tier 3
 tlvb report INC-2026-0042 --format html,csv,json --language ja
 
-# All steps at once (Tier 0→1A→1B→2→3)
-tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto"
+# All steps at once (Tier 0→1A→1B→2→3). --active-search enables the
+# self-correcting / re-sequencing Tier 2 agent (the autonomy showcase; recommended).
+tlvb run INC-2026-0042 --tier all --evidence ./evtx-samples --name "auto" --active-search
 
 # Interactively Approve/Reject
 tlvb review INC-2026-0042 --gate 1a --examiner tanaka
@@ -714,7 +715,7 @@ Security and forensics jargon, in the order it appeared in this document.
 | **Review Gate** | The human review between each Tier. Gate 0 (parse) / **1A** (signature findings, auto-approved by severity) / **1B** (anomaly findings) / 2 (timeline) |
 | **Examiner** | The investigator (you, the user). Approve/reject operations are recorded under the Examiner's name |
 | **Tier 0/1/2/3** | TLVB's processing layers. **Tier 0** = parsers / **Tier 1A** = signature SQL (LLM=0) / **Tier 1B** = skill anomaly (LLM) / **Tier 2** = timeline analysis + synthesis (LLM) / **Tier 3** = report (LLM=0) |
-| **legacy (findevil)** | The old implementation's Tactic Agent / TacticReport / Synthesizer / Corrector. Currently opt-in via `tlvb synthesize --legacy` / `report --legacy` (the default is tier2/tier3) |
+| **legacy (moai)** | The old implementation's Tactic Agent / TacticReport / Synthesizer / Corrector. Currently opt-in via `tlvb synthesize --legacy` / `report --legacy` (the default is tier2/tier3) |
 | **audit_id** | The ID (hash) of an individual log event. Lets a finding uniquely point to "which log it is based on" |
 
 ### Tools/files-related

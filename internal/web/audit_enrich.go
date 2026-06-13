@@ -197,7 +197,7 @@ func (e *auditEnricher) explainTier2LLM(rec map[string]any, detail string) *audi
 			Narrative:     c.Narrative,
 			OpenQuestions: c.OpenQuestions,
 		}
-	case "active_search_generate", "active_search_interpret":
+	case "active_search_generate", "active_search_interpret", "active_search_reframe":
 		c := e.clusters[cid]
 		if c == nil {
 			return nil

@@ -156,10 +156,32 @@ approach **changed at runtime**:
   all-NULL, Tier 2 feeds the DB error back to the LLM and re-runs the revised
   query; each attempt is a separate `active_sql` record with an incrementing
   `attempt` and an `outcome`, so the **error → revise → recover** sequence is
-  visible in chronological order. (In the sample run all 6 queries succeeded on
-  `attempt=1`; to see the loop fire on demand, run Tier 2 with
-  `--demo-inject-sql-fault`, which deliberately corrupts the first query per
-  cluster.)
+  visible in chronological order. A query that runs clean but returns 0 rows is
+  not an error — the agent re-asks from a different angle (a `no_evidence` attempt
+  followed by an `active_search_reframe` LLM call and a re-sequenced retry), which
+  is how the loop fires unprompted on real data. (In the older sample run all 6
+  queries succeeded on `attempt=1`; to guarantee the error→correction loop fires
+  on camera, run Tier 2 with `--reproduce-llm-fault`, which reproduces the most
+  common real LLM mistake — treating an EventData field as a column — rather than
+  injecting a synthetic marker.)
+
+  *Observed, injection-free.* On a real Windows triage case (1.1 GB; Evtx /
+  Registry / Prefetch / SRUM / NTFS) the re-sequencing arc fired **six times**
+  with no `--reproduce-llm-fault` — the agent's own queries genuinely found
+  nothing and it pivoted. The chronological log (timestamps show a real ~30 s
+  model round-trip between the empty result and the retry, not an instant scripted
+  fix) reads:
+
+  ```
+  20:09:13  active_sql            cl=6 attempt=1 outcome=no_evidence rows=0
+  20:09:46  llm_call active_search_reframe  cl=6 attempt=1            (~33 s)
+  20:09:46  active_sql            cl=6 attempt=2 outcome=ok          rows=51
+  ```
+
+  The attempt-1 query asked its open question from one angle, matched 0 rows, and
+  the reframe re-issued from a different artifact/field; attempt 2 found 51
+  events. (Literal log redacted of host/IP/account identifiers — it is real
+  triage data; re-run any case with `--active-search` to reproduce the structure.)
 - **Graceful degradation.** The sample run also shows two `overall_synthesis`
   `llm_call` records with `success=false` (`error":"exec: exit status 1"`); the
   pipeline fell back to a per-cluster stitch rather than aborting. Failures are
