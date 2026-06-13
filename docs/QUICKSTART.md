@@ -9,12 +9,21 @@ long as Linux is installed.
 Every command is written to be run from **the clone of this repository (the
 repository root)**. All paths in the body are relative to the repository root.
 
+**TLVB is driven primarily from its Web UI.** After the one-time setup (0a/0b),
+the fastest way to see it work is the **"Run everything in the Web UI"** section
+below — create a case in the browser and let 🤖 Autopilot do the rest. The
+numbered steps 1–7 that follow drive the same pipeline from the **command line**
+(scripting, headless/CI runs, MCP integration, and low-level inspection). For a
+screen-by-screen GUI tour, see [`USER_GUIDE.md`](USER_GUIDE.md).
+
 Estimated time:
 
 | Item | Time | LLM calls |
 |---|---|---|
 | 0a. Build + verify help | 2 min | none |
 | 0b. Fetch sample EVTX | 1 min | none |
+| ▶ **Run everything in the Web UI (recommended)** | 10–35 min | yes (Tier 1B + Tier 2) |
+| — or, from the command line — | | |
 | 1. Inspect via the MCP server | 5 min | none |
 | 2. Try out a Review Gate 1 | 5 min | none (requires Step 4 or 5 first) |
 | 3. `analyze --tier 1a` (optionally 1b) on a small new case | 5–10 min | none for Tier 1A / 1 call for 1B |
@@ -140,6 +149,67 @@ ls "$EVTX_DIR/Persistence/" | head -3
 > Windows machine's `C:\Windows\System32\winevt\Logs\` is fine too.
 
 ---
+
+## Run everything in the Web UI (recommended)
+
+The Web UI is the main way to use TLVB — an Examiner runs the whole investigation
+from the browser. Start the server:
+
+```bash
+./bin/tlvb serve --port 8080
+# → open http://localhost:8080/ in your browser
+# → remote / from outside the VM: http://<VM-IP>:8080/   (find the IP with `ip a`)
+```
+
+Once `.env.local` is in place (see "Configure credentials" above), the browser UI
+picks up the same Anthropic / Vertex credentials automatically — no extra setup.
+
+### The fast path — 🤖 Autopilot (one click)
+
+1. On the **dashboard**, click **New case**, fill in a case ID / name / examiner,
+   and create it.
+2. On the case page, click **🤖 Autopilot**, point it at your evidence (the sample
+   `EVTX-ATTACK-SAMPLES` directory from 0b, a collector `.zip`, or a disk image),
+   and start it.
+3. Autopilot runs **Tier 0 parse → 1A → 1B → 2 → 3** end to end, auto-skipping both
+   Review Gates, and leaves you with findings, an attack timeline, and a
+   downloadable HTML/CSV/JSON report. Watch progress live on the **Status** tab.
+
+### The reviewed path — step by step, with the Review Gates
+
+Prefer to inspect each stage and approve findings as a human? Use the per-stage
+buttons in the case header instead of Autopilot:
+
+1. **Parse** — pick the evidence path(s); Tier 0 extracts and normalizes events.
+   Then approve/reject each parsed artifact in the **Events** tab (**Review Gate
+   0**), or "Skip all".
+2. **Analyze** — runs Tier 1A (cached signature SQL, no LLM) and, with the
+   checkbox, Tier 1B (anomaly hunter, LLM). Triage the results in the **Findings**
+   tab (**Review Gate 1A**): approve/reject per finding, or bulk-approve a whole
+   MITRE cluster. Critical/high need review; the rest are auto-approved.
+3. **Synthesize** — Tier 2 clusters the findings and writes a per-cluster attack
+   narrative; tick **Active search** to let the self-correcting agent drill into
+   open questions via SQL. Approve/reject entries in the **Timeline** tab
+   (**Review Gate 2**).
+4. **Report** — Tier 3 renders the report. Read it inline and download
+   HTML / CSV / JSON from the **Report** tab (choose language, optionally "only
+   approved").
+
+Other tabs: **IOCs** and the **MITRE ATT&CK** map summarize the case, **Audit**
+shows the per-tier "why" behind every finding, and the floating **💬** button
+opens the TLVB Assistant chat. You can also set a **per-evidence display
+timezone** and **export/import** a case as a `.fcz` archive from the dashboard.
+
+For the full screen-by-screen guide, see [`USER_GUIDE.md`](USER_GUIDE.md).
+
+---
+
+## The command line (scripting, automation, MCP)
+
+The Web UI above covers a full investigation. The numbered steps below drive the
+same pipeline — plus a few extras (the MCP server, the legacy review TUI) — from
+the command line; reach for them when scripting, running headless/CI, or
+integrating over MCP.
 
 ## 1. Inspect a case via the MCP server (no LLM calls)
 
@@ -439,24 +509,13 @@ Re-run only a specific Tier 1B skill (lens):
 
 ---
 
-## 7. Do it all in the Web UI
+## 7. The Web UI
 
-If you prefer the Web UI over the CLI:
-
-```bash
-./bin/tlvb serve --port 8080
-# → http://localhost:8080/ in your browser
-# → to access remotely (from outside the VM), use http://<VM-IP>:8080/
-```
-
-In the Web UI:
-- Create new case → Parse → Analyze All → Synthesize → Generate Report in a
-  straight line of 4 buttons (each button has a progress bar + ETA to its right)
-- Approve / Reject in the Findings tab (= Review Gate 1)
-- Review Gate 0 in the Events tab (approving parse results)
-- The floating 💬 button opens the TLVB Assistant chat
-
-For details, see [`USER_GUIDE.md`](USER_GUIDE.md).
+The Web UI is covered at the top of this guide — see **"Run everything in the
+Web UI (recommended)"**. It drives this same pipeline (parse → analyze →
+synthesize → report) with the Review Gates built into the tabs, plus 🤖 Autopilot
+for a one-click end-to-end run. The full screen-by-screen guide is
+[`USER_GUIDE.md`](USER_GUIDE.md).
 
 ---
 
