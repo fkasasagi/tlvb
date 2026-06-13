@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/llm"
 )
 
 // Chat runs a single conversational turn against the configured engine.
@@ -23,27 +25,42 @@ func Chat(
 	timeout time.Duration,
 ) (*EngineResponse, error) {
 	if engine == "" {
-		engine = "claude-code"
+		engine = "auto"
 	}
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	maxTokens := 4096
-	if model == "" && engine == "anthropic-api" {
+	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
 
 	var e Engine
 	switch engine {
+	case "auto":
+		switch t := llm.Resolve(); t.Kind {
+		case llm.KindVertex:
+			e = newVertexClient(t, model, maxTokens, timeout)
+		case llm.KindAnthropic:
+			e = newAnthropicClient(t.APIKey(), model, maxTokens, timeout)
+		default:
+			e = newClaudeCodeClient(model, timeout)
+		}
 	case "anthropic-api":
 		if apiKey == "" {
 			return nil, fmt.Errorf("engine=anthropic-api requires ANTHROPIC_API_KEY")
 		}
 		e = newAnthropicClient(apiKey, model, maxTokens, timeout)
+	case "vertex":
+		if t := llm.Resolve(); t.Kind == llm.KindVertex {
+			e = newVertexClient(t, model, maxTokens, timeout)
+		} else {
+			return nil, fmt.Errorf("engine=vertex requires a Vertex service-account key")
+		}
 	case "claude-code":
 		e = newClaudeCodeClient(model, timeout)
 	default:
-		return nil, fmt.Errorf("unknown engine %q (supported: claude-code, anthropic-api)", engine)
+		return nil, fmt.Errorf("unknown engine %q (supported: auto, anthropic-api, vertex, claude-code)", engine)
 	}
 	return e.Call(ctx, system, user)
 }

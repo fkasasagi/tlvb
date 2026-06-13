@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/tlvb/tlvb/internal/llm"
 )
 
 // Minimal Anthropic Messages API client. We avoid the official SDK to keep
@@ -20,11 +22,14 @@ const (
 
 // MsgRequest is what we POST. Only the fields we use.
 type msgRequest struct {
-	Model     string         `json:"model"`
-	MaxTokens int            `json:"max_tokens"`
-	System    []sysBlock     `json:"system,omitempty"`
-	Messages  []msgItem      `json:"messages"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	// Model is set for the direct API; for Vertex it is omitted (the model is
+	// named in the URL) and AnthropicVersion is set instead.
+	Model            string         `json:"model,omitempty"`
+	AnthropicVersion string         `json:"anthropic_version,omitempty"`
+	MaxTokens        int            `json:"max_tokens"`
+	System           []sysBlock     `json:"system,omitempty"`
+	Messages         []msgItem      `json:"messages"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
 }
 
 type sysBlock struct {
@@ -58,8 +63,8 @@ type content struct {
 }
 
 type usage struct {
-	InputTokens             int `json:"input_tokens"`
-	OutputTokens            int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
@@ -78,6 +83,9 @@ type anthropicClient struct {
 	model     string
 	maxTokens int
 	http      *http.Client
+	// transport is set for the Vertex AI path; nil means the direct Anthropic
+	// API (x-api-key) path, whose behaviour is unchanged.
+	transport *llm.Transport
 }
 
 func newAnthropicClient(apiKey, model string, maxTokens int, timeout time.Duration) *anthropicClient {
@@ -89,8 +97,24 @@ func newAnthropicClient(apiKey, model string, maxTokens int, timeout time.Durati
 	}
 }
 
+// newVertexClient builds a client that reaches Claude through Anthropic on
+// Vertex AI (GCP service-account bearer token).
+func newVertexClient(t *llm.Transport, model string, maxTokens int, timeout time.Duration) *anthropicClient {
+	return &anthropicClient{
+		model:     model,
+		maxTokens: maxTokens,
+		http:      &http.Client{Timeout: timeout},
+		transport: t,
+	}
+}
+
 // ID identifies this engine in the audit trail.
-func (c *anthropicClient) ID() string { return "anthropic-api" }
+func (c *anthropicClient) ID() string {
+	if c.transport != nil && c.transport.Kind == llm.KindVertex {
+		return "vertex-api"
+	}
+	return "anthropic-api"
+}
 
 // Model returns the requested model id.
 func (c *anthropicClient) Model() string { return c.model }
@@ -124,7 +148,6 @@ func (c *anthropicClient) callMessages(
 	maxTokens int,
 ) (*msgResponse, error) {
 	body := msgRequest{
-		Model:     c.model,
 		MaxTokens: maxTokens,
 		System: []sysBlock{
 			{
@@ -137,18 +160,32 @@ func (c *anthropicClient) callMessages(
 			{Role: "user", Content: userMsg},
 		},
 	}
+	endpoint := anthropicAPIURL
+	vertex := c.transport != nil && c.transport.Kind == llm.KindVertex
+	if vertex {
+		body.AnthropicVersion = llm.VertexAnthropicVersion // model goes in the URL
+		endpoint = c.transport.VertexURL(c.model)
+	} else {
+		body.Model = c.model
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
+	if vertex {
+		if err := c.transport.ApplyAuth(ctx, req); err != nil {
+			return nil, err
+		}
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", c.apiKey)
+		req.Header.Set("anthropic-version", anthropicVersion)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

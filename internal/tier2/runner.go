@@ -17,6 +17,7 @@ import (
 
 	"github.com/tlvb/tlvb/internal/auditlog"
 	"github.com/tlvb/tlvb/internal/evidencex"
+	"github.com/tlvb/tlvb/internal/llm"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -1118,17 +1119,21 @@ func auditLLMCall(cfg Config, detail string, clusterID int, dur time.Duration, o
 	cfg.al.Append(a)
 }
 
-// callClaude dispatches one Tier 2 LLM call. When ANTHROPIC_API_KEY is set it
-// goes through the Messages API (callAnthropicAPI), which caches the system
-// prompt ONLY — so the large single-use user payloads are billed as plain input
-// instead of being cache-written at the 1.25x premium. With no key it falls
-// back to the `claude -p` CLI (callClaudeCLI), whose behaviour is unchanged.
-// Both paths send byte-identical content to the model, so analysis is unaffected.
+// callClaude dispatches one Tier 2 LLM call to whichever transport is
+// configured (Anthropic API > Vertex AI > hidden CLI fallback — see
+// internal/llm). The API paths cache the system prompt ONLY, so the large
+// single-use user payloads are billed as plain input instead of being
+// cache-written at the 1.25x premium. All paths send byte-identical content to
+// the model, so analysis is unaffected.
 func callClaude(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {
-	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
-		return callAnthropicAPI(ctx, cfg, key, sysPrompt, userMsg)
+	switch t := llm.Resolve(); t.Kind {
+	case llm.KindVertex:
+		return callVertexAPI(ctx, cfg, t, sysPrompt, userMsg)
+	case llm.KindAnthropic:
+		return callAnthropicAPI(ctx, cfg, t.APIKey(), sysPrompt, userMsg)
+	default:
+		return callClaudeCLI(ctx, cfg, sysPrompt, userMsg)
 	}
-	return callClaudeCLI(ctx, cfg, sysPrompt, userMsg)
 }
 
 func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (*claudeOutput, error) {

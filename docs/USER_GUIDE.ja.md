@@ -226,7 +226,7 @@ URL: `http://<host>:8080/#/cases/<ケースID>`
 > - **複数 Evidence 同時パース** (Issue #1 / v0.3 #1) — Parse モーダルで `+ Add evidence` ボタンで何件でも追加可能
 > - **Auto-pilot トグル** (Issue #11/#12) — Parse / Analyze モーダルに「Review Gate 0 をスキップ」チェックボックス。ON で人間レビューを飛ばして次に進む
 > - **キャンセルボタン** (Issue #8) — 各ステップ実行中、進捗ブロックの下に **`✕ cancel`** ボタンが表示。誤実行や暴走時に途中中断可能(進捗バーが灰色イタリックの `canceled` 表示に切替)
-> - **LLM アクセス事前警告** — Analyze モーダルを開いた時点で `claude` CLI も `ANTHROPIC_API_KEY` も無ければ赤色警告が出ます(以前は実行後に発覚した)
+> - **LLM アクセス事前警告** — Analyze モーダルを開いた時点で `.env.local` に LLM トランスポート(Anthropic API または Vertex AI)が未設定なら赤色警告が出ます(以前は実行後に発覚した)
 
 調査は 4 ステップです。順番に実行する必要があります。
 
@@ -266,7 +266,7 @@ STIX / custom / LOLBAS) を build 時に SQL 化したものをこのケース�
 | フィールド | 説明 |
 |---|---|
 | Also run Tier 1B (anomaly_hunter, LLM) | チェックすると Tier 1B 異常ハンターも実行 (LLM 課金あり)。既定は OFF |
-| Tier 1B model | 空欄で claude CLI のデフォルトモデル |
+| Tier 1B model | 空欄でデフォルトモデル |
 
 > **注意**: Tier 1A は LLM 不要・無料です。Tier 1B を有効にした場合のみ
 > AI モデルを呼ぶのでトークン使用料 (1 ケース 〜$1 程度) がかかります。
@@ -564,8 +564,10 @@ tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 ### Q. Analyze がすぐ失敗する
 
 - 先に Parse が完了している必要があります
-- `claude-code` エンジンを使うには `claude` コマンドが必要
-- `anthropic-api` エンジンを使うには `export ANTHROPIC_API_KEY=sk-ant-xxx`
+- LLM ステージ(Tier 1B / Tier 2)はリポジトリルートの `.env.local` に LLM
+  トランスポートの設定が必要です:**Anthropic API**
+  (`ANTHROPIC_API_KEY=sk-ant-...`)または **Vertex AI**(サービスアカウント
+  キー — 下の FAQ を参照)。Tier 1A は影響を受けません(LLM を呼ばない)。
 
 ### Q. Synthesize に findings が見つからないと言われる
 
@@ -596,10 +598,20 @@ tlvb review INC-2026-0042 --gate 1a --examiner tanaka
 - クリック → 確認 → ジョブが中断され `canceled` 状態に
 - DuckDB / 部分出力は残ったままなので、次回 Parse / Analyze で再開できます
 
-### Q. 毎回 `export ANTHROPIC_API_KEY=...` が面倒
+### Q. 毎回 LLM トランスポートを設定するのが面倒
 
-- リポジトリのルートに `.env.local` ファイルを作って `ANTHROPIC_API_KEY=sk-ant-...` と書けば、`tlvb serve` 起動時に自動読み込みされます(2026-05 追加)
-- シェルで明示的に `export` した値が優先されるので、一時的な上書きも可能
+- リポジトリのルートに `.env.local` ファイルを作り、トランスポートを一度だけ
+  設定してください。TLVB は **すべての** サブコマンド(`tlvb serve` / `analyze`
+  / `synthesize` / `run` ...)の起動時にこれを読み込みます。パスは
+  `TLVB_ENV_FILE` で上書きできます。
+- **Anthropic API** なら `ANTHROPIC_API_KEY=sk-ant-...` と書きます。
+- **Vertex AI**(Google Cloud 上の Anthropic)なら
+  `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json`(または
+  `GOOGLE_APPLICATION_CREDENTIALS_JSON={...}` でキーをインライン)と書き、
+  任意で `ANTHROPIC_VERTEX_PROJECT_ID` / `CLOUD_ML_REGION`(既定 `us-east5`)/
+  `TLVB_VERTEX_MODEL` を添えます。
+- 両方ある場合は Anthropic API キーが優先されます。シェルで明示的に `export`
+  した値はファイルより優先されるので、一時的な上書きも可能です。
 
 ---
 

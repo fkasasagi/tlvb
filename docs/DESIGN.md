@@ -209,7 +209,7 @@ moai の `skills/*.md` 12 個 (10 tactic + anomaly_hunter + timeline_review)
    A4 — rare process (image_count < 3)
    A5 — adjacency (±30 min around prior finding timestamps)
 4. top N (default 200) を skill prompt + AnomalyContext JSON と一緒に
-   claude CLI に渡す
+   LLM に渡す
 5. LLM が JSON 配列 [{lens, summary, description, severity, audit_ids,
    technique_id, tactic}, ...] を返す
 6. findings/by-skill/anomaly_hunter.json に AnomalyReport として保存
@@ -376,7 +376,7 @@ outputs/cases/<id>/
 ```
 tlvb case init|export|import|vacuum ...          (moai 流用)
 tlvb parse --case-id ... --input PATH            (moai 流用)
-tlvb rules build [--engine claude-code|anthropic-api] [--dry-run]
+tlvb rules build [--dry-run]
                  [--budget-yen N] [--max-rules N] [--source S]
                  [--rule-ids ID1,ID2,...] [--force]
 tlvb rules list  [--source S] [--state pending|built|failed] [--show-sql]

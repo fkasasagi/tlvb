@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/tlvb/tlvb/internal/llm"
 )
 
 // Tier 2 Anthropic Messages API path. When ANTHROPIC_API_KEY is set, Tier 2
@@ -63,12 +65,15 @@ func tier2APIModel(m string) string {
 }
 
 type tier2APIRequest struct {
-	Model        string            `json:"model"`
-	MaxTokens    int               `json:"max_tokens"`
-	Thinking     map[string]string `json:"thinking,omitempty"`
-	OutputConfig map[string]string `json:"output_config,omitempty"`
-	System       []tier2SysBlock   `json:"system"`
-	Messages     []tier2MsgItem    `json:"messages"`
+	// Model is set for the direct API; for Vertex it is omitted (the model is
+	// named in the URL) and AnthropicVersion is set instead.
+	Model            string            `json:"model,omitempty"`
+	AnthropicVersion string            `json:"anthropic_version,omitempty"`
+	MaxTokens        int               `json:"max_tokens"`
+	Thinking         map[string]string `json:"thinking,omitempty"`
+	OutputConfig     map[string]string `json:"output_config,omitempty"`
+	System           []tier2SysBlock   `json:"system"`
+	Messages         []tier2MsgItem    `json:"messages"`
 }
 
 type tier2SysBlock struct {
@@ -143,16 +148,64 @@ func callAnthropicAPI(ctx context.Context, cfg Config, apiKey, sysPrompt, userMs
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
+	return parseTier2APIResponse(resp.StatusCode, raw)
+}
 
+// callVertexAPI runs one Tier 2 LLM call through Anthropic on Vertex AI. The
+// request body is byte-identical to the direct path except the model is named
+// in the URL (not the body) and anthropic_version is set; auth is a GCP OAuth
+// bearer token. Returns the same *claudeOutput shape so call sites and the
+// audit are unchanged.
+func callVertexAPI(ctx context.Context, cfg Config, t *llm.Transport, sysPrompt, userMsg string) (*claudeOutput, error) {
+	bare := tier2APIModel(cfg.Model)
+	reqBody := tier2APIRequest{
+		AnthropicVersion: llm.VertexAnthropicVersion,
+		MaxTokens:        tier2MaxTokens,
+		Thinking:         map[string]string{"type": "adaptive"},
+		OutputConfig:     map[string]string{"effort": tier2Effort},
+		System: []tier2SysBlock{{
+			Type:         "text",
+			Text:         sysPrompt,
+			CacheControl: &tier2CacheControl{Type: "ephemeral"},
+		}},
+		Messages: []tier2MsgItem{{Role: "user", Content: userMsg}},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", t.VertexURL(bare), bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
+	if err := t.ApplyAuth(ctx, req); err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{Timeout: cfg.PerClusterTimeout}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	return parseTier2APIResponse(resp.StatusCode, raw)
+}
+
+// parseTier2APIResponse decodes a Messages-API response (direct or Vertex) into
+// the shared *claudeOutput, computing total_cost_usd from Opus 4.8 rates.
+func parseTier2APIResponse(status int, raw []byte) (*claudeOutput, error) {
 	var ar tier2APIResponse
 	if err := json.Unmarshal(raw, &ar); err != nil {
 		return nil, fmt.Errorf("parse: %w (head: %s)", err, truncate(string(raw), 200))
 	}
-	if resp.StatusCode != 200 {
+	if status != 200 {
 		if ar.Error != nil && ar.Error.Message != "" {
-			return nil, fmt.Errorf("anthropic %d %s: %s", resp.StatusCode, ar.Error.Type, ar.Error.Message)
+			return nil, fmt.Errorf("llm %d %s: %s", status, ar.Error.Type, ar.Error.Message)
 		}
-		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, truncate(string(raw), 200))
+		return nil, fmt.Errorf("llm %d: %s", status, truncate(string(raw), 200))
 	}
 
 	// Join all text blocks; skip thinking blocks (their text is empty by default).

@@ -43,6 +43,15 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// API-first: load .env.local so ANTHROPIC_API_KEY / Vertex service-account
+	// credentials are visible to every subcommand (shell env still wins). The
+	// path is overridable via TLVB_ENV_FILE; a missing file is ignored.
+	envFile := os.Getenv("TLVB_ENV_FILE")
+	if envFile == "" {
+		envFile = ".env.local"
+	}
+	_, _ = common.LoadDotEnv(envFile)
+
 	switch cmd {
 	case "version":
 		fmt.Printf("tlvb %s\n", version)
@@ -133,14 +142,14 @@ Usage:
   tlvb case init --case-id ID --name NAME --examiner NAME [--timezone TZ]
   tlvb parse --case-id ID --evidence-id ID --input PATH [--workspace DIR]
   tlvb parse --case-id ID --inputs PATH1,PATH2,... [--evidence-ids EV1,EV2,...]   ★ multi-evidence
-  tlvb analyze CASE_ID --tactic NAME [--engine claude-code|anthropic-api]    # legacy tactic-based
+  tlvb analyze CASE_ID --tactic NAME                                        # legacy tactic-based
   tlvb analyze CASE_ID --tier 1a [--source S] [--rule R] [--max-evidence N]   # Tier 1A signature SQL runtime
   tlvb synthesize CASE_ID [--active-search] [--model M]                     # Tier 2 timeline analysis (LLM; default)
   tlvb synthesize CASE_ID --legacy [--correct]                              # legacy moai synthesizer (no LLM)
   tlvb report CASE_ID [--format html,csv,json] [--language ja|en] [--only-approved]   # Tier 3 DFIR report (default)
   tlvb report CASE_ID --legacy                                              # legacy moai reporter
   tlvb review CASE_ID [--gate 1] [--examiner NAME]
-  tlvb run CASE_ID --evidence PATH [--engine claude-code]                   # legacy tactic-based pipeline
+  tlvb run CASE_ID --evidence PATH                                          # legacy tactic-based pipeline
   tlvb run CASE_ID --tier all --evidence PATH [--active-search]              # TLVB v0.1 one-shot pipeline
        [--skip-parse|--skip-1a|--skip-1b|--skip-2|--skip-report]
        [--format html,csv,json] [--language ja|en]
@@ -694,11 +703,10 @@ func runAnalyze(args []string) error {
 	tactic := fs.String("tactic", "persistence", "tactic name (skill file basename)")
 	evID := fs.String("evidence-id", "", "evidence_id (default: first evidence in case)")
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
-	engine := fs.String("engine", "claude-code",
-		"execution engine: claude-code (default, uses local `claude` CLI session) | anthropic-api")
+	engine := fs.String("engine", "auto",
+		"execution engine (default auto: resolves the API transport from .env.local)")
 	model := fs.String("model", "",
-		"model id (default: empty for claude-code → CLI default; "+
-			"claude-sonnet-4-6 for anthropic-api)")
+		"model id (default: engine default)")
 	// Wave 19 → Wave 20a:
 	//   - MaxEvents stays at 400 (prefilter cap).
 	//   - timeout-seconds default 0 → auto-compute via
@@ -743,7 +751,7 @@ func runAnalyze(args []string) error {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if *engine == "anthropic-api" && apiKey == "" && !*dryRun {
 		return fmt.Errorf("engine=anthropic-api requires ANTHROPIC_API_KEY " +
-			"(use --engine claude-code or --dry-run)")
+			"(configure .env.local, or use --dry-run)")
 	}
 
 	// Resolve all evidence_ids from DB; primary is the explicit --evidence-id
@@ -1130,16 +1138,16 @@ func runSynthesize(args []string) error {
 	correct := fs.Bool("correct", false,
 		"run Tier 2 Corrector loop after the initial consistency check "+
 			"(re-runs Tactic Agents whose inconsistency rules fired)")
-	correctEngine := fs.String("correct-engine", "claude-code",
-		"Tactic Agent engine for correction re-runs")
+	correctEngine := fs.String("correct-engine", "auto",
+		"engine for correction re-runs (default auto)")
 	correctModel := fs.String("correct-model", "",
 		"model override for correction re-runs (engine default if empty)")
 	reviewTimeline := fs.Bool("review-timeline", false,
 		"run the Tier 2 TimelineReviewer LLM pass after consistency / "+
 			"correction. Applies the 12 forensic perspectives in "+
 			"skills/timeline_review.md. Graceful on LLM unavailability.")
-	tlEngine := fs.String("review-engine", "claude-code",
-		"engine for the TimelineReviewer pass (claude-code | anthropic-api)")
+	tlEngine := fs.String("review-engine", "auto",
+		"engine for the TimelineReviewer pass (default auto)")
 	tlModel := fs.String("review-model", "",
 		"model override for the TimelineReviewer pass (engine default if empty)")
 	tlLanguage := fs.String("review-language", "ja",
@@ -1432,7 +1440,7 @@ func runFullPipeline(args []string) error {
 	evPath := fs.String("evidence", "",
 		"path to .zip or directory of evidence (required if not yet registered)")
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
-	engine := fs.String("engine", "claude-code", "Tactic Agent engine")
+	engine := fs.String("engine", "auto", "Tactic Agent engine (default auto)")
 	model := fs.String("model", "", "model override")
 	caseName := fs.String("name", "", "case name (required if case not yet inited)")
 	examiner := fs.String("examiner", "examiner-cli",

@@ -225,10 +225,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return rep, nil
 	}
 
-	emit(cfg, Event{Phase: "llm", Message: "calling claude CLI"})
+	emit(cfg, Event{Phase: "llm", Message: "calling LLM"})
 	al := newActionLog(cfg.FindingsBaseDir, cfg.CaseID)
 	llmStart := time.Now()
-	resp, err := callClaudeCLI(ctx, cfg, string(skillBytes), userMsg)
+	resp, err := callClaude(ctx, cfg, string(skillBytes), userMsg)
 	if err != nil {
 		al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call", Detail: cfg.Skill,
 			DurationSeconds: time.Since(llmStart).Seconds(),
@@ -314,7 +314,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 					rep.EvidenceRounds+1, len(summaries), countOK(summaries))})
 
 			llmStart2 := time.Now()
-			resp2, err2 := callClaudeCLI(ctx, cfg, string(skillBytes), curUserMsg)
+			resp2, err2 := callClaude(ctx, cfg, string(skillBytes), curUserMsg)
 			if err2 != nil {
 				al.Append(auditlog.Action{Actor: "tier1b", Kind: "llm_call",
 					Detail:          cfg.Skill + " (evidence round)",
