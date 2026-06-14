@@ -157,7 +157,10 @@ func loadEnrichment(findingsDir string) *enrichment {
 	if findingsDir == "" {
 		return en
 	}
-	findings := readFindings(findingsDir)
+	// Fold Hayabusa pass-through findings that duplicate a Sigma signature
+	// (Hayabusa runs the Sigma ruleset internally) so the severity summary, IOC,
+	// MITRE and key-event timeline count each rule once. See dropHayabusaDuplicates.
+	findings := dropHayabusaDuplicates(readFindings(findingsDir))
 
 	sevTotals := map[string]int{}
 	iocAgg := map[string]*iocRow{}     // key: type\x00value
