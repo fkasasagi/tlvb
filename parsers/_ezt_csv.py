@@ -117,6 +117,31 @@ def run_simple_ezt(
 
     csv_files = _find_csvs(req.output_dir, spec)
     if not csv_files:
+        # A tool that explicitly reports it found/processed zero items and
+        # therefore wrote no CSV is a *legitimate empty*, not a silent failure
+        # — e.g. RBCmd on an empty $Recycle.Bin ("Found 0 files. Processing..."
+        # / "Processed 0 out of 0 files"). Classify it as success/row_count=0
+        # so Review Gate 0 shows EMPTY, not FAIL. Genuine no-output failures
+        # (tool crashed, native lib missing) don't print these markers and
+        # still fall through to fail() below.
+        scan = stdout or ""
+        if "Found 0 files" in scan or "Processed 0 out of 0" in scan:
+            # exit_code=0 (not rc): Review Gate 0's badge keys off exit_code, so a
+            # legitimate empty must be 0 to show EMPTY rather than FAIL even if the
+            # tool signal-exited non-zero after reporting zero items.
+            return ParseResult(
+                artifact_id=spec.artifact_id, success=True,
+                command=cmd_str, exit_code=0,
+                started_at=started, finished_at=now_iso(),
+                duration_seconds=round(elapsed, 3),
+                stdout_tail=tail(stdout), stderr_tail=tail(stderr),
+                row_count=0,
+                parser_version=spec.parser_version,
+                notes=spec.caveats + [
+                    f"{spec.artifact_id}: tool processed 0 items (nothing to "
+                    f"parse) — empty, not a failure",
+                ],
+            )
         return fail(
             artifact_id=spec.artifact_id, command=cmd_str, started=started,
             error=f"{spec.artifact_id} produced no CSV outputs",
