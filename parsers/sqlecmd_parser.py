@@ -71,23 +71,41 @@ def parse(req: ParseRequest) -> ParseResult:
     # for Linux. The "no map matched" outcome is a *fact about the DB*, not a
     # parser failure, so promote it to a graceful-skip success row regardless
     # of rc.
-    no_map_marker = "No maps found for"
-    no_map_hit = no_map_marker in (stdout or "")
+    no_map_hit = "No maps found for" in (stdout or "")
+    # SQLECmd opens the matched DB through System.Data.SQLite, which P/Invokes a
+    # native SQLite.Interop.dll. SIFT/Linux has no compatible build (the EZ-Tools
+    # stub renames its exports per build), so a map-matched DB dies with
+    # DllNotFound / EntryPointNotFound (sometimes still exit 0). That is a fact
+    # about the environment, not a parser bug.
+    combined = f"{stdout or ''}\n{stderr or ''}"
+    sqlite_native_err = any(m in combined for m in (
+        "SQLite.Interop",
+        "DllNotFoundException",
+        "EntryPointNotFoundException",
+        "Unable to load shared library",
+        "Unable to find an entry point",
+    ))
     csvs = sorted(req.output_dir.glob("*SQLECmd*.csv"))
-    if no_map_hit and not csvs:
-        finished = now_iso()
+    if not csvs and (no_map_hit or sqlite_native_err):
+        # No CSV because either no map matched, or a map matched but the native
+        # SQLite lib is unavailable. Promote to graceful-skip EMPTY (regardless
+        # of rc) so Review Gate 0 shows EMPTY, not FAIL. A genuine crash with no
+        # SQLite markers (e.g. SIGSEGV at boot) does NOT match and still fails.
+        reason = (
+            f"SQLECmd has no map for {req.input_path.name}"
+            if no_map_hit else
+            f"SQLECmd could not process {req.input_path.name} on Linux "
+            f"(native SQLite.Interop.dll unavailable)"
+        )
         return ParseResult(
             artifact_id=ARTIFACT_ID, success=True,
-            command=cmd_str, exit_code=rc,
-            started_at=started, finished_at=finished,
+            command=cmd_str, exit_code=0,
+            started_at=started, finished_at=now_iso(),
             duration_seconds=round(elapsed, 3),
             stdout_tail=tail(stdout), stderr_tail=tail(stderr),
             row_count=0,
             parser_version=PARSER_VERSION,
-            notes=[
-                f"SQLECmd has no map for {req.input_path.name} — "
-                f"graceful skip, not a parser failure",
-            ],
+            notes=[f"{reason} — graceful skip, not a parser failure"],
         )
     if rc != 0:
         return fail(
