@@ -61,6 +61,11 @@ Write **4–5 paragraphs of plain prose** that:
 
 Technical terms, tool names, and specific timestamps are appropriate here.
 
+**Timestamp format:** write every timestamp in ISO-8601 UTC (e.g.
+`2026-06-12T10:39:37Z`). Do NOT use `(UTC)`, local time, JST or any other
+format — the report localises these to the reader's timezone, and only this
+canonical form converts reliably.
+
 ## Noise cluster identification
 
 Some clusters may represent benign or pre-existing system activity rather than

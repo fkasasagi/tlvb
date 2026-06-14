@@ -139,7 +139,7 @@ func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang string) stri
 		tech = cs.OverallStory
 	}
 	w("TECHNICAL SUMMARY", tech)
-	w("INTRUSION PATH (derived)", deriveIntrusionPath(cs, lang))
+	w("INTRUSION PATH (derived)", deriveIntrusionPath(cs, lang, nil))
 	// Authoritative finding count for pattern #3 (count vs total findings).
 	w("TOTAL FINDINGS", fmt.Sprintf("%d", cs.TotalFindings))
 

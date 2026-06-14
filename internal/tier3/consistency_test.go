@@ -3,6 +3,7 @@ package tier3
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
 )
@@ -32,7 +33,7 @@ func bruteForceEntryCS() tier2.CaseSynthesis {
 
 func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
 	cs := bruteForceEntryCS()
-	got := deriveIntrusionPath(cs, "ja")
+	got := deriveIntrusionPath(cs, "ja", nil)
 	if intrusionDisclaimsEntry(got) {
 		t.Errorf("brute-force entry must not disclaim the entry point, got %q", got)
 	}
@@ -40,7 +41,7 @@ func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
 		t.Errorf("intrusion path should cite the brute-force technique T1110, got %q", got)
 	}
 	// EN side too.
-	if got := deriveIntrusionPath(cs, "en"); intrusionDisclaimsEntry(got) || !strings.Contains(got, "T1110") {
+	if got := deriveIntrusionPath(cs, "en", nil); intrusionDisclaimsEntry(got) || !strings.Contains(got, "T1110") {
 		t.Errorf("EN intrusion path wrong: %q", got)
 	}
 }
@@ -79,7 +80,7 @@ func TestDeriveIntrusionPath_UnreliableNoEarliestClaim(t *testing.T) {
 			{Technique: "T1059", Tactic: "execution", FindingCount: 1, ClusterIDs: []int{1}},
 		},
 	}
-	got := deriveIntrusionPath(cs, "ja")
+	got := deriveIntrusionPath(cs, "ja", nil)
 	if intrusionAssertsEarliest(got) {
 		t.Errorf("unreliable timeline must not claim a timestamp-order earliest, got %q", got)
 	}
@@ -99,7 +100,7 @@ func TestDeriveIntrusionPath_SkipsNoiseCluster(t *testing.T) {
 			{ID: 2, AttackPhase: "execution", Narrative: "cmd.exe recon"},
 		},
 	}
-	got := deriveIntrusionPath(cs, "en")
+	got := deriveIntrusionPath(cs, "en", nil)
 	if strings.Contains(strings.ToLower(got), "noise") {
 		t.Errorf("fallback should skip the noise cluster, got %q", got)
 	}
@@ -189,4 +190,82 @@ func hasCode(issues []ConsistencyIssue, code string) bool {
 		}
 	}
 	return false
+}
+
+// The intrusion path must carry the entry's recorded time, hedged when the
+// timeline is unreliable (the WinRM-spray case has a clock rollback).
+func TestDeriveIntrusionPath_CarriesEntryTime(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2, timeline unreliable
+	cs.Clusters[1].StartTS = time.Date(2026, 6, 12, 10, 39, 37, 0, time.UTC)
+	cs.Clusters[1].EndTS = time.Date(2026, 6, 12, 10, 40, 11, 0, time.UTC)
+
+	got := deriveIntrusionPath(cs, "ja", time.UTC)
+	if !strings.Contains(got, "2026-06-12T10:39:37") {
+		t.Errorf("intrusion path should carry the entry start time, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T10:40:11") {
+		t.Errorf("intrusion path should carry the entry end time, got %q", got)
+	}
+	if !strings.Contains(got, "巻き戻し") {
+		t.Errorf("unreliable timeline must hedge the time, got %q", got)
+	}
+
+	// Reliable timeline → time shown without the rollback caveat.
+	cs.TimelineReliability = "reliable"
+	got = deriveIntrusionPath(cs, "en", time.UTC)
+	if !strings.Contains(got, "Time of entry") || strings.Contains(got, "rollback") {
+		t.Errorf("reliable EN path should state the time without a rollback caveat, got %q", got)
+	}
+}
+
+// On an unreliable timeline the attack story must lead with the confirmed entry
+// cluster (credential-access brute force), not the earlier-timestamped
+// defense-evasion provisioning window — and number it #1.
+func TestOrderAttackClusters_EntryLeadsWhenUnreliable(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2; timeline unreliable
+	clusters := []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if !orderAttackClusters(clusters, cs) {
+		t.Fatal("unreliable timeline should reorder and return true")
+	}
+	if clusters[0].C.ID != 2 {
+		t.Errorf("entry cluster (id 2, credential-access) should lead, got id %d first", clusters[0].C.ID)
+	}
+
+	// Reliable timeline → keep timestamp order (no reorder).
+	cs.TimelineReliability = "reliable"
+	clusters = []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if orderAttackClusters(clusters, cs) || clusters[0].C.ID != 1 {
+		t.Error("reliable timeline must not reorder")
+	}
+}
+
+// localizeProseTimestamps converts ISO-8601 UTC timestamps in LLM prose to the
+// report display timezone, leaving everything else untouched.
+func TestLocalizeProseTimestamps(t *testing.T) {
+	jst, _ := time.LoadLocation("Asia/Tokyo")
+	in := "ブルートフォースは 2026-06-12T10:39:37Z に成功し、2026-06-12T10:40Z まで継続した。"
+	got := localizeProseTimestamps(in, jst)
+	if !strings.Contains(got, "2026-06-12T19:39:37+09:00") {
+		t.Errorf("seconds-precision UTC should convert to JST, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T19:40:00+09:00") {
+		t.Errorf("minute-precision UTC should convert to JST, got %q", got)
+	}
+	if strings.Contains(got, "Z") {
+		t.Errorf("no UTC Z marker should remain, got %q", got)
+	}
+	// UTC display → no-op.
+	if localizeProseTimestamps(in, time.UTC) != in {
+		t.Error("UTC display must be a no-op")
+	}
+	// Non-timestamp text is untouched; a malformed near-match is left alone.
+	if localizeProseTimestamps("no times here", jst) != "no times here" {
+		t.Error("plain text must be unchanged")
+	}
 }

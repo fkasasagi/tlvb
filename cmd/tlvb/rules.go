@@ -586,12 +586,16 @@ func parseImportFile(path string) ([]rulesdb.CacheRow, int, error) {
 			meta = string(er.RuleMeta)
 		}
 		out = append(out, rulesdb.CacheRow{
-			RuleID:             er.RuleID,
-			RuleSource:         er.RuleSource,
-			RuleSHA256:         er.RuleSHA256,
-			SchemaVersion:      er.SchemaVersion,
-			ModelID:            er.ModelID,
-			SQL:                er.SQL,
+			RuleID:        er.RuleID,
+			RuleSource:    er.RuleSource,
+			RuleSHA256:    er.RuleSHA256,
+			SchemaVersion: er.SchemaVersion,
+			ModelID:       er.ModelID,
+			// Normalise LIKE/ILIKE wildcards (literal '_' -> '\_' ESCAPE) so a
+			// vendored snapshot carrying the legacy unescaped form (e.g.
+			// '%ASP_%' matching "RasPppoe") is corrected on the way into the
+			// runtime cache. Idempotent: already-escaped patterns are untouched.
+			SQL:                rulebuild.EscapeLikeLiterals(er.SQL),
 			PrefilterArtifacts: strings.Join(er.PrefilterArtifacts, ","),
 			RuleMeta:           meta,
 		})

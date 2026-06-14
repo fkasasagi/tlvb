@@ -240,6 +240,12 @@ func (p *Pipeline) Build(ctx context.Context) (*BuildReport, error) {
 			continue
 		}
 
+		// Normalise LIKE/ILIKE patterns so literal '_'/'%' from the source
+		// rule match literally instead of as SQL wildcards (e.g. '%ASP_%'
+		// must not match "RasPppoe"). Done before the compile-check so the
+		// escaped form is what gets validated and cached.
+		built.SQL = EscapeLikeLiterals(built.SQL)
+
 		// Runtime compile-check: reject SQL that parses but won't execute
 		// against unified_events (unknown function / bad regex / etc.) so it
 		// never gets cached as "built" then skipped at Tier 1A runtime (#6).

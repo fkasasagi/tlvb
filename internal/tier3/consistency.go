@@ -89,7 +89,7 @@ var consistencyChecks = []string{
 func checkReportConsistency(cs tier2.CaseSynthesis, en *enrichment, lang string) []ConsistencyIssue {
 	ja := lang != "en"
 	var issues []ConsistencyIssue
-	intrusion := deriveIntrusionPath(cs, lang)
+	intrusion := deriveIntrusionPath(cs, lang, nil)
 
 	// C1: the intrusion-path step disclaims any known entry while the case
 	// actually confirms an entry vector (initial-access, or a brute-force /
