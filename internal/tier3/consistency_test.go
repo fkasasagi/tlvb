@@ -47,7 +47,7 @@ func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
 
 // The fixed report must be internally consistent: the gate finds no blockers.
 func TestCheckReportConsistency_CleanOnBruteForce(t *testing.T) {
-	issues := checkReportConsistency(bruteForceEntryCS(), "ja")
+	issues := checkReportConsistency(bruteForceEntryCS(), nil, "ja")
 	for _, is := range issues {
 		if is.Severity == "blocker" {
 			t.Errorf("brute-force case should have no blocker, got %+v", is)
@@ -83,7 +83,7 @@ func TestDeriveIntrusionPath_UnreliableNoEarliestClaim(t *testing.T) {
 	if intrusionAssertsEarliest(got) {
 		t.Errorf("unreliable timeline must not claim a timestamp-order earliest, got %q", got)
 	}
-	for _, is := range checkReportConsistency(cs, "ja") {
+	for _, is := range checkReportConsistency(cs, nil, "ja") {
 		if is.Code == "earliest-claim-on-unreliable-timeline" {
 			t.Errorf("gate should not flag C2 after the fix avoids the earliest claim")
 		}
@@ -112,7 +112,7 @@ func TestCheckReportConsistency_DuplicateTechnique(t *testing.T) {
 		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1003.001"}},
 	}
 	found := false
-	for _, is := range checkReportConsistency(cs, "ja") {
+	for _, is := range checkReportConsistency(cs, nil, "ja") {
 		if is.Code == "technique-confirmed-and-unconfirmed" {
 			found = true
 		}
@@ -120,4 +120,73 @@ func TestCheckReportConsistency_DuplicateTechnique(t *testing.T) {
 	if !found {
 		t.Error("expected a technique-confirmed-and-unconfirmed warning")
 	}
+}
+
+// C4: an UNHEDGED assertion of a demoted technique is flagged...
+func TestC4_DemotedTechniqueAssertedUnhedged(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		TechSummary:      "攻撃者は Web シェルを設置してサーバを掌握した。",
+		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1505.003"}},
+	}
+	if !hasCode(checkReportConsistency(cs, nil, "ja"), "demoted-technique-asserted-in-prose") {
+		t.Error("unhedged assertion of a demoted technique should be flagged")
+	}
+}
+
+// ...but a HEDGED mention (the report correctly RULING IT OUT) must NOT fire —
+// this is the WinRM-spray prose that says "NOT Pass-the-Hash".
+func TestC4_HedgedDemotedTechniqueNotFlagged(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		TechSummary:      "ハッシュ窃取の証拠が無いため、パス・ザ・ハッシュではなく通常のパスワード認証です。",
+		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1550.002"}},
+	}
+	if hasCode(checkReportConsistency(cs, nil, "ja"), "demoted-technique-asserted-in-prose") {
+		t.Error("a hedged mention that rules the technique out must NOT be flagged (false positive)")
+	}
+}
+
+// C5: an ungrounded mention stated as fact in the executive brief is flagged.
+func TestC5_UngroundedMentionInExecBrief(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		ExecBrief:          "攻撃者は Mimikatz で認証情報を盗み出しました。",
+		UngroundedMentions: []string{"Mimikatz"},
+	}
+	if !hasCode(checkReportConsistency(cs, nil, "ja"), "ungrounded-mention-in-exec-brief") {
+		t.Error("ungrounded mention asserted in exec brief should be flagged")
+	}
+	// Hedged exec brief → not flagged.
+	cs.ExecBrief = "Mimikatz の使用は確証が無く未確認です。"
+	if hasCode(checkReportConsistency(cs, nil, "ja"), "ungrounded-mention-in-exec-brief") {
+		t.Error("hedged exec brief must not be flagged")
+	}
+}
+
+// C6: a noise IOC that leaked into the affected scope is flagged.
+func TestC6_NoiseIOCInScope(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		MITREMapping: []tier2.MITREEntry{{Technique: "T1003", Tactic: "credential-access"}},
+	}
+	en := &enrichment{IOCs: []iocRow{
+		{Type: "host", Value: "LogonType 3", Confidence: "noise"},
+	}}
+	// deriveAffectedScope filters noise, so to exercise the guard we confirm it
+	// does NOT leak (clean), then a confirmed host is NOT mis-flagged.
+	if hasCode(checkReportConsistency(cs, en, "ja"), "noise-ioc-in-affected-scope") {
+		t.Error("noise IOC is filtered by deriveAffectedScope; gate should stay clean")
+	}
+	en.IOCs = append(en.IOCs, iocRow{Type: "host", Value: "WIN-HOST", Confidence: "confirmed"})
+	for _, is := range checkReportConsistency(cs, en, "ja") {
+		if is.Code == "noise-ioc-in-affected-scope" {
+			t.Error("a confirmed host must not be flagged as noise")
+		}
+	}
+}
+
+func hasCode(issues []ConsistencyIssue, code string) bool {
+	for _, is := range issues {
+		if is.Code == code {
+			return true
+		}
+	}
+	return false
 }
