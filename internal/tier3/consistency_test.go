@@ -3,6 +3,7 @@ package tier3
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
 )
@@ -32,7 +33,7 @@ func bruteForceEntryCS() tier2.CaseSynthesis {
 
 func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
 	cs := bruteForceEntryCS()
-	got := deriveIntrusionPath(cs, "ja")
+	got := deriveIntrusionPath(cs, "ja", nil)
 	if intrusionDisclaimsEntry(got) {
 		t.Errorf("brute-force entry must not disclaim the entry point, got %q", got)
 	}
@@ -40,7 +41,7 @@ func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
 		t.Errorf("intrusion path should cite the brute-force technique T1110, got %q", got)
 	}
 	// EN side too.
-	if got := deriveIntrusionPath(cs, "en"); intrusionDisclaimsEntry(got) || !strings.Contains(got, "T1110") {
+	if got := deriveIntrusionPath(cs, "en", nil); intrusionDisclaimsEntry(got) || !strings.Contains(got, "T1110") {
 		t.Errorf("EN intrusion path wrong: %q", got)
 	}
 }
@@ -79,7 +80,7 @@ func TestDeriveIntrusionPath_UnreliableNoEarliestClaim(t *testing.T) {
 			{Technique: "T1059", Tactic: "execution", FindingCount: 1, ClusterIDs: []int{1}},
 		},
 	}
-	got := deriveIntrusionPath(cs, "ja")
+	got := deriveIntrusionPath(cs, "ja", nil)
 	if intrusionAssertsEarliest(got) {
 		t.Errorf("unreliable timeline must not claim a timestamp-order earliest, got %q", got)
 	}
@@ -99,7 +100,7 @@ func TestDeriveIntrusionPath_SkipsNoiseCluster(t *testing.T) {
 			{ID: 2, AttackPhase: "execution", Narrative: "cmd.exe recon"},
 		},
 	}
-	got := deriveIntrusionPath(cs, "en")
+	got := deriveIntrusionPath(cs, "en", nil)
 	if strings.Contains(strings.ToLower(got), "noise") {
 		t.Errorf("fallback should skip the noise cluster, got %q", got)
 	}
@@ -189,4 +190,30 @@ func hasCode(issues []ConsistencyIssue, code string) bool {
 		}
 	}
 	return false
+}
+
+// The intrusion path must carry the entry's recorded time, hedged when the
+// timeline is unreliable (the WinRM-spray case has a clock rollback).
+func TestDeriveIntrusionPath_CarriesEntryTime(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2, timeline unreliable
+	cs.Clusters[1].StartTS = time.Date(2026, 6, 12, 10, 39, 37, 0, time.UTC)
+	cs.Clusters[1].EndTS = time.Date(2026, 6, 12, 10, 40, 11, 0, time.UTC)
+
+	got := deriveIntrusionPath(cs, "ja", time.UTC)
+	if !strings.Contains(got, "2026-06-12T10:39:37") {
+		t.Errorf("intrusion path should carry the entry start time, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T10:40:11") {
+		t.Errorf("intrusion path should carry the entry end time, got %q", got)
+	}
+	if !strings.Contains(got, "巻き戻し") {
+		t.Errorf("unreliable timeline must hedge the time, got %q", got)
+	}
+
+	// Reliable timeline → time shown without the rollback caveat.
+	cs.TimelineReliability = "reliable"
+	got = deriveIntrusionPath(cs, "en", time.UTC)
+	if !strings.Contains(got, "Time of entry") || strings.Contains(got, "rollback") {
+		t.Errorf("reliable EN path should state the time without a rollback caveat, got %q", got)
+	}
 }

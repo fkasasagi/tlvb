@@ -233,7 +233,7 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		Meta:           cfg.CaseMeta,
 		Severity:       en.SeverityCounts,
 		Timeline:       en.Timeline,
-		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language),
+		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language, loc),
 		Scope:          deriveAffectedScope(cs, en, cfg.Language),
 		Reco:           deriveRecommendations(cs, cfg.Language),
 	}

@@ -2,6 +2,7 @@ package tier3
 
 import (
 	"strings"
+	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
 )
@@ -228,9 +229,13 @@ func intrusionPhrase(id, lang string) string {
 }
 
 // deriveIntrusionPath produces a best-effort initial-access narrative. Returns
-// "" only when there is nothing at all to say (no clusters, no mapping).
-func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
+// "" only when there is nothing at all to say (no clusters, no mapping). loc is
+// the report display timezone for the entry timestamp; nil → UTC.
+func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string, loc *time.Location) string {
 	ja := lang != "en"
+	if loc == nil {
+		loc = time.UTC
+	}
 
 	// 1. Confirmed initial-access techniques are the textbook entry vector.
 	// 2. Failing that, an entry-EQUIVALENT vector the case confirmed — a
@@ -247,12 +252,13 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 		for _, t := range entryTechs {
 			phrases = append(phrases, intrusionPhrase(t, lang))
 		}
+		when := entryTimePhrase(cs, entryTechs, loc, lang)
 		if ja {
 			return "攻撃の入り口（侵入経路）として、" + strings.Join(phrases, "、また") +
-				" が検出されました。これが最初の侵入手段になったと推定されます。"
+				" が検出されました。これが最初の侵入手段になったと推定されます。" + when
 		}
 		return "The likely entry point was " + strings.Join(phrases, ", and ") +
-			". This is how the attacker most likely first got in."
+			". This is how the attacker most likely first got in." + when
 	}
 
 	// 3. No entry vector confirmed → fall back to the earliest NON-NOISE cluster's
@@ -298,6 +304,67 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	return "The way the attacker first got in could not be determined from the evidence collected. " +
 		"The earliest suspicious activity seen was \"" + phaseLabelEN(firstPhase) +
 		"\"; the entry method may live in data that was not collected (e.g. network logs)."
+}
+
+// entryClusterWindow returns the time window of the earliest cluster that the
+// entry techniques map to (via the MITRE matrix's cluster_ids). ok is false when
+// no such cluster carries a timestamp. Matching is on the parent technique so a
+// sub-technique in the matrix (T1110.001) maps to its base entry tech (T1110).
+func entryClusterWindow(cs tier2.CaseSynthesis, entryTechs []string) (start, end time.Time, ok bool) {
+	want := map[string]bool{}
+	for _, t := range entryTechs {
+		want[baseTechnique(t)] = true
+	}
+	ids := map[int]bool{}
+	for _, m := range cs.MITREMapping {
+		if want[baseTechnique(m.Technique)] {
+			for _, id := range m.ClusterIDs {
+				ids[id] = true
+			}
+		}
+	}
+	for _, c := range cs.Clusters {
+		if !ids[c.ID] || c.StartTS.IsZero() {
+			continue
+		}
+		if !ok || c.StartTS.Before(start) {
+			start, end, ok = c.StartTS, c.EndTS, true
+		}
+	}
+	return start, end, ok
+}
+
+// entryTimePhrase renders the entry's recorded time window (in loc), appended to
+// the intrusion-path sentence. When the timeline is unreliable (a clock
+// rollback), the time is still shown — examiners need it — but explicitly
+// flagged as record-order-only, so this never silently asserts a wall-clock fact
+// the timeline cannot support. Returns "" when no entry timestamp is available.
+func entryTimePhrase(cs tier2.CaseSynthesis, entryTechs []string, loc *time.Location, lang string) string {
+	start, end, ok := entryClusterWindow(cs, entryTechs)
+	if !ok {
+		return ""
+	}
+	ja := lang != "en"
+	s := formatTSIn(start, loc)
+	window := s
+	if e := formatTSIn(end, loc); e != "" && !end.Equal(start) {
+		if ja {
+			window = s + " 〜 " + e
+		} else {
+			window = s + " – " + e
+		}
+	}
+	unreliable := strings.EqualFold(cs.TimelineReliability, "unreliable")
+	if ja {
+		if unreliable {
+			return "（記録上の発生時刻: " + window + "。ただし本ケースは時刻の巻き戻しが検出されており、発生順・絶対時刻は確実ではありません。）"
+		}
+		return "（発生時刻: " + window + "）"
+	}
+	if unreliable {
+		return " Recorded time of entry: " + window + " (note: a clock rollback was detected in this case, so the ordering and absolute time are not certain)."
+	}
+	return " Time of entry: " + window + "."
 }
 
 // deriveAffectedScope pulls hosts / accounts from the IOC set and infers
