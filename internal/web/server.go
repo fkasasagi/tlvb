@@ -196,6 +196,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/cases/{id}/timeline-review", s.handleGetTimelineReview)
 	s.mux.HandleFunc("POST /api/cases/{id}/timeline-review/{audit_id}/approve", s.handleApproveTimelineEntry)
 	s.mux.HandleFunc("POST /api/cases/{id}/timeline-review/{audit_id}/reject", s.handleRejectTimelineEntry)
+	s.mux.HandleFunc("POST /api/cases/{id}/timeline-review/{audit_id}/reset", s.handleResetTimelineEntry)
 	s.mux.HandleFunc("POST /api/cases/{id}/timeline-review/skip-all", s.handleTimelineReviewSkipAll)
 
 	// Disk-image extraction review (Issue #23).

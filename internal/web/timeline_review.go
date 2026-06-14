@@ -187,6 +187,13 @@ func (s *Server) handleRejectTimelineEntry(w http.ResponseWriter, r *http.Reques
 	s.mutateTimelineGate(w, r, "rejected", req.Reason)
 }
 
+// POST /api/cases/:id/timeline-review/{audit_id}/reset
+// Clears a prior approve/reject so the entry returns to pending — the
+// timeline counterpart of the findings review "リセット" action.
+func (s *Server) handleResetTimelineEntry(w http.ResponseWriter, r *http.Request) {
+	s.mutateTimelineGate(w, r, "pending", "")
+}
+
 // POST /api/cases/:id/timeline-review/skip-all  (body: {auto_skip: true|false})
 // When auto_skip flips to true, every currently-pending entry is marked
 // as "skipped" so the roll-up reflects that the gate was waived. Explicit
@@ -264,11 +271,17 @@ func (s *Server) mutateTimelineGate(w http.ResponseWriter, r *http.Request, newS
 	mu.Lock()
 	defer mu.Unlock()
 	doc := s.loadTimelineGate(caseID)
-	doc.Reviews[auditID] = timelineGateReview{
-		State:      newState,
-		Reason:     reason,
-		ReviewedBy: examiner,
-		ReviewedAt: time.Now().UTC(),
+	if newState == "pending" {
+		// Reset: drop the prior decision entirely so the entry falls back to
+		// the default pending state (the GET handler re-synthesizes it).
+		delete(doc.Reviews, auditID)
+	} else {
+		doc.Reviews[auditID] = timelineGateReview{
+			State:      newState,
+			Reason:     reason,
+			ReviewedBy: examiner,
+			ReviewedAt: time.Now().UTC(),
+		}
 	}
 	if err := s.saveTimelineGate(doc); err != nil {
 		writeError(w, 500, "save: %v", err)
