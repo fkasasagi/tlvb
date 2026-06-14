@@ -91,6 +91,10 @@ type Report struct {
 	GeneratedAt time.Time
 	Files       []OutputFile
 	Sections    int // for HTML, number of cluster sections
+	// ConsistencyIssues are the internal contradictions the post-render gate
+	// found (empty when the report is internally consistent). Callers surface
+	// blockers before treating the report as done.
+	ConsistencyIssues []ConsistencyIssue
 }
 
 // OutputFile is one rendered file.

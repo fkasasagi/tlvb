@@ -93,6 +93,7 @@ func runReportTier3(caseID string, args []string) error {
 	for _, f := range rep.Files {
 		fmt.Printf("  [%-13s] %-60s  %d bytes\n", f.Format, f.Path, f.SizeBytes)
 	}
+	reportConsistencyIssues(rep.ConsistencyIssues)
 	return nil
 }
 
@@ -165,4 +166,31 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string)
 		return nil, examiner, timezone
 	}
 	return meta, examiner, timezone
+}
+
+// reportConsistencyIssues prints the post-render consistency gate's result. A
+// clean report says so in one line; blockers/warnings are listed with the
+// reconciliation each needs, and a blocker is called out as a contradiction the
+// report should not ship with. The full record is in report_consistency.json.
+func reportConsistencyIssues(issues []tier3.ConsistencyIssue) {
+	if len(issues) == 0 {
+		fmt.Printf("  consistency check: ✓ no internal contradictions\n")
+		return
+	}
+	blockers := 0
+	for _, is := range issues {
+		if is.Severity == "blocker" {
+			blockers++
+		}
+	}
+	if blockers > 0 {
+		fmt.Printf("  consistency check: ⚠ %d blocker(s), %d warning(s) — report is internally inconsistent\n",
+			blockers, len(issues)-blockers)
+	} else {
+		fmt.Printf("  consistency check: %d warning(s)\n", len(issues))
+	}
+	for _, is := range issues {
+		fmt.Printf("    [%s] %s\n", is.Severity, is.Detail)
+		fmt.Printf("        → %s\n", is.Resolution)
+	}
 }

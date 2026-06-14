@@ -69,6 +69,12 @@ func Render(cfg Config) (*Report, error) {
 		Sections:    len(cs.Clusters),
 	}
 
+	// Self-check gate: verify the derived sections do not contradict the
+	// synthesis (or each other) before the report is treated as done, and
+	// persist the result to reports/report_consistency.json. Runs on the same
+	// `cs` the renderers consume, so what it checks is what gets written.
+	rep.ConsistencyIssues = runConsistencyGate(cfg.OutDir, cfg.CaseID, cfg.Language, cs)
+
 	for _, f := range cfg.Formats {
 		switch f {
 		case "html":
