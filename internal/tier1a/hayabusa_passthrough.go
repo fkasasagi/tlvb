@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -59,7 +60,9 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 			COALESCE(json_extract_string(payload_json, '$.EventID'), '')         AS event_id,
 			COALESCE(json_extract_string(payload_json, '$.Computer'), '')        AS computer,
 			COALESCE(json_extract_string(payload_json, '$.Details'), '')         AS details,
-			COALESCE(json_extract_string(payload_json, '$.ExtraFieldInfo'), '')  AS extra
+			COALESCE(json_extract_string(payload_json, '$.ExtraFieldInfo'), '')  AS extra,
+			COALESCE(json_extract_string(payload_json, '$.MitreTactics'), '')    AS mitre_tactics,
+			COALESCE(json_extract_string(payload_json, '$.MitreTags'), '')       AS mitre_tags
 		FROM unified_events
 		WHERE case_id = ? AND artifact_id = 'hayabusa'
 	`
@@ -77,6 +80,7 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 	// Stream and group.
 	var (
 		curRuleID, curTitle, curLevel string
+		curTactics, curTechniques     []string
 		curEvidence                   []EvidenceRef
 		curTotalRows                  int
 	)
@@ -86,7 +90,8 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 			return nil
 		}
 		f := buildHayabusaFinding(cfg.CaseID, curRuleID, curTitle,
-			normaliseLevel(curLevel), curEvidence, curTotalRows, cfg.MaxEvidence)
+			normaliseLevel(curLevel), curTactics, curTechniques,
+			curEvidence, curTotalRows, cfg.MaxEvidence)
 		outPath := findingPath(cfg.FindingsDir, "hayabusa", curRuleID)
 		if err := writeFinding(outPath, f); err != nil {
 			return err
@@ -117,11 +122,12 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 		var (
 			ruleID, title, lvl, auditID, artifactID, eventType string
 			channel, eventID, computer, details, extra         string
+			mitreTactics, mitreTags                            string
 			ts                                                 sql.NullTime
 		)
 		if err := rows.Scan(&ruleID, &title, &lvl, &auditID, &ts,
 			&artifactID, &eventType, &channel, &eventID, &computer,
-			&details, &extra); err != nil {
+			&details, &extra, &mitreTactics, &mitreTags); err != nil {
 			return report, fmt.Errorf("scan: %w", err)
 		}
 
@@ -132,9 +138,24 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 			curRuleID = ruleID
 			curTitle = title
 			curLevel = lvl
+			curTactics = nil
+			curTechniques = nil
 			curEvidence = nil
 			curTotalRows = 0
 			report.TotalRules++
+		}
+
+		// MITRE tactics/techniques are a property of the matched rule, so every
+		// row in the group carries the same values — EXCEPT rows ingested by an
+		// older standard-profile parse, which carry none. Take them from the
+		// first row in the group that actually has them, so a partially
+		// re-parsed case (one evidence verbose, another still stale) still
+		// yields a categorised finding.
+		if len(curTactics) == 0 {
+			curTactics = normaliseHayabusaTactics(mitreTactics)
+		}
+		if len(curTechniques) == 0 {
+			curTechniques = parseHayabusaTechniques(mitreTags)
 		}
 
 		curTotalRows++
@@ -173,7 +194,7 @@ func RunHayabusaPassthrough(ctx context.Context, cfg Config, opts HayabusaPassth
 }
 
 // buildHayabusaFinding constructs the Finding object for one Hayabusa rule_id.
-func buildHayabusaFinding(caseID, ruleID, title, level string, evidence []EvidenceRef, totalRows, maxEvidence int) Finding {
+func buildHayabusaFinding(caseID, ruleID, title, level string, tactics, techniques []string, evidence []EvidenceRef, totalRows, maxEvidence int) Finding {
 	approved, approvedBy := AutoApproveByLevel(level)
 	return Finding{
 		FindingID:  uuid.NewString(),
@@ -181,8 +202,10 @@ func buildHayabusaFinding(caseID, ruleID, title, level string, evidence []Eviden
 		RuleID:     ruleID,
 		RuleSource: "hayabusa",
 		RuleMeta: RuleMeta{
-			Title: title,
-			Level: level,
+			Title:           title,
+			Level:           level,
+			MITRETactics:    tactics,
+			MITRETechniques: techniques,
 		},
 		Evidence:    evidence,
 		MatchCount:  totalRows,
@@ -209,3 +232,74 @@ func normaliseLevel(s string) string {
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 }
+
+// hayabusaTacticSlug maps Hayabusa's abbreviated tactic names (the
+// `tag_output_str` column of config/mitre_tactics.txt — e.g. "PrivEsc") to the
+// ATT&CK tactic slugs the Sigma cached-SQL path already emits (e.g.
+// "privilege-escalation"). Aligning the two means Hayabusa and Sigma findings
+// for the same tactic land in one UI cluster instead of two.
+//
+// "Stealth" and "DefImpair" are Hayabusa groupings that both correspond to the
+// real ATT&CK Defense Evasion tactic (T1562 "Impair Defenses" lives under it),
+// so both fold to "defense-evasion".
+var hayabusaTacticSlug = map[string]string{
+	"recon":      "reconnaissance",
+	"resdev":     "resource-development",
+	"initaccess": "initial-access",
+	"exec":       "execution",
+	"persis":     "persistence",
+	"privesc":    "privilege-escalation",
+	"stealth":    "defense-evasion",
+	"defimpair":  "defense-evasion",
+	"credaccess": "credential-access",
+	"disc":       "discovery",
+	"latmov":     "lateral-movement",
+	"collect":    "collection",
+	"c2":         "command-and-control",
+	"exfil":      "exfiltration",
+	"impact":     "impact",
+}
+
+// normaliseHayabusaTactics splits Hayabusa's MitreTactics cell (abbreviations
+// joined by " ¦ ", e.g. "PrivEsc ¦ Persis") into deduped ATT&CK tactic slugs.
+// Unknown tokens are kept lowercased rather than dropped, so an unexpected
+// abbreviation still produces a real cluster instead of silently becoming
+// "uncategorized".
+func normaliseHayabusaTactics(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(raw, "¦") {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok == "" || tok == "-" {
+			continue
+		}
+		if slug, ok := hayabusaTacticSlug[tok]; ok {
+			tok = slug
+		}
+		if !seen[tok] {
+			seen[tok] = true
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// parseHayabusaTechniques pulls the ATT&CK technique IDs out of Hayabusa's
+// MitreTags cell. MitreTags also carries software/group tags, so we keep only
+// tokens shaped like a technique ID (T#### optionally with a .### sub-technique)
+// to match the Sigma path's mitre_techniques field.
+func parseHayabusaTechniques(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(raw, "¦") {
+		tok = strings.TrimSpace(tok)
+		if !techniqueID.MatchString(tok) || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
+var techniqueID = regexp.MustCompile(`^T\d{4}(\.\d{3})?$`)
