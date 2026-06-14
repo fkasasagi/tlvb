@@ -72,6 +72,24 @@ Commands are example arguments — match their literal flags/keywords, e.g.
        OR'd ILIKE terms instead.
      - keep regex patterns valid (balanced brackets); prefer plain ILIKE
        substring matching when a regex isn't essential.
+     - LIKE/ILIKE WILDCARDS: only '%' (any run) and '_' (any single char) are
+       wildcards. When a rule's match value contains a LITERAL '_' or '%' (very
+       common in signature names like 'ASP_', 'PHP_', 'Backdoor_'), it MUST be
+       escaped or it silently fuzz-matches — '%ASP_%' wrongly hits "RasPppoe".
+       Translate the value with ESCAPE: ILIKE '%ASP\_%' ESCAPE '\'. Map the
+       source-rule wildcards Sigma '*' -> '%' and Sigma '?' -> '_' only.
+     - startswith -> LIKE 'value%' (anchored at start), endswith -> LIKE
+       '%value', equals -> exact '='. Do NOT collapse startswith/endswith into
+       a bare '%value%' substring match.
+
+7b. LOGSOURCE IS A FILTER, NOT A HINT. The rule's logsource scopes WHICH events
+   may match — never drop it. In particular, Sigma logsource.category
+   "antivirus" events are Windows Defender records: constrain
+     json_extract_string(payload_json, '$.Channel') = 'Microsoft-Windows-Windows Defender/Operational'
+     AND CAST(json_extract_string(payload_json, '$.EventId') AS INTEGER) IN (1116, 1117)
+   and match the abstract "Signature" field against the Defender threat-name
+   field json_extract_string(payload_json, '$.PayloadData1') — NOT against the
+   whole payload_json blob and NOT against unrelated EVTX channels.
 
 8. If the rule cannot be expressed in SQL against unified_events (e.g. requires
    correlation across multiple time windows, or refers to data not in our
