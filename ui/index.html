@@ -17,8 +17,9 @@
     <div class="meta" id="topMeta"></div>
     <!-- Wave 32: language switcher (locale persists in localStorage) -->
     <!-- Display timezone switcher. Events are stored UTC; this only changes
-         how timestamps render. "Evidence-local" uses each evidence's own
-         timezone; any other value forces that zone across the whole view.
+         how timestamps render. "Per-evidence (configured)" uses the timezone
+         the examiner configured on each evidence (not auto-detected); any
+         other value forces that zone across the whole view.
          Options are populated by app.js (IANA list); persists in localStorage. -->
     <select id="tz-switcher"
             title="Display timezone (events are stored in UTC)"
