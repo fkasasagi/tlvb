@@ -119,26 +119,39 @@ func timeChangeSubjectBenign(subjectSID, subjectUser string) bool {
 // No threshold from the evaluation case is hard-coded.
 func detectTimelineReliability(clusters []Cluster, clockReversed bool, lang string) (string, []string) {
 	outliers := temporalOutlierClusters(clusters)
-	any := clockReversed
+	hasOutlier := false
 	for _, o := range outliers {
 		if o {
-			any = true
+			hasOutlier = true
 			break
 		}
 	}
-	if !any {
+	if !hasOutlier && !clockReversed {
 		return "reliable", nil
 	}
 	ja := strings.ToLower(lang) != "en"
 	var notes []string
+	// First note names the actual signal(s) found, so the report does not claim
+	// a "year-apart cluster" when the real trigger was a same-day clock reversal.
+	if clockReversed {
+		if ja {
+			notes = append(notes, "システム時刻の後方ジャンプ(Security 4616 でクロックが大きく巻き戻された)を検出しました。記録順とタイムスタンプが乖離するため、タイムラインは再アンカーが必要です。")
+		} else {
+			notes = append(notes, "Detected a backward clock step (a Security 4616 stepped the system time far back). Record order and timestamps diverge, so the timeline needs re-anchoring.")
+		}
+	}
+	if hasOutlier {
+		if ja {
+			notes = append(notes, "他クラスタから1年以上離れた時刻のクラスタ(プロビジョニング/OSセットアップの可能性)を検出しました。タイムラインは再アンカーが必要です。")
+		} else {
+			notes = append(notes, "Detected a cluster more than a year from the others (likely provisioning / OS setup). The timeline needs re-anchoring.")
+		}
+	}
+	// Second note is the shared attribution caveat.
 	if ja {
-		notes = append(notes,
-			"イベントの記録順とタイムスタンプが乖離するクラスタ(他クラスタから1年以上離れた時刻)を検出しました。タイムラインは再アンカーが必要です。",
-			"この時刻不整合は、プロビジョニング/OSセットアップや時刻補正(例: Set-Date)に起因する可能性を第一仮説とすべきで、攻撃者によるタイムスタンプ改変(T1070.006)や再侵入と断定してはなりません。裏付け(攻撃者文脈のプロセスが時刻変更APIを呼んだ等)がある場合にのみ攻撃帰属します。")
+		notes = append(notes, "この時刻不整合は、プロビジョニング/OSセットアップや時刻補正(例: Set-Date)に起因する可能性を第一仮説とすべきで、攻撃者によるタイムスタンプ改変(T1070.006)や再侵入と断定してはなりません。裏付け(攻撃者文脈のプロセスが時刻変更APIを呼んだ等)がある場合にのみ攻撃帰属します。")
 	} else {
-		notes = append(notes,
-			"Detected cluster(s) where record order and timestamps diverge (more than a year from the other clusters). The timeline needs re-anchoring.",
-			"Treat this inconsistency as provisioning / OS-setup or clock correction (e.g. Set-Date) FIRST; do not conclude an attacker timestomp (T1070.006) or a re-intrusion without corroboration (e.g. a time-change API called from an attacker-context process).")
+		notes = append(notes, "Treat this inconsistency as provisioning / OS-setup or clock correction (e.g. Set-Date) FIRST; do not conclude an attacker timestomp (T1070.006) or a re-intrusion without corroboration (e.g. a time-change API called from an attacker-context process).")
 	}
 	return "unreliable", notes
 }
@@ -177,16 +190,23 @@ var namedAttackClaims = []groundedTool{
 }
 
 // findUngroundedMentions scans the conclusion prose for named attack claims and
-// returns the labels of those that no finding corroborates. The report surfaces
-// these as "unconfirmed" so an LLM hallucination (e.g. naming Mimikatz when the
-// dump used a comsvcs.dll LOLBin) is flagged rather than asserted as fact.
-func findUngroundedMentions(prose string, findings []Finding) []string {
+// returns the labels of those the case does not corroborate. The report surfaces
+// these as "unconfirmed" so an LLM hallucination is flagged rather than asserted.
+//
+// Grounding differs by claim kind:
+//   - a TECHNIQUE PHRASE (web shell, Pass-the-Hash — has linked techniques) is
+//     grounded only when one of its techniques is in `confirmed`, the
+//     POST-corroboration matrix. A finding merely TAGGED or NAMED after it
+//     ("Pass the Hash Activity 2") does NOT ground it — that is exactly the
+//     misleading-signature case the corroboration layer demotes;
+//   - a TOOL NAME (Mimikatz — no linked techniques) is grounded only when the
+//     name itself appears in the finding text.
+func findUngroundedMentions(prose string, findings []Finding, confirmed map[string]bool) []string {
 	if strings.TrimSpace(prose) == "" {
 		return nil
 	}
 	lowProse := strings.ToLower(prose)
 	corpus := findingGroundingText(findings)
-	tagged := findingTechniqueSet(findings)
 
 	var out []string
 	seen := map[string]bool{}
@@ -202,15 +222,18 @@ func findUngroundedMentions(prose string, findings []Finding) []string {
 			continue
 		}
 		grounded := false
-		for _, a := range t.aliases {
-			if strings.Contains(corpus, a) {
-				grounded = true
-				break
-			}
-		}
-		if !grounded {
+		if len(t.techniques) > 0 {
+			// Technique phrase: ground ONLY on a confirmed technique.
 			for _, tech := range t.techniques {
-				if tagged[tech] {
+				if confirmed[tech] {
+					grounded = true
+					break
+				}
+			}
+		} else {
+			// Tool name: ground on the name appearing in the finding text.
+			for _, a := range t.aliases {
+				if strings.Contains(corpus, a) {
 					grounded = true
 					break
 				}
