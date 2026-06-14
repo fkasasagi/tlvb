@@ -161,19 +161,23 @@ function errMsg(e) { return escapeHTML(String((e && e.message) || e).slice(0, 20
 
 // ----- display timezone -----------------------------------------------------
 // Events are stored in canonical UTC. The examiner picks how timestamps are
-// *displayed* without re-querying: per-evidence (each event in its own
-// evidence's timezone) or a single zone forced across the whole view. The
-// choice persists in localStorage; per-evidence effective zones come from the
-// case summary (parse.evidence[].timezone) and the case timezone is the
-// fallback for timestamps with no evidence (report/synthesis metadata).
+// *displayed* without re-querying: the case timezone (the zone chosen at case
+// creation, applied to the whole view — the DEFAULT), per-evidence (each event
+// in its own evidence's timezone), or a single IANA zone forced across the
+// view. The choice persists in localStorage; per-evidence effective zones come
+// from the case summary (parse.evidence[].timezone) and the case timezone is
+// the fallback for timestamps with no evidence (report/synthesis metadata).
+const VIEW_TZ_CASE = "__case__";         // sentinel: use the case-created zone
 const VIEW_TZ_EVIDENCE = "__evidence__"; // sentinel: use each evidence's zone
 
 let TZ_CTX = { caseTZ: "UTC", evidence: {} }; // {evidence_id: IANA zone}
 
 function currentViewTZ() {
-  // Default to UTC so timestamps are unambiguous until the examiner explicitly
-  // picks a zone (per-evidence or a forced IANA zone). The choice persists.
-  return localStorage.getItem("tlvb_view_tz") || "UTC";
+  // Default to the case timezone (the zone the examiner set when creating the
+  // case), so timestamps render in the expected local zone out of the box. The
+  // examiner can still switch to per-evidence or a forced IANA zone; the choice
+  // persists.
+  return localStorage.getItem("tlvb_view_tz") || VIEW_TZ_CASE;
 }
 function setViewTZ(v) {
   localStorage.setItem("tlvb_view_tz", v);
@@ -193,9 +197,12 @@ function setTZContext(caseTZ, evList) {
 // resolveDisplayTZ picks the IANA zone for a given (optional) evidence_id.
 function resolveDisplayTZ(evidenceId) {
   const sel = currentViewTZ();
-  if (sel && sel !== VIEW_TZ_EVIDENCE) return sel; // explicit global override
-  if (evidenceId && TZ_CTX.evidence[evidenceId]) return TZ_CTX.evidence[evidenceId];
-  return TZ_CTX.caseTZ || "UTC";
+  if (sel === VIEW_TZ_CASE) return TZ_CTX.caseTZ || "UTC"; // case zone, whole view
+  if (sel === VIEW_TZ_EVIDENCE) {                          // each evidence's zone
+    if (evidenceId && TZ_CTX.evidence[evidenceId]) return TZ_CTX.evidence[evidenceId];
+    return TZ_CTX.caseTZ || "UTC";
+  }
+  return sel; // explicit IANA zone (incl. "UTC")
 }
 
 // formatInTZ renders a Date in the given IANA zone as
@@ -321,14 +328,16 @@ window.addEventListener("DOMContentLoaded", () => {
     sel.value = currentLocale();
     sel.addEventListener("change", (e) => setLocale(e.target.value));
   }
-  // Display-timezone switcher: "Per-evidence (configured)" (each evidence's
-  // examiner-configured zone — not auto-detected) + IANA zones.
+  // Display-timezone switcher: "Case timezone" (the zone set at case creation,
+  // applied to the whole view — the default) + "Per-evidence (configured)"
+  // (each evidence's examiner-configured zone) + IANA zones.
   const tzSel = document.getElementById("tz-switcher");
   if (tzSel) {
     const mk = (value, text) => {
       const o = document.createElement("option");
       o.value = value; o.textContent = text; return o;
     };
+    tzSel.appendChild(mk(VIEW_TZ_CASE, "🌐 Case timezone"));
     tzSel.appendChild(mk(VIEW_TZ_EVIDENCE, "🕓 Per-evidence (configured)"));
     tzSel.appendChild(mk("UTC", "UTC"));
     supportedTimezones().forEach((z) => { if (z !== "UTC") tzSel.appendChild(mk(z, z)); });
