@@ -115,6 +115,17 @@ def parse(req: ParseRequest) -> ParseResult:
         binary, "csv-timeline",
         "-d" if req.input_path.is_dir() else "-f", str(req.input_path),
         "-o", str(csv_path),
+        # `verbose` profile = standard columns + MitreTactics/MitreTags/OtherTags
+        # (and RuleFile/EvtxFile). We need MitreTactics so Tier 1A findings carry
+        # a MITRE tactic and don't all collapse into the UI's "uncategorized"
+        # bucket. It keeps every column the standard profile had (Details,
+        # ExtraFieldInfo, RuleID), so the pass-through SQL is unaffected.
+        "-p", "verbose",
+        # `--clobber`: overwrite a pre-existing output CSV. Without it a re-parse
+        # makes Hayabusa print "file already exists" and *exit 0* anyway, so the
+        # `rc != 0` guard below passes and _convert silently re-ingests the STALE
+        # CSV from the previous run. Clobbering keeps re-parse results fresh.
+        "--clobber",
         "--no-wizard",
         "--no-color", "--quiet", "--quiet-errors", "--UTC",
     ]

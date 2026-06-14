@@ -150,6 +150,113 @@ func TestHayabusaPassthroughIncludesInfoWhenFlag(t *testing.T) {
 	}
 }
 
+func TestNormaliseHayabusaTactics(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"PrivEsc ¦ Persis", []string{"privilege-escalation", "persistence"}},
+		{"CredAccess", []string{"credential-access"}},
+		{"Stealth ¦ DefImpair", []string{"defense-evasion"}}, // both fold + dedupe
+		{"LatMov ¦ LatMov", []string{"lateral-movement"}},    // dedupe identical
+		{"", nil},
+		{"-", nil},
+		{"Mystery", []string{"mystery"}}, // unknown token kept, not dropped
+	}
+	for _, c := range cases {
+		got := normaliseHayabusaTactics(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("normaliseHayabusaTactics(%q): got %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("normaliseHayabusaTactics(%q): got %v, want %v", c.in, got, c.want)
+				break
+			}
+		}
+	}
+}
+
+func TestParseHayabusaTechniques(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"T1098", []string{"T1098"}},
+		{"T1555.004 ¦ T1550.002", []string{"T1555.004", "T1550.002"}},
+		{"T1098 ¦ Mimikatz ¦ G0007", []string{"T1098"}}, // drop software/group tags
+		{"", nil},
+		{"T1098 ¦ T1098", []string{"T1098"}}, // dedupe
+	}
+	for _, c := range cases {
+		got := parseHayabusaTechniques(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("parseHayabusaTechniques(%q): got %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("parseHayabusaTechniques(%q): got %v, want %v", c.in, got, c.want)
+				break
+			}
+		}
+	}
+}
+
+// TestHayabusaPassthroughPropagatesTactics inserts a row carrying the verbose
+// profile's MitreTactics/MitreTags and asserts the on-disk finding's rule_meta
+// is no longer tactic-less (the bug: every Hayabusa finding fell into the UI's
+// "uncategorized" bucket).
+func TestHayabusaPassthroughPropagatesTactics(t *testing.T) {
+	cdb, _, cleanup := setupCase(t)
+	defer cleanup()
+	t0 := mustTime("2026-05-20T08:00:00Z")
+
+	payload := map[string]any{
+		"RuleID": "rule-T", "RuleTitle": "Pass-the-Hash", "Level": "high",
+		"Channel": "Sec", "EventID": "4624", "Computer": "WS01",
+		"Details": "x", "ExtraFieldInfo": "",
+		"MitreTactics": "LatMov ¦ CredAccess", "MitreTags": "T1550.002 ¦ Mimikatz",
+		"Timestamp": t0.Format(time.RFC3339Nano),
+	}
+	body, _ := json.Marshal(payload)
+	if _, err := cdb.DB().Exec(
+		`INSERT INTO unified_events (case_id, evidence_id, artifact_id, audit_id, ts_utc, event_type, computer, payload_json)
+		 VALUES ('C1', 'EV1', 'hayabusa', 'a1', ?, 'hayabusa', 'WS01', ?)`,
+		t0, string(body)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	outDir := t.TempDir()
+	rep, err := RunHayabusaPassthrough(context.Background(), Config{
+		CaseID: "C1", CaseDB: cdb, FindingsDir: outDir,
+	}, HayabusaPassthroughOptions{})
+	if err != nil {
+		t.Fatalf("RunHayabusaPassthrough: %v", err)
+	}
+	if len(rep.Findings) != 1 {
+		t.Fatalf("Findings: got %d, want 1", len(rep.Findings))
+	}
+	b, _ := os.ReadFile(rep.Findings[0].OutputPath)
+	var f Finding
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantTactics := []string{"lateral-movement", "credential-access"}
+	if len(f.RuleMeta.MITRETactics) != len(wantTactics) {
+		t.Fatalf("MITRETactics: got %v, want %v", f.RuleMeta.MITRETactics, wantTactics)
+	}
+	for i := range wantTactics {
+		if f.RuleMeta.MITRETactics[i] != wantTactics[i] {
+			t.Errorf("MITRETactics[%d]: got %q, want %q", i, f.RuleMeta.MITRETactics[i], wantTactics[i])
+		}
+	}
+	if len(f.RuleMeta.MITRETechniques) != 1 || f.RuleMeta.MITRETechniques[0] != "T1550.002" {
+		t.Errorf("MITRETechniques: got %v, want [T1550.002]", f.RuleMeta.MITRETechniques)
+	}
+}
+
 func TestHayabusaPassthroughLevelNormalisation(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"info", "informational"},
