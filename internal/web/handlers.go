@@ -1466,15 +1466,13 @@ func (s *Server) findingsDir(caseID string) string {
 
 func (s *Server) handleGetTimeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	en := tier3.LoadWebEnrichment(s.findingsDir(id))
-	// intrusion_path / cross_evidence_correlations were legacy-synthesizer
-	// concepts; the tier2/tier3 pipeline doesn't produce them. Return empty
-	// arrays so the UI renders the timeline without those panels.
-	writeJSON(w, 200, map[string]any{
-		"timeline":                    en.Timeline,
-		"intrusion_path":              []any{},
-		"cross_evidence_correlations": []any{},
-	})
+	// BuildTimelineView joins the findings-derived flat timeline to the Tier 2
+	// synthesis (clusters / clock reliability / logical-order intrusion path) so
+	// the Timeline tab renders the SAME phase grouping + clock warning the report
+	// uses. Degrades to a flat timeline when no synthesis.json exists yet.
+	synthPath := filepath.Join(s.cfg.OutputsRoot, id, "synthesis.json")
+	view := tier3.BuildTimelineView(s.findingsDir(id), synthPath)
+	writeJSON(w, 200, view)
 }
 
 func (s *Server) handleGetIOCs(w http.ResponseWriter, r *http.Request) {

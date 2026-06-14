@@ -2651,8 +2651,8 @@ async function renderTimeline(pane, caseID) {
   try { data = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/timeline`); }
   catch (e) { pane.innerHTML = `<div class="empty">No synthesis yet (run Synthesize first).</div>`; return; }
 
-  // Wave 21: Review Gate 2 state (per-entry approve/reject). Fetch lazily —
-  // if the endpoint fails (older server) the table renders without controls.
+  // Review Gate 2 state (per-entry approve/reject). Fetch lazily — if the
+  // endpoint fails (older server) the table renders without controls.
   let review = { auto_skip: false, reviews: {}, counts: {} };
   try {
     review = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/timeline-review`);
@@ -2660,68 +2660,210 @@ async function renderTimeline(pane, caseID) {
 
   pane.innerHTML = "";
 
-  // Kill chain diagram
+  const rows = data.timeline || [];
+  const clusters = data.clusters || [];
+  const steps = data.intrusion_path || [];
+  const notes = data.timeline_notes || [];
+  const unreliable = String(data.timeline_reliability || "").toLowerCase() === "unreliable";
+
+  // 1. Clock-reliability banner — same warning the report leads with, so the
+  // examiner sees a consistent verdict on both surfaces (review T-2).
+  if (unreliable || notes.length > 0) {
+    pane.appendChild(tlReliabilityBanner(unreliable, notes));
+  }
+
+  // 2. Kill Chain — logical-order intrusion path from the synthesis clusters
+  // (review T-3). Empty only when synthesis produced no attack clusters.
+  pane.appendChild(tlKillChain(steps, unreliable));
+
+  // 3. Swimlane — severity × recorded-time density per phase + the largest
+  // no-activity gap (review T-5).
+  const swim = tlSwimlane(rows, clusters, steps);
+  if (swim) pane.appendChild(swim);
+
+  // 4. Review Gate 2 roll-up + skip-all toggle.
+  pane.appendChild(tlGate2Banner(caseID, review, rows, pane));
+
+  // 5. Phase-grouped, logical-order, expandable table (replaces the old flat
+  // table — review T-1/T-4/T-6). Each row expands into the same rich evidence
+  // card the findings tab uses ("evidence を見る").
+  if (rows.length === 0) {
+    pane.appendChild(h("div", { class: "empty" }, "No timeline entries yet (run Analyze → Synthesize)."));
+    return;
+  }
+  pane.appendChild(tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane));
+}
+
+// tlReliabilityBanner mirrors the report's "⏰ タイムライン信頼性: 要再アンカー" box.
+function tlReliabilityBanner(unreliable, notes) {
+  const box = h("div", { class: "tl-banner" + (unreliable ? " danger" : "") });
+  box.appendChild(h("span", { class: "tl-banner-ic" }, unreliable ? "⏰" : "ℹ"));
+  const body = h("div", { class: "tl-banner-body" });
+  body.appendChild(h("div", { class: "tl-banner-title" },
+    unreliable
+      ? "タイムライン信頼性: 要再アンカー — システム時刻の後方ジャンプを検出"
+      : "タイムライン補足"));
+  if (unreliable) {
+    body.appendChild(h("div", { class: "tl-banner-sub" },
+      "記録順とタイムスタンプが乖離するため、下表は表示時刻順ではなく攻撃の論理的順序 (フェーズ) で並べています。" +
+      "改ざんかプロビジョニング補正かは要確認。"));
+  }
+  (notes || []).forEach((n) => body.appendChild(h("div", { class: "tl-banner-note" }, n)));
+  box.appendChild(body);
+  return box;
+}
+
+// tlKillChain renders the logical-order intrusion path as a stepped diagram,
+// matching the report's intrusion path (same synthesis-derived ordering).
+function tlKillChain(steps, unreliable) {
+  const box = h("div", { class: "tl-section" });
+  box.appendChild(h("h3", {}, [
+    "Kill Chain ",
+    h("span", { class: "tl-h3-note" }, unreliable ? "(論理順 — レポートの侵入経路と同じ)" : "(検出順)"),
+  ]));
   const kc = h("div", { class: "killchain" });
-  if (data.intrusion_path && data.intrusion_path.length > 0) {
-    data.intrusion_path.forEach((s) => {
+  if (steps.length > 0) {
+    steps.forEach((s) => {
+      const mitre = (s.mitre_techniques || []).slice(0, 4);
       kc.appendChild(h("div", { class: "step" }, [
         h("div", { class: "num" }, "STEP " + s.step),
-        h("div", { class: "tactic" }, (s.tactic || "?") + " " + (s.tactic_name || "")),
-        h("div", { class: "ts" }, fmtTS(s.timestamp)),
+        h("div", { class: "tactic" }, s.label || s.phase || "?"),
+        ...(mitre.length ? [h("div", { class: "kc-mitre" },
+          mitre.map((t) => h("span", { class: "kc-chip" }, t)))] : []),
       ]));
     });
   } else {
     kc.appendChild(h("div", { class: "muted" }, "(no intrusion path inferred)"));
   }
-  pane.appendChild(h("div", {}, [h("h3", {}, "Kill Chain"), kc]));
+  box.appendChild(kc);
+  return box;
+}
 
-  // Wave 27: cross-evidence correlations panel. Only renders when the
-  // synthesizer detected ≥1 technique observed across multiple evidences
-  // (single-host cases get an empty list and we skip the section).
-  const xev = data.cross_evidence_correlations || [];
-  if (xev.length > 0) {
-    const xevBox = h("div", { class: "cross-evidence-panel" });
-    xevBox.appendChild(h("h3", {}, `Cross-evidence Correlations (${xev.length})`));
-    xevBox.appendChild(h("p", { class: "muted", style: "font-size: 11px;" },
-      "同じ MITRE technique が複数 evidence で観測されたケース。" +
-      "warning = high-impact tactic (IA/CA/LM/DE/C2/Impact)、info = その他。"));
-    const xtab = h("table", { class: "timeline-table" }, [
-      h("thead", {}, h("tr", {}, [
-        h("th", {}, "Severity"),
-        h("th", {}, "Tactic"),
-        h("th", {}, "Technique"),
-        h("th", {}, "Evidences"),
-        h("th", {}, "Description"),
-      ])),
-    ]);
-    const xbody = h("tbody");
-    xev.forEach((c) => {
-      const sevBadge = h("span",
-        { class: "badge " + (c.severity === "warning" ? "err" : "warn") },
-        c.severity || "info");
-      xbody.appendChild(h("tr", {}, [
-        h("td", {}, sevBadge),
-        h("td", {}, h("span", { class: "badge tactic" }, c.tactic || "")),
-        h("td", {}, (c.technique_id || "") + (c.technique_name ? " · " + c.technique_name : "")),
-        h("td", { class: "muted", style: "font-size: 11px;" },
-          (c.evidence_ids || []).join(", ")),
-        h("td", { class: "summary" }, c.description || ""),
-      ]));
+// SEV_DOT maps a normalised severity to its swimlane dot colour.
+const SEV_DOT = {
+  critical: "#ff5e6c", high: "#e74c3c", medium: "#f39c12", low: "#2ecc71", info: "#8aa0c8",
+};
+
+// tlSwimlane plots events on a recorded-time axis, one lane per attack phase
+// (+ a muted noise lane), and marks the single largest no-activity gap. Returns
+// null when there are too few timestamps to be meaningful.
+function tlSwimlane(rows, clusters, steps) {
+  const ts = (r) => { const n = new Date(r.timestamp).getTime(); return isNaN(n) ? null : n; };
+  const withTs = rows.filter((r) => ts(r) != null);
+  if (withTs.length < 3) return null;
+  const times = withTs.map(ts);
+  const tMin = Math.min(...times), tMax = Math.max(...times);
+  const span = Math.max(1, tMax - tMin);
+  const pos = (n) => ((n - tMin) / span) * 100;
+
+  // lane ordering: attack clusters in intrusion-step order, then one merged
+  // noise lane at the bottom.
+  const stepByCluster = {};
+  steps.forEach((s) => { if (s.cluster_id) stepByCluster[s.cluster_id] = s.step; });
+  const attackClusters = clusters.filter((c) => !c.noise)
+    .sort((a, b) => (stepByCluster[a.id] || 99) - (stepByCluster[b.id] || 99) || a.phase_rank - b.phase_rank);
+
+  const lanes = []; // {label, noise, rows}
+  attackClusters.forEach((c) => {
+    const glyph = stepByCluster[c.id] ? stepNumGlyph(stepByCluster[c.id]) + " " : "";
+    lanes.push({
+      label: glyph + (c.phase_label || c.attack_phase || "?"),
+      noise: false,
+      rows: withTs.filter((r) => r.cluster_id === c.id),
     });
-    xtab.appendChild(xbody);
-    xevBox.appendChild(xtab);
-    pane.appendChild(xevBox);
+  });
+  const noiseRows = withTs.filter((r) => r.noise);
+  const unmapped = withTs.filter((r) => !r.cluster_id);
+  if (unmapped.length) lanes.push({ label: "未分類", noise: false, rows: unmapped });
+  if (noiseRows.length) lanes.push({ label: "起動ノイズ(良性)", noise: true, rows: noiseRows });
+
+  // largest consecutive gap on the time axis.
+  const sorted = [...times].sort((a, b) => a - b);
+  let gapStart = 0, gapEnd = 0, gapLen = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const g = sorted[i] - sorted[i - 1];
+    if (g > gapLen) { gapLen = g; gapStart = sorted[i - 1]; gapEnd = sorted[i]; }
+  }
+  const showGap = gapLen / span > 0.12;
+
+  const box = h("div", { class: "tl-section" });
+  box.appendChild(h("h3", {}, ["Activity Density ", h("span", { class: "tl-h3-note" }, "(記録時刻軸 · 重大度色)")]));
+  const swim = h("div", { class: "swimlane" });
+
+  if (showGap) {
+    const left = pos(gapStart), width = pos(gapEnd) - pos(gapStart);
+    const mins = Math.round(gapLen / 60000);
+    swim.appendChild(h("div", { class: "swim-gaprow" },
+      h("div", { class: "swim-gaptrack" }, [
+        h("div", { class: "swim-gap", style: `left:${left}%;width:${width}%;` }),
+        h("div", { class: "swim-gaplbl", style: `left:${left + width / 2}%;` },
+          `〜 約${mins}分の無記録 〜`),
+      ])));
   }
 
-  // Wave 21: Review Gate 2 banner — roll-up + skip-all toggle.
+  lanes.forEach((ln) => {
+    const lefts = ln.rows.map((r) => pos(ts(r)));
+    const band = lefts.length
+      ? { left: Math.min(...lefts), width: Math.max(0.8, Math.max(...lefts) - Math.min(...lefts)) }
+      : null;
+    const track = h("div", { class: "swim-track" });
+    if (band) {
+      track.appendChild(h("div", { class: "swim-band" + (ln.noise ? " noise" : ""),
+        style: `left:${band.left}%;width:${band.width}%;` }));
+    }
+    ln.rows.forEach((r) => {
+      const sev = tlSeverity(r.severity);
+      track.appendChild(h("div", {
+        class: "swim-dot",
+        style: `left:${pos(ts(r))}%;background:${SEV_DOT[sev] || SEV_DOT.info};`,
+        title: `${fmtTS(r.timestamp)} · ${sev} · ${r.summary || ""}`,
+      }));
+    });
+    swim.appendChild(h("div", { class: "swim-lane" + (ln.noise ? " noise" : "") }, [
+      h("div", { class: "swim-ll" }, ln.label),
+      track,
+    ]));
+  });
+
+  // axis ticks: min / mid / max
+  swim.appendChild(h("div", { class: "swim-axis" }, [
+    h("div", {}, ""),
+    h("div", { class: "swim-ticks" }, [
+      h("span", {}, fmtTS(new Date(tMin).toISOString())),
+      h("span", {}, fmtTS(new Date((tMin + tMax) / 2).toISOString())),
+      h("span", {}, fmtTS(new Date(tMax).toISOString())),
+    ]),
+  ]));
+  box.appendChild(swim);
+
+  // legend
+  const legend = h("div", { class: "swim-legend" });
+  [["critical", "緊急"], ["high", "高"], ["medium", "中"], ["low", "低"], ["info", "情報"]].forEach(([k, lbl]) => {
+    legend.appendChild(h("span", {}, [
+      h("span", { class: "swim-d", style: `background:${SEV_DOT[k]};` }), lbl,
+    ]));
+  });
+  box.appendChild(legend);
+  return box;
+}
+
+// stepNumGlyph maps 1..9 to circled-number glyphs (① ②…), falling back to "N.".
+function stepNumGlyph(n) {
+  const g = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
+  return (n >= 1 && n <= 9) ? g[n - 1] : (n + ".");
+}
+
+// tlGate2Banner — Review Gate 2 roll-up + skip-all toggle (kept from the old
+// timeline; per-row approve/reject now lives inside each expanded row).
+function tlGate2Banner(caseID, review, rows, pane) {
   const c = review.counts || {};
-  const totalRev = review.total || (data.timeline || []).length;
-  const banner = h("div", { class: "row", style: "align-items: center; margin: 8px 0 6px; gap: 12px;" }, [
+  const total = review.total || rows.length;
+  return h("div", { class: "tl-gate2" }, [
     h("span", { class: "muted" },
-      `Review Gate 2: ${totalRev} entries · approved=${c.approved||0} · pending=${c.pending||0} · ` +
-      `rejected=${c.rejected||0} · skipped=${c.skipped||0}`),
+      `Review Gate 2: ${total} entries · approved=${c.approved || 0} · pending=${c.pending || 0} · ` +
+      `rejected=${c.rejected || 0} · skipped=${c.skipped || 0}`),
     h("span", { class: "spacer" }),
-    h("label", { style: "display: flex; gap: 6px; align-items: center; font-size: 11px; cursor: pointer;" }, [
+    h("label", { class: "tl-gate2-skip" }, [
       h("input", {
         type: "checkbox", id: "gate2-skip-all",
         ...(review.auto_skip ? { checked: "checked" } : {}),
@@ -2737,195 +2879,241 @@ async function renderTimeline(pane, caseID) {
       "Skip Review Gate 2 (auto-approve all)",
     ]),
   ]);
-  pane.appendChild(banner);
+}
 
-  // Timeline table (Wave 21: + Review + Action columns). Each row is
-  // expandable into a detail panel (full summary + all metadata + the raw
-  // underlying event, lazily fetched by audit_id) so the examiner can see
-  // *what actually happened* without leaving the tab. The leading Sev column
-  // + per-row left-border tint make severity scannable at a glance.
-  const rows = data.timeline || [];
-  const COLSPAN = 9;
-  const table = h("table", { class: "timeline-table" }, [
-    h("thead", {}, h("tr", {}, [
-      h("th", { style: "width: 16px;" }, ""),
-      h("th", {}, "Timestamp"),
-      h("th", {}, "Sev"),
-      h("th", {}, "Tactic"),
-      h("th", {}, "Technique"),
-      h("th", {}, "Computer"),
-      h("th", {}, "Summary"),
-      h("th", {}, "Review"),
-      h("th", {}, "Action"),
-    ])),
-  ]);
-  const body = h("tbody");
-  rows.forEach((t) => {
-    const aid = t.audit_id || "";
-    const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
-    // Review-state chip — same visual language as the findings gate
-    // (✓ 承認済 / ✕ 却下 / 未レビュー), carrying reviewer / reason in its title.
-    const stateClass = {
-      approved: "approved", rejected: "rejected",
-      skipped:  "approved", pending:  "pending",
-    }[rev.state] || "pending";
-    const stateText = {
-      approved: "✓ 承認済", rejected: "✕ 却下",
-      skipped:  "✓ auto",  pending:  "未レビュー",
-    }[rev.state] || "未レビュー";
-    const stateTitle = rev.state === "rejected"
-      ? (rev.reason ? "却下理由: " + rev.reason : "却下")
-      : (rev.reviewed_by ? "reviewed by " + rev.reviewed_by + (rev.reviewed_at ? " · " + fmtTS(rev.reviewed_at) : "") : "");
-    const stateBadge = h("span", { class: "badge " + stateClass, title: stateTitle }, stateText);
-    const sev = tlSeverity(t.severity);
+// tlPhaseGroups renders the timeline as cluster/phase groups in logical
+// (kill-chain) order. Attack phases first (intrusion-step order), then any
+// unclustered rows, then a collapsed noise group. Each row expands into the
+// findings-style evidence card.
+function tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane) {
+  const box = h("div", { class: "tl-section" });
+  box.appendChild(h("h3", {}, [
+    `Timeline (${rows.length} events) `,
+    h("span", { class: "tl-h3-note" }, "— フェーズ別 · 行クリックで evidence 展開"),
+  ]));
 
-    // Action cell — mirrors the findings review controls (rebuildActionButtons):
-    // a decision is never frozen. approved → 却下/リセット, rejected → 承認/リセット,
-    // pending → 承認/却下. リセット clears the prior decision back to pending.
-    const action = h("div", { class: "row timeline-action", style: "gap: 4px; align-items: center;" });
-    if (!aid) {
-      action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" }, "(no audit_id)"));
-    } else {
-      const post = async (verb, okMsg) => {
-        try {
-          await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/${verb}`);
-          toast(okMsg + " " + aid.slice(0, 8), "success");
-          await renderTimeline(pane, caseID);
-        } catch (e) { toast(e.message, "error"); }
-      };
-      const approveBtn = () => h("button", {
-        class: "fbtn",
-        onclick: (ev) => { ev.stopPropagation(); post("approve", "承認"); },
-      }, "承認");
-      const rejectBtn = () => h("button", {
-        class: "fbtn danger",
-        onclick: (ev) => {
-          ev.stopPropagation();
-          const close = modal([
-            h("h3", {}, "却下 — timeline entry"),
-            h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
-            h("div", { class: "form-row" }, [h("label", {}, "理由"),
-              h("input", { id: "tl_reason", value: rev.reason || "", placeholder: "why is this entry not relevant?" })]),
-            h("div", { class: "actions" }, [
-              h("button", { class: "ghost", onclick: () => close() }, "キャンセル"),
-              h("button", { class: "danger", onclick: async () => {
-                try {
-                  await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/reject`,
-                    { reason: $("#tl_reason").value.trim() });
-                  close(); toast("却下 " + aid.slice(0, 8), "success");
-                  await renderTimeline(pane, caseID);
-                } catch (e) { toast(e.message, "error"); }
-              }}, "却下"),
-            ]),
-          ]);
-        },
-      }, "却下");
-      const resetBtn = () => h("button", {
-        class: "fbtn",
-        title: "判断を取り消して未レビューに戻す",
-        onclick: (ev) => { ev.stopPropagation(); post("reset", "リセット"); },
-      }, "リセット");
-      if (rev.state === "approved") {
-        action.appendChild(rejectBtn());
-        action.appendChild(resetBtn());
-      } else if (rev.state === "rejected") {
-        action.appendChild(approveBtn());
-        action.appendChild(resetBtn());
-      } else {
-        action.appendChild(approveBtn());
-        action.appendChild(rejectBtn());
-      }
-    }
-
-    // Detail row — built lazily on first expand, hidden until then.
-    const caret = h("span", { class: "tl-caret" }, "▸");
-    const detailCell = h("td", { colspan: COLSPAN, class: "tl-detail-cell" });
-    const detailRow = h("tr", { class: "tl-detail-row hidden" }, detailCell);
-    let detailBuilt = false;
-    function buildDetail() {
-      if (detailBuilt) return;
-      detailBuilt = true;
-      const panel = h("div", { class: "tl-detail-panel" });
-      panel.appendChild(h("div", { class: "tl-detail-meta" }, [
-        kv("Time", fmtTS(t.timestamp, t.evidence_id)),
-        kv("Computer", t.computer || "—"),
-        kv("Tactic", t.tactic || "—"),
-        kv("Technique", t.technique || "—"),
-        kv("Artifact", t.artifact || "—"),
-        kv("Severity", t.severity || "—"),
-        kv("Audit ID", aid || "—"),
-      ]));
-      if (t.summary) {
-        panel.appendChild(h("div", { class: "tl-detail-label" }, "Summary"));
-        panel.appendChild(h("div", { class: "tl-detail-summary" }, t.summary));
-      }
-      panel.appendChild(h("div", { class: "tl-detail-label" }, "Underlying event"));
-      if (!aid) {
-        panel.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
-          "no audit_id — cannot link this entry to a raw event"));
-      } else {
-        const evMeta = h("div", { class: "evidence-meta muted", style: "font-size: 11px; margin-bottom: 6px;" }, "loading raw event…");
-        const evPre = h("pre", { class: "payload-pre" }, "");
-        panel.appendChild(evMeta);
-        panel.appendChild(evPre);
-        (async () => {
-          try {
-            const res = await api("GET",
-              `/api/cases/${encodeURIComponent(caseID)}/events?audit_id=${encodeURIComponent(aid)}&limit=1`);
-            const row = (res.events || [])[0];
-            if (!row) { evMeta.textContent = "no event found for audit_id " + aid; return; }
-            evMeta.textContent =
-              `time: ${row.ts_utc || "?"} · type: ${row.event_type || "?"}` +
-              (row.computer ? ` · computer: ${row.computer}` : "") +
-              (row.evidence_id ? ` · evidence: ${row.evidence_id}` : "") +
-              (row.artifact_id ? ` · artifact: ${row.artifact_id}` : "");
-            let pretty = row.payload_json || "";
-            try { pretty = JSON.stringify(JSON.parse(row.payload_json), null, 2); } catch (_) {}
-            evPre.textContent = pretty || "(empty payload)";
-          } catch (e) {
-            evMeta.textContent = "load failed: " + String((e && e.message) || e).slice(0, 200);
-          }
-        })();
-      }
-      detailCell.appendChild(panel);
-    }
-
-    const mainRow = h("tr", {
-      class: `timeline-row expandable sevrow-${sev} ${stateClass}`,
-    }, [
-      h("td", { class: "tl-caret-cell sev-cell" }, caret),
-      h("td", { class: "ts" }, fmtTS(t.timestamp, t.evidence_id)),
-      h("td", {}, h("span", { class: "badge sev-" + sev }, sev)),
-      h("td", {}, h("span", { class: "badge tactic" }, t.tactic || "")),
-      h("td", {}, t.technique || ""),
-      h("td", {}, t.computer || ""),
-      h("td", { class: "summary" }, t.summary || ""),
-      h("td", {}, stateBadge),
-      h("td", { class: "tl-action-cell" }, action),
-    ]);
-    mainRow.onclick = (ev) => {
-      if (ev.target.closest("button, input, a")) return;
-      const willOpen = detailRow.classList.contains("hidden");
-      if (willOpen) buildDetail();
-      detailRow.classList.toggle("hidden");
-      mainRow.classList.toggle("expanded", willOpen);
-      caret.textContent = willOpen ? "▾" : "▸";
-    };
-
-    body.appendChild(mainRow);
-    body.appendChild(detailRow);
+  const stepByCluster = {};
+  steps.forEach((s) => { if (s.cluster_id) stepByCluster[s.cluster_id] = s.step; });
+  const byCluster = new Map();
+  rows.forEach((r) => {
+    const k = r.cluster_id || 0;
+    if (!byCluster.has(k)) byCluster.set(k, []);
+    byCluster.get(k).push(r);
   });
-  table.appendChild(body);
+  const tsNum = (r) => { const n = new Date(r.timestamp).getTime(); return isNaN(n) ? 0 : n; };
+  for (const list of byCluster.values()) list.sort((a, b) => tsNum(a) - tsNum(b));
 
-  const tlBox = h("div", {}, [
-    h("h3", {}, `Timeline (${rows.length} events)` + (rows.length ? " — click a row for details" : "")),
-  ]);
-  if (rows.length === 0) {
-    tlBox.appendChild(h("div", { class: "empty" }, "No timeline entries yet (run Analyze → Synthesize)."));
-  } else {
-    tlBox.appendChild(table);
+  const attackClusters = clusters.filter((c) => !c.noise)
+    .sort((a, b) => (stepByCluster[a.id] || 99) - (stepByCluster[b.id] || 99) || a.phase_rank - b.phase_rank);
+  const noiseClusters = clusters.filter((c) => c.noise);
+
+  // attack phases, in logical order
+  attackClusters.forEach((c) => {
+    const list = byCluster.get(c.id) || [];
+    if (!list.length) return;
+    box.appendChild(tlPhaseBlock(caseID, {
+      num: stepNumGlyph(stepByCluster[c.id] || c.id),
+      title: c.phase_label || c.attack_phase || "?",
+      cls: tlPhaseClass(c.attack_phase),
+      rows: list, review, unreliable, pane,
+    }));
+  });
+
+  // unmapped rows (no cluster) — only if the case has clusters at all
+  const unmapped = byCluster.get(0) || [];
+  if (unmapped.length && clusters.length) {
+    box.appendChild(tlPhaseBlock(caseID, {
+      num: "•", title: "未分類", cls: "", rows: unmapped, review, unreliable, pane,
+    }));
+  } else if (unmapped.length && !clusters.length) {
+    // no synthesis clusters at all → single flat group, no phase chrome.
+    box.appendChild(tlPhaseBlock(caseID, {
+      num: "", title: "All events", cls: "", rows: unmapped, review, unreliable, pane, flat: true,
+    }));
   }
-  pane.appendChild(tlBox);
+
+  // noise phases — collapsed by default
+  noiseClusters.forEach((c) => {
+    const list = byCluster.get(c.id) || [];
+    if (!list.length) return;
+    box.appendChild(tlPhaseBlock(caseID, {
+      num: "⚠", title: (c.phase_label || c.attack_phase || "noise") + " — 起動シーケンスノイズ (良性)",
+      cls: "noise", rows: list, review, unreliable, pane, collapsed: true,
+    }));
+  });
+
+  return box;
+}
+
+function tlPhaseClass(phase) {
+  const p = String(phase || "").toLowerCase();
+  if (["initial-access", "execution", "persistence", "privilege-escalation",
+       "credential-access", "lateral-movement"].includes(p)) return "lm";
+  if (["defense-evasion", "command-and-control", "exfiltration", "impact"].includes(p)) return "de";
+  return "";
+}
+
+// tlPhaseBlock builds one collapsible phase group: a header + a timeline-table
+// of its rows. flat=true drops the phase header (single-group fallback).
+function tlPhaseBlock(caseID, opts) {
+  const { num, title, cls, rows, review, unreliable, pane } = opts;
+  const group = h("div", { class: "tl-phase " + (cls || "") });
+  const tbl = h("table", { class: "timeline-table tl-phase-table" });
+  const body = h("tbody");
+  rows.forEach((t) => tlAppendRow(body, caseID, t, review, unreliable, pane));
+  tbl.appendChild(body);
+
+  if (!opts.flat) {
+    const start = rows[0] ? fmtTS(rows[0].timestamp) : "";
+    const end = rows.length > 1 ? fmtTS(rows[rows.length - 1].timestamp) : "";
+    const range = end && end !== start ? `${start} 〜 ${end}` : start;
+    const head = h("div", { class: "tl-phase-head" }, [
+      h("span", { class: "tl-phase-num" }, num),
+      h("span", { class: "tl-phase-name" }, title),
+      h("span", { class: "tl-phase-time" }, range),
+      h("span", { class: "tl-phase-count" }, `${rows.length} events`),
+      h("span", { class: "tl-phase-caret" }, opts.collapsed ? "▸" : "▾"),
+    ]);
+    if (opts.collapsed) tbl.classList.add("hidden");
+    head.onclick = () => {
+      const open = tbl.classList.contains("hidden");
+      tbl.classList.toggle("hidden");
+      head.querySelector(".tl-phase-caret").textContent = open ? "▾" : "▸";
+    };
+    group.appendChild(head);
+  }
+  group.appendChild(tbl);
+  return group;
+}
+
+// tlAppendRow appends the (main, detail) row pair for one timeline entry.
+function tlAppendRow(body, caseID, t, review, unreliable, pane) {
+  const aid = t.audit_id || "";
+  const sev = tlSeverity(t.severity);
+  const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
+  const stateClass = { approved: "approved", rejected: "rejected", skipped: "approved", pending: "pending" }[rev.state] || "pending";
+  const isClock = /time\s*modification|system\s*time|時刻/i.test(t.summary || "");
+
+  const caret = h("span", { class: "tl-caret" }, "▸");
+  const detailCell = h("td", { colspan: 5, class: "tl-detail-cell" });
+  const detailRow = h("tr", { class: "tl-detail-row hidden" }, detailCell);
+  let built = false;
+  const buildDetail = () => {
+    if (built) return; built = true;
+    detailCell.appendChild(tlDetailPanel(caseID, t, aid, rev, stateClass, pane));
+  };
+
+  const tsCell = h("td", { class: "ts" + (unreliable ? " tl-ts-unreliable" : "") },
+    [...(isClock ? [h("span", { class: "tl-clock-ic" }, "⏰ ")] : []), fmtTS(t.timestamp)]);
+  if (unreliable) tsCell.title = "記録時刻 — 本ケースはクロック巻き戻しを検出、絶対時刻・発生順は不確実";
+
+  const mainRow = h("tr", { class: `timeline-row expandable sevrow-${sev} ${stateClass}` }, [
+    h("td", { class: "tl-caret-cell sev-cell" }, caret),
+    tsCell,
+    h("td", {}, h("span", { class: "badge sev-" + sev }, sev)),
+    h("td", {}, t.tactic ? h("span", { class: "badge tactic" }, t.tactic) : h("span", { class: "muted" }, "—")),
+    h("td", { class: "summary" }, t.summary || ""),
+  ]);
+  mainRow.onclick = (ev) => {
+    if (ev.target.closest("button, input, a")) return;
+    const open = detailRow.classList.contains("hidden");
+    if (open) buildDetail();
+    detailRow.classList.toggle("hidden");
+    mainRow.classList.toggle("expanded", open);
+    caret.textContent = open ? "▾" : "▸";
+  };
+  body.appendChild(mainRow);
+  body.appendChild(detailRow);
+}
+
+// tlDetailPanel — the expanded body for a timeline row. Shows the SAME rich
+// evidence card the findings tab uses ("evidence を見る"), plus a compact
+// metadata grid and the per-row Review Gate 2 controls.
+function tlDetailPanel(caseID, t, aid, rev, stateClass, pane) {
+  const panel = h("div", { class: "tl-detail-panel" });
+  panel.appendChild(h("div", { class: "tl-detail-meta" }, [
+    kv("Tactic", t.tactic || "—"),
+    kv("Technique", t.technique || "—"),
+    kv("Computer", t.computer || "—"),
+    kv("Artifact", t.artifact || "—"),
+    kv("Source", (t.source || "—") + (t.rule_id ? " · " + t.rule_id : "")),
+  ]));
+
+  panel.appendChild(h("div", { class: "tl-detail-label" }, "Evidence"));
+  if (!aid) {
+    panel.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
+      "no audit_id — cannot link this entry to a raw event"));
+  } else {
+    const evBlock = h("div", { class: "evd-block" });
+    evBlock.appendChild(h("div", { class: "muted", style: "font-size: 11px;" },
+      h("span", {}, [h("span", { class: "spinner" }), "loading evidence…"])));
+    panel.appendChild(evBlock);
+    // Reuse the findings evidenceCard: build a pseudo-finding + fetch the event
+    // by audit_id, then render the identical structured when/where/who/what card.
+    (async () => {
+      let row = null, err = null;
+      try {
+        const res = await api("GET",
+          `/api/cases/${encodeURIComponent(caseID)}/events?audit_id=${encodeURIComponent(aid)}&limit=1`);
+        row = (res.events || [])[0] || null;
+      } catch (e) { err = String((e && e.message) || e).slice(0, 200); }
+      evBlock.innerHTML = "";
+      const pseudoF = { title: t.summary, severity: t.severity, truncated: false, match_count: 1 };
+      const r = { pv: { audit_id: aid, artifact_id: t.artifact }, row, err };
+      evBlock.appendChild(evidenceCard(caseID, pseudoF, r, 0, 1, 1));
+    })();
+  }
+
+  // Review Gate 2 controls for this entry.
+  panel.appendChild(h("div", { class: "tl-detail-label" }, "Review Gate 2"));
+  panel.appendChild(tlRowReview(caseID, t, aid, rev, pane));
+  return panel;
+}
+
+// tlRowReview — approve / reject / reset controls for one timeline entry,
+// mirroring the findings review affordance (a decision is never frozen).
+function tlRowReview(caseID, t, aid, rev, pane) {
+  const wrap = h("div", { class: "tl-row-review" });
+  if (!aid) { wrap.appendChild(h("span", { class: "muted" }, "(no audit_id — not reviewable)")); return wrap; }
+  const stateText = { approved: "✓ 承認済", rejected: "✕ 却下", skipped: "✓ auto", pending: "未レビュー" }[rev.state] || "未レビュー";
+  const stateClass = { approved: "approved", rejected: "rejected", skipped: "approved", pending: "pending" }[rev.state] || "pending";
+  wrap.appendChild(h("span", { class: "badge " + stateClass }, stateText));
+  const post = async (verb, okMsg) => {
+    try {
+      await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/${verb}`);
+      toast(okMsg + " " + aid.slice(0, 8), "success");
+      await renderTimeline(pane, caseID);
+    } catch (e) { toast(e.message, "error"); }
+  };
+  const approve = () => h("button", { class: "fbtn", onclick: (e) => { e.stopPropagation(); post("approve", "承認"); } }, "承認");
+  const reset = () => h("button", { class: "fbtn", title: "判断を取り消して未レビューに戻す", onclick: (e) => { e.stopPropagation(); post("reset", "リセット"); } }, "リセット");
+  const reject = () => h("button", {
+    class: "fbtn danger",
+    onclick: (e) => {
+      e.stopPropagation();
+      const close = modal([
+        h("h3", {}, "却下 — timeline entry"),
+        h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
+        h("div", { class: "form-row" }, [h("label", {}, "理由"),
+          h("input", { id: "tl_reason", value: rev.reason || "", placeholder: "why is this entry not relevant?" })]),
+        h("div", { class: "actions" }, [
+          h("button", { class: "ghost", onclick: () => close() }, "キャンセル"),
+          h("button", { class: "danger", onclick: async () => {
+            try {
+              await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/reject`,
+                { reason: $("#tl_reason").value.trim() });
+              close(); toast("却下 " + aid.slice(0, 8), "success");
+              await renderTimeline(pane, caseID);
+            } catch (e) { toast(e.message, "error"); }
+          } }, "却下"),
+        ]),
+      ]);
+    },
+  }, "却下");
+  if (rev.state === "approved") { wrap.appendChild(reject()); wrap.appendChild(reset()); }
+  else if (rev.state === "rejected") { wrap.appendChild(approve()); wrap.appendChild(reset()); }
+  else { wrap.appendChild(approve()); wrap.appendChild(reject()); }
+  return wrap;
 }
 
 // tlSeverity maps a finding's normalised severity (critical/high/medium/low/
@@ -2956,26 +3144,88 @@ async function renderIOCs(pane, caseID) {
     pane.appendChild(h("div", { class: "empty" }, "No IOCs extractable."));
     return;
   }
-  const groups = new Map();
+
+  // Bucket by Class (backend iocClass): real indicators vs data feeds vs
+  // detection provenance vs excluded noise. This stops正規プロセス / ログ名 /
+  // sysprep ゴースト from being read as threat indicators when shared
+  // externally (review R-1/R-2).
+  const buckets = { ioc: [], source: [], provenance: [], excluded: [] };
   iocs.forEach((i) => {
-    const k = i.type;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(i);
+    const cls = buckets[i.class] ? i.class : "ioc";
+    buckets[cls].push(i);
   });
-  for (const [type, list] of [...groups.entries()].sort()) {
-    const tbl = h("table", { class: "ioc-table" });
-    list.forEach((i) => {
-      tbl.appendChild(h("tr", {}, [
-        h("td", { class: "value", style: "width: 60%;" }, i.value),
-        h("td", { style: "width: 10%;" }, "×" + i.count),
-        h("td", { class: "src" }, (i.findings || []).join(", ") + " · " + (i.tactics || []).join(",")),
-      ]));
+
+  // ✅ confirmed IOCs — grouped by type, full table.
+  const confirmed = buckets.ioc;
+  pane.appendChild(h("div", { class: "ioc-sechead ok" }, [
+    h("span", {}, "✅ 確定 IOC"),
+    h("span", { class: "ioc-sechead-n" }, `(${confirmed.length})`),
+  ]));
+  if (confirmed.length === 0) {
+    pane.appendChild(h("div", { class: "muted", style: "margin: 0 0 12px;" }, "確定 IOC は抽出されませんでした。"));
+  } else {
+    const groups = new Map();
+    confirmed.forEach((i) => {
+      if (!groups.has(i.type)) groups.set(i.type, []);
+      groups.get(i.type).push(i);
     });
-    pane.appendChild(h("div", { class: "ioc-group" }, [
-      h("h3", {}, [type, h("span", { class: "count" }, `(${list.length})`)]),
-      tbl,
-    ]));
+    for (const [type, list] of [...groups.entries()].sort()) {
+      const tbl = h("table", { class: "ioc-table" });
+      list.forEach((i) => {
+        tbl.appendChild(h("tr", {}, [
+          h("td", { class: "value", style: "width: 58%;" }, i.value),
+          h("td", { style: "width: 8%;" }, "×" + i.count),
+          h("td", { class: "src" },
+            (i.findings || []).join(", ") + ((i.tactics || []).length ? " · " + i.tactics.join(",") : "")),
+        ]));
+      });
+      pane.appendChild(h("div", { class: "ioc-group" }, [
+        h("h3", {}, [type, h("span", { class: "count" }, `(${list.length})`)]),
+        tbl,
+      ]));
+    }
   }
+
+  // 📋 / 🔇 secondary buckets — compact, de-emphasised. Each is "not a threat
+  // IOC": a data feed, detection metadata, or excluded noise.
+  iocCompactBucket(pane, "📋 データ供給源 (IOC ではない)", "meta", buckets.source,
+    "検知に使われたログ供給源。脅威指標ではない。");
+  iocCompactBucket(pane, "📋 検知プロセス / provenance", "meta", buckets.provenance,
+    "検知メタデータ (Defender フィールドラベル・検知プロセス)。脅威指標ではない。");
+  iocCompactBucket(pane, "🔇 除外 (ノイズ)", "excl", buckets.excluded,
+    "パーサノイズ・sysprep ゴースト等。既定で折り畳み。", true);
+}
+
+// iocCompactBucket renders a non-IOC bucket as a compact, de-emphasised list.
+// collapsed=true hides the body behind a click-to-expand header.
+function iocCompactBucket(pane, label, kind, list, note, collapsed) {
+  if (!list || list.length === 0) return;
+  const head = h("div", { class: "ioc-sechead " + kind }, [
+    h("span", {}, label),
+    h("span", { class: "ioc-sechead-n" }, `(${list.length})`),
+    ...(collapsed ? [h("span", { class: "ioc-sechead-caret" }, "▸")] : []),
+  ]);
+  const bodyWrap = h("div", { class: "ioc-compact" + (collapsed ? " hidden" : "") });
+  if (note) bodyWrap.appendChild(h("div", { class: "ioc-compact-note muted" }, note));
+  list.sort((a, b) => (b.count || 0) - (a.count || 0));
+  const items = h("div", { class: "ioc-compact-items" });
+  list.forEach((i) => {
+    items.appendChild(h("span", { class: "ioc-chip", title: i.type }, [
+      h("span", { class: "ioc-chip-v" }, i.value),
+      h("span", { class: "ioc-chip-n" }, "×" + i.count),
+    ]));
+  });
+  bodyWrap.appendChild(items);
+  if (collapsed) {
+    head.style.cursor = "pointer";
+    head.onclick = () => {
+      const open = bodyWrap.classList.contains("hidden");
+      bodyWrap.classList.toggle("hidden");
+      head.querySelector(".ioc-sechead-caret").textContent = open ? "▾" : "▸";
+    };
+  }
+  pane.appendChild(head);
+  pane.appendChild(bodyWrap);
 }
 
 // ============================================================================
