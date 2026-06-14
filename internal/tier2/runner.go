@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/auditlog"
+	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/common"
 	"github.com/tlvb/tlvb/internal/evidencex"
 	"github.com/tlvb/tlvb/internal/llm"
 
@@ -24,7 +26,11 @@ import (
 
 // Config drives Run.
 type Config struct {
-	CaseID            string
+	CaseID string
+	// CaseBackground is examiner-supplied UNVERIFIED case context. When empty,
+	// Run() loads it from cases.duckdb. Injected into the per-cluster, overall,
+	// and active-search prompts to steer interpretation — never as evidence.
+	CaseBackground    string
 	FindingsBaseDir   string        // outputs/cases/<id>/findings
 	OutputPath        string        // outputs/cases/<id>/synthesis.json (default)
 	DBPath            string        // outputs/cases.duckdb
@@ -164,6 +170,13 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return rep, fmt.Errorf("open db: %w", err)
 	}
 	defer db.Close()
+
+	// Examiner-provided background (UNVERIFIED context) for the LLM prompts.
+	// Best-effort: a missing column / older DB degrades to "". An explicit
+	// cfg.CaseBackground (e.g. a test) wins.
+	if cfg.CaseBackground == "" {
+		cfg.CaseBackground = casedb.ReadBackground(ctx, db, cfg.CaseID)
+	}
 
 	findings, err = EnrichTimestamps(ctx, db, cfg.CaseID, findings)
 	if err != nil {
@@ -465,7 +478,7 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	audit *SynthAudit, db *sql.DB, clockReversed bool) error {
 
 	evidenceEnabled := cfg.EvidenceFetch && db != nil
-	userMsg, err := buildClusterUserMessage(c, cfg.Language, evidenceEnabled, clockReversed)
+	userMsg, err := buildClusterUserMessage(c, cfg.Language, cfg.CaseBackground, evidenceEnabled, clockReversed)
 	if err != nil {
 		return err
 	}
@@ -646,7 +659,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// token counters.
 	for attempt := 1; attempt <= 2; attempt++ {
 		compacted := attempt == 2
-		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, clockReversed, uncorrobAliases)
+		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, cfg.CaseBackground, clockReversed, uncorrobAliases)
 		if err != nil {
 			return "", err
 		}
@@ -971,7 +984,7 @@ func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
 	return &out, nil
 }
 
-func buildClusterUserMessage(c *Cluster, lang string, evidenceEnabled, clockReversed bool) (string, error) {
+func buildClusterUserMessage(c *Cluster, lang, background string, evidenceEnabled, clockReversed bool) (string, error) {
 	type fLite struct {
 		Source          string   `json:"source"`
 		RuleID          string   `json:"rule_id"`
@@ -1001,16 +1014,18 @@ func buildClusterUserMessage(c *Cluster, lang string, evidenceEnabled, clockReve
 		fls = append(fls, fl)
 	}
 	type ctx struct {
-		ClusterID         int             `json:"cluster_id"`
-		WindowStart       string          `json:"window_start,omitempty"`
-		WindowEnd         string          `json:"window_end,omitempty"`
-		Findings          []fLite         `json:"findings"`
-		RawTimelineEvents []TimelineEvent `json:"raw_timeline_events"`
+		ClusterID          int                     `json:"cluster_id"`
+		WindowStart        string                  `json:"window_start,omitempty"`
+		WindowEnd          string                  `json:"window_end,omitempty"`
+		ExaminerBackground *common.ExaminerContext `json:"examiner_background,omitempty"`
+		Findings           []fLite                 `json:"findings"`
+		RawTimelineEvents  []TimelineEvent         `json:"raw_timeline_events"`
 	}
 	pkt := ctx{
-		ClusterID:         c.ID,
-		Findings:          fls,
-		RawTimelineEvents: c.RawTimelineExcerpt,
+		ClusterID:          c.ID,
+		ExaminerBackground: common.NewExaminerContext(background),
+		Findings:           fls,
+		RawTimelineEvents:  c.RawTimelineExcerpt,
 	}
 	if !c.StartTS.IsZero() {
 		pkt.WindowStart = c.StartTS.Format(time.RFC3339)
@@ -1092,7 +1107,7 @@ demonstrably called a time-change API. Prefer "timeline unreliable / re-anchor
 required" over an anti-forensic conclusion.`
 }
 
-func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool, uncorrobAliases map[string][]string) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang, background string, clockReversed bool, uncorrobAliases map[string][]string) (string, error) {
 	type clite struct {
 		ID               int      `json:"cluster_id"`
 		AttackPhase      string   `json:"attack_phase,omitempty"`
@@ -1163,6 +1178,7 @@ GROUNDING RULES (must follow):
 		directives.WriteString(line)
 		directives.WriteString("\n")
 	}
+	directives.WriteString(common.ExaminerContextPrompt(background))
 
 	return langInst + directives.String() + `
 Below are the per-cluster narratives you produced for a Windows

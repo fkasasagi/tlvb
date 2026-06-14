@@ -83,7 +83,7 @@ func TestBuildReportDigest(t *testing.T) {
 		{Source: "heuristic", RuleID: "TLVB-BRUTEFORCE-4625", Title: "Password brute force burst", Severity: "high"},
 	}
 	cs.TotalFindings = 7
-	d := buildReportDigest(cs, &enrichment{}, "ja")
+	d := buildReportDigest(cs, &enrichment{}, "ja", "")
 	for _, want := range []string{
 		"EXECUTIVE BRIEF", "INTRUSION PATH (derived)", "FINDINGS (ground truth)",
 		"TLVB-BRUTEFORCE-4625", "MITRE CONFIRMED", "T1110.001",

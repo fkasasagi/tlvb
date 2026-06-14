@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/tlvb/tlvb/internal/auditlog"
+	"github.com/tlvb/tlvb/internal/casedb"
+	"github.com/tlvb/tlvb/internal/common"
 	"github.com/tlvb/tlvb/internal/evidencex"
 	"github.com/tlvb/tlvb/internal/rulesdb"
 	"github.com/tlvb/tlvb/internal/tier1a"
@@ -34,18 +36,19 @@ func newActionLog(findingsBaseDir, caseID string) *auditlog.Logger {
 // llmContext is the JSON shape passed to the LLM as the user message.
 // Field names mirror skills/anomaly_hunter.md so the prompt can reference them.
 type llmContext struct {
-	CaseID                string         `json:"case_id"`
-	TacticFindingsSummary map[string]int `json:"tactic_findings_summary"`
-	KeyFindingTimestamps  []string       `json:"key_finding_timestamps,omitempty"`
-	ExistingAuditIDs      []string       `json:"existing_audit_ids,omitempty"`
-	LensesApplied         []string       `json:"lenses_applied"`
-	EventsTotalScanned    int            `json:"events_total_scanned"`
-	EventsInWindow        int            `json:"events_in_window"`
-	Truncated             bool           `json:"truncated"`
-	WindowMin             string         `json:"window_min,omitempty"`
-	WindowMax             string         `json:"window_max,omitempty"`
-	ExistingIntents       []intentInfo   `json:"existing_skill_intents,omitempty"`
-	Events                []eventForLLM  `json:"events"`
+	CaseID                string                  `json:"case_id"`
+	TacticFindingsSummary map[string]int          `json:"tactic_findings_summary"`
+	KeyFindingTimestamps  []string                `json:"key_finding_timestamps,omitempty"`
+	ExistingAuditIDs      []string                `json:"existing_audit_ids,omitempty"`
+	LensesApplied         []string                `json:"lenses_applied"`
+	EventsTotalScanned    int                     `json:"events_total_scanned"`
+	EventsInWindow        int                     `json:"events_in_window"`
+	Truncated             bool                    `json:"truncated"`
+	WindowMin             string                  `json:"window_min,omitempty"`
+	WindowMax             string                  `json:"window_max,omitempty"`
+	ExistingIntents       []intentInfo            `json:"existing_skill_intents,omitempty"`
+	ExaminerBackground    *common.ExaminerContext `json:"examiner_background,omitempty"`
+	Events                []eventForLLM           `json:"events"`
 }
 
 type eventForLLM struct {
@@ -211,7 +214,8 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 
 	evidenceEnabled := cfg.EvidenceFetch
-	hctx := buildLLMContext(cfg.CaseID, prior, bundle, existingIntents)
+	bg := casedb.ReadBackground(ctx, db, cfg.CaseID)
+	hctx := buildLLMContext(cfg.CaseID, bg, prior, bundle, existingIntents)
 	userMsg, err := buildUserMessage(hctx, cacheEnabled, evidenceEnabled)
 	if err != nil {
 		return nil, err
@@ -440,7 +444,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 // buildLLMContext converts our internal state into the wire format the
 // skill prompt expects. existingIntents lists the skill SQL cache's current
 // coverage so the LLM can self-judge what new queries (if any) to propose.
-func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle, existingIntents []intentInfo) llmContext {
+func buildLLMContext(caseID, background string, prior *priorContext, bundle *candidateBundle, existingIntents []intentInfo) llmContext {
 	tacticSummary := map[string]int{}
 	for _, s := range prior.Summary {
 		k := s.Source
@@ -483,6 +487,7 @@ func buildLLMContext(caseID string, prior *priorContext, bundle *candidateBundle
 		EventsInWindow:        bundle.Total,
 		Truncated:             bundle.Total > len(events),
 		ExistingIntents:       existingIntents,
+		ExaminerBackground:    common.NewExaminerContext(background),
 		Events:                events,
 	}
 	if !bundle.MinTS.IsZero() {

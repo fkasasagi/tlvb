@@ -122,6 +122,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/cases", s.handleListCases)
 	s.mux.HandleFunc("POST /api/cases", s.handleCreateCase)
 	s.mux.HandleFunc("GET /api/cases/{id}", s.handleGetCase)
+	s.mux.HandleFunc("PUT /api/cases/{id}/background", s.handleUpdateCaseBackground)
 	s.mux.HandleFunc("DELETE /api/cases/{id}", s.handleDeleteCase)
 	s.mux.HandleFunc("POST /api/cases/{id}/evidence/{evid}/timezone", s.handleSetEvidenceTimezone)
 

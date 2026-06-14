@@ -438,6 +438,8 @@ route(/^\/$/, async () => {
     formRow("examiner", "Examiner", "examiner-web"),
     formSelectRow("timezone", "Timezone", supportedTimezones(), detectDefaultTZ()),
     formSelectRow("language", "Language", SUPPORTED_LANGUAGES, "ja"),
+    formTextareaRow("background", "Background (任意)",
+      "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。未検証コンテキストとして Tier 1B/2/3 の分析に渡されます（証拠ではありません）。"),
     h("div", { class: "row" }, [
       h("button", {
         class: "primary",
@@ -448,6 +450,7 @@ route(/^\/$/, async () => {
             examiner: $("#f_examiner").value.trim() || "examiner-web",
             timezone: $("#f_timezone").value.trim() || "UTC",
             language: $("#f_language").value.trim() || "ja",
+            background: $("#f_background").value.trim(),
           };
           if (!body.case_id || !body.name) {
             toast("case_id and name are required", "error");
@@ -535,6 +538,62 @@ function formRow(name, label, placeholder) {
   return h("div", { class: "form-row" }, [
     h("label", {}, label),
     h("input", { id: "f_" + name, placeholder, value: "" }),
+  ]);
+}
+
+function formTextareaRow(name, label, placeholder) {
+  return h("div", { class: "form-row" }, [
+    h("label", {}, label),
+    h("textarea", {
+      id: "f_" + name, placeholder, rows: "4",
+      style: "resize: vertical; font: inherit; width: 100%; box-sizing: border-box;",
+    }),
+  ]);
+}
+
+// caseContextRow renders the examiner case-background line in the case header
+// with an inline editor. Background is UNVERIFIED context fed to the Tier 1B/2/3
+// LLM prompts; it often emerges mid-investigation, so it stays editable here.
+// Tier 1A (signature SQL) is intentionally unaffected.
+function caseContextRow(caseID, background) {
+  const openEditor = () => {
+    const ta = h("textarea", {
+      id: "ctx-edit", rows: "8",
+      style: "width: 100%; box-sizing: border-box; resize: vertical; font: inherit;",
+      placeholder: "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。",
+    });
+    ta.value = background;
+    const close = modal([
+      h("h3", {}, "案件の背景情報 (Context)"),
+      h("p", { class: "muted" },
+        "Tier 1B / 2 / 3 の分析に未検証コンテキストとして渡されます（証拠ではありません）。" +
+        "証拠と矛盾する場合は証拠が優先されます。Tier 1A（署名 SQL）には影響しません。"),
+      ta,
+      h("div", { class: "actions" }, [
+        h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+        h("button", {
+          class: "primary",
+          onclick: async () => {
+            try {
+              await api("PUT", `/api/cases/${encodeURIComponent(caseID)}/background`,
+                { background: ta.value.trim() });
+              toast("背景情報を保存しました", "success");
+              close();
+              dispatch();
+            } catch (e) { toast(e.message, "error"); }
+          },
+        }, "保存"),
+      ]),
+    ]);
+  };
+  const bg = (background || "").trim();
+  const summary = bg ? (bg.length > 140 ? bg.slice(0, 140) + "…" : bg) : "（未設定）";
+  return h("div", { class: "muted", style: "margin-top: 4px;" }, [
+    h("span", {}, "背景: " + summary + " "),
+    h("a", {
+      href: "#",
+      onclick: (e) => { e.preventDefault(); openEditor(); },
+    }, bg ? "✏ 編集" : "+ 追加"),
   ]);
 }
 
@@ -854,6 +913,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
         }, "⏳ 処理中（表示はジョブ開始前の値）") : null,
         h("div", { class: "muted" },
           `Examiner: ${c.examiner || "—"} · TZ: ${c.timezone || "UTC"} · Status: ${c.status || "active"} · Created: ${fmtTS(c.created_at)}`),
+        caseContextRow(caseID, c.background || ""),
       ]),
       h("div", { class: "row", style: "gap: 8px;" }, [
         // Issue #16: Export this case as a .fcz tarball.

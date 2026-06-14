@@ -50,6 +50,12 @@ type Config struct {
 	Classification string // e.g. "CONFIDENTIAL" / "社外秘"
 	ToolVersion    string // TLVB build identifier
 
+	// CaseBackground is examiner-supplied UNVERIFIED case context, passed to the
+	// advisory LLM consistency reviewer as NON-authoritative context (the
+	// findings remain ground truth). The CLI / web layer fills it from the case
+	// DB. Empty → nothing is injected.
+	CaseBackground string
+
 	// ConsistencyLLM opts into the advisory LLM consistency reviewer that reads
 	// the assembled report against the findings and flags FREE-TEXT internal
 	// contradictions the deterministic gate cannot pattern-match. Off by default

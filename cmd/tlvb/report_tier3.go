@@ -57,7 +57,7 @@ func runReportTier3(caseID string, args []string) error {
 
 	// Forensic case metadata is best-effort: a missing/locked DB just omits
 	// the evidence & chain-of-custody section rather than failing the report.
-	meta, dbExaminer, caseTZ := loadReportCaseMeta(*dbPath, caseID)
+	meta, dbExaminer, caseTZ, caseBG := loadReportCaseMeta(*dbPath, caseID)
 	if *examiner == "" {
 		*examiner = dbExaminer
 	}
@@ -82,6 +82,7 @@ func runReportTier3(caseID string, args []string) error {
 		Organization:   *org,
 		Classification: *classification,
 		ToolVersion:    "TLVB " + version,
+		CaseBackground: caseBG,
 		ConsistencyLLM: *llmConsistency,
 		Model:          *model,
 	})
@@ -106,10 +107,10 @@ func runReportTier3(caseID string, args []string) error {
 
 // loadReportCaseMeta pulls evidence + case identity from the case DB.
 // Returns (nil, "") on any error so the caller can render without it.
-func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string) {
+func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string, string) {
 	mgr, err := casedb.Open(dbPath, casedb.ReadOnly)
 	if err != nil {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 	defer mgr.Close()
 	ctx := context.Background()
@@ -117,6 +118,7 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string)
 	meta := &tier3.CaseMeta{}
 	examiner := ""
 	timezone := ""
+	background := ""
 
 	if cases, err := mgr.ListCases(ctx); err == nil {
 		for _, c := range cases {
@@ -126,6 +128,7 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string)
 				meta.CreatedAt = c.CreatedAt
 				examiner = c.Examiner
 				timezone = c.Timezone
+				background = c.Background
 				break
 			}
 		}
@@ -170,9 +173,9 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string)
 	}
 
 	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {
-		return nil, examiner, timezone
+		return nil, examiner, timezone, background
 	}
-	return meta, examiner, timezone
+	return meta, examiner, timezone, background
 }
 
 // reportConsistencyIssues prints the post-render consistency gate's result. A

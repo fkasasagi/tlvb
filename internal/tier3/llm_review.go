@@ -51,7 +51,7 @@ func llmConsistencyReview(ctx context.Context, cfg Config, cs tier2.CaseSynthesi
 	meta := &LLMReviewMeta{Requested: true, Transport: t.Label(), Model: consistencyModel(cfg.Model)}
 
 	sys := consistencySystemPrompt(cfg.Language)
-	digest := buildReportDigest(cs, en, cfg.Language)
+	digest := buildReportDigest(cs, en, cfg.Language, cfg.CaseBackground)
 
 	out, err := callConsistencyLLM(ctx, cfg, t, sys, digest)
 	if err != nil {
@@ -120,7 +120,7 @@ Write the "claim", "why", "where", "conflicts_with" and "grounding" values in ` 
 // plus the findings ground-truth block. It mirrors what the renderer shows the
 // reader (including the DERIVED sections — intrusion path / scope / reco — since
 // those are exactly where a derivation can drift from the prose).
-func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang string) string {
+func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang, background string) string {
 	var b strings.Builder
 	w := func(h, body string) {
 		if strings.TrimSpace(body) == "" {
@@ -133,6 +133,9 @@ func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang string) stri
 		b.WriteString("\n\n")
 	}
 
+	// Examiner background is UNVERIFIED context, not ground truth — label it so
+	// the reviewer never treats it as a fact to flag contradictions against.
+	w("EXAMINER BACKGROUND (UNVERIFIED — examiner-supplied context, NOT ground truth; the FINDINGS remain authoritative)", background)
 	w("EXECUTIVE BRIEF", cs.ExecBrief)
 	tech := cs.TechSummary
 	if tech == "" {

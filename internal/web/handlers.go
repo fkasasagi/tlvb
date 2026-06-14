@@ -140,12 +140,13 @@ var errCaseExists = errors.New("case already exists")
 
 func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CaseID    string `json:"case_id"`
-		Name      string `json:"name"`
-		Examiner  string `json:"examiner"`
-		Timezone  string `json:"timezone"`
-		Language  string `json:"language"`
-		Overwrite bool   `json:"overwrite"`
+		CaseID     string `json:"case_id"`
+		Name       string `json:"name"`
+		Examiner   string `json:"examiner"`
+		Timezone   string `json:"timezone"`
+		Language   string `json:"language"`
+		Background string `json:"background"`
+		Overwrite  bool   `json:"overwrite"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, 400, "bad json: %v", err)
@@ -174,11 +175,12 @@ func (s *Server) handleCreateCase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := casedb.CaseRow{
-		CaseID:    req.CaseID,
-		Name:      req.Name,
-		Examiner:  req.Examiner,
-		Timezone:  req.Timezone,
-		CreatedAt: time.Now().UTC(),
+		CaseID:     req.CaseID,
+		Name:       req.Name,
+		Examiner:   req.Examiner,
+		Timezone:   req.Timezone,
+		Background: req.Background,
+		CreatedAt:  time.Now().UTC(),
 	}
 	overwrote := false
 	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
@@ -260,6 +262,32 @@ func (s *Server) handleGetCase(w http.ResponseWriter, r *http.Request) {
 			"report":     s.jobStatusOrDerived(r.Context(), id, JobReport),
 		},
 	})
+}
+
+// handleUpdateCaseBackground replaces a case's examiner background (the
+// "Context" editor in the Web UI). Background often emerges mid-investigation,
+// so it is editable after creation; the next Tier 1B/2/3 run picks up the new
+// text from the DB. Empty body clears it.
+func (s *Server) handleUpdateCaseBackground(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Background string `json:"background"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, 400, "bad json: %v", err)
+		return
+	}
+	err := s.withDB(casedb.ReadWrite, func(m *casedb.Manager) error {
+		return m.UpdateCaseBackground(r.Context(), id, req.Background)
+	})
+	if err != nil {
+		if writeIfDBBusy(w, err) {
+			return
+		}
+		writeError(w, 404, "%v", err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"case_id": id, "background": req.Background})
 }
 
 func (s *Server) handleDeleteCase(w http.ResponseWriter, r *http.Request) {
@@ -1300,7 +1328,7 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// Forensic case metadata (evidence inventory, chain-of-custody SHA-256,
 		// per-artifact event counts) for the report's section 4. Best-effort —
 		// nil simply omits that section, matching the CLI `report --tier 3`.
-		meta, examiner, caseTZ := s.reportCaseMeta(ctx, caseID)
+		meta, examiner, caseTZ, caseBG := s.reportCaseMeta(ctx, caseID)
 		// Report display timezone: the Web UI selection wins; fall back to the
 		// case timezone when none was sent (or the per-evidence sentinel).
 		reportTZ := caseTZ
@@ -1313,16 +1341,17 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// display conversion); empty/unloadable falls back to UTC.
 		t3Start := time.Now()
 		res, err := tier3.Render(tier3.Config{
-			CaseID:        caseID,
-			SynthesisPath: filepath.Join(root, caseID, "synthesis.json"),
-			OutDir:        filepath.Join(root, caseID, "reports"),
-			FindingsDir:   filepath.Join(root, caseID, "findings"),
-			Formats:       formats,
-			Language:      lang,
-			Timezone:      reportTZ,
-			OnlyApproved:  onlyApproved,
-			CaseMeta:      meta,
-			Examiner:      examiner,
+			CaseID:         caseID,
+			SynthesisPath:  filepath.Join(root, caseID, "synthesis.json"),
+			OutDir:         filepath.Join(root, caseID, "reports"),
+			FindingsDir:    filepath.Join(root, caseID, "findings"),
+			Formats:        formats,
+			Language:       lang,
+			Timezone:       reportTZ,
+			OnlyApproved:   onlyApproved,
+			CaseMeta:       meta,
+			Examiner:       examiner,
+			CaseBackground: caseBG,
 		})
 		if err != nil {
 			return "", err
@@ -1345,10 +1374,11 @@ func (s *Server) handleReportStatus(w http.ResponseWriter, r *http.Request) {
 // from cases.duckdb so the Tier 3 report's "Evidence & Chain of Custody"
 // section renders. Best-effort — a DB error returns (nil, "") and the report
 // simply omits that section (the section template is wrapped in {{if .Meta}}).
-func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.CaseMeta, string, string) {
+func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.CaseMeta, string, string, string) {
 	meta := &tier3.CaseMeta{}
 	examiner := ""
 	timezone := ""
+	background := ""
 	err := s.withDB(casedb.ReadOnly, func(m *casedb.Manager) error {
 		if cases, err := m.ListCases(ctx); err == nil {
 			for _, c := range cases {
@@ -1358,6 +1388,7 @@ func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.Case
 					meta.CreatedAt = c.CreatedAt
 					examiner = c.Examiner
 					timezone = c.Timezone
+					background = c.Background
 					break
 				}
 			}
@@ -1395,12 +1426,12 @@ func (s *Server) reportCaseMeta(ctx context.Context, caseID string) (*tier3.Case
 		return nil
 	})
 	if err != nil {
-		return nil, "", ""
+		return nil, "", "", ""
 	}
 	if meta.DisplayName == "" && len(meta.Evidence) == 0 && len(meta.ArtifactCounts) == 0 {
-		return nil, examiner, timezone
+		return nil, examiner, timezone, background
 	}
-	return meta, examiner, timezone
+	return meta, examiner, timezone, background
 }
 
 func (s *Server) handleGetReportHTML(w http.ResponseWriter, r *http.Request) {

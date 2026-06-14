@@ -128,6 +128,11 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 			created_at   TIMESTAMP NOT NULL,
 			status       VARCHAR NOT NULL DEFAULT 'active'
 		)`,
+		// Examiner-provided free-text case background (what is known so far).
+		// Injected as UNVERIFIED context into the Tier 1B/2/3 LLM prompts. Added
+		// after the initial schema; ADD COLUMN IF NOT EXISTS keeps it idempotent
+		// for DBs created before the column existed.
+		`ALTER TABLE cases ADD COLUMN IF NOT EXISTS background VARCHAR`,
 		// Wave 16: evidence PK is the (case_id, evidence_id) pair — one
 		// triage zip parsed under multiple case_ids will get separate
 		// rows. Earlier versions used `evidence_id PRIMARY KEY` alone,
@@ -330,11 +335,25 @@ type CaseRow struct {
 	Timezone  string    `json:"timezone"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"`
+	// Background is free-text context the examiner supplies about the case
+	// (what is known so far: how it surfaced, the host's role, the normal-ops
+	// baseline). It is injected as UNVERIFIED context into the Tier 1B / 2 / 3
+	// LLM prompts to steer prioritisation and interpretation — never as
+	// evidence. Added after the initial schema, so the read-only query path
+	// degrades to "" when the column is absent (see ListCases / GetCaseStatus).
+	Background string `json:"background"`
 }
 
 func (m *Manager) ListCases(ctx context.Context) ([]CaseRow, error) {
+	// background was added after the initial schema; degrade to "" when a
+	// read-only open hits a DB the migration never touched (same pattern as
+	// ListEvidence's timezone handling).
+	bgExpr := "COALESCE(background, '')"
+	if !m.columnExists(ctx, "cases", "background") {
+		bgExpr = "'' AS background"
+	}
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT case_id, name, examiner, timezone, created_at, status
+		`SELECT case_id, name, examiner, timezone, created_at, status, `+bgExpr+`
 		   FROM cases ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -344,7 +363,7 @@ func (m *Manager) ListCases(ctx context.Context) ([]CaseRow, error) {
 	var out []CaseRow
 	for rows.Next() {
 		var c CaseRow
-		if err := rows.Scan(&c.CaseID, &c.Name, &c.Examiner, &c.Timezone, &c.CreatedAt, &c.Status); err != nil {
+		if err := rows.Scan(&c.CaseID, &c.Name, &c.Examiner, &c.Timezone, &c.CreatedAt, &c.Status, &c.Background); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -418,11 +437,15 @@ type CaseStatus struct {
 }
 
 func (m *Manager) GetCaseStatus(ctx context.Context, caseID string) (*CaseStatus, error) {
+	bgExpr := "COALESCE(background, '')"
+	if !m.columnExists(ctx, "cases", "background") {
+		bgExpr = "'' AS background"
+	}
 	var c CaseRow
 	err := m.db.QueryRowContext(ctx,
-		`SELECT case_id, name, examiner, timezone, created_at, status
+		`SELECT case_id, name, examiner, timezone, created_at, status, `+bgExpr+`
 		   FROM cases WHERE case_id = ?`, caseID).
-		Scan(&c.CaseID, &c.Name, &c.Examiner, &c.Timezone, &c.CreatedAt, &c.Status)
+		Scan(&c.CaseID, &c.Name, &c.Examiner, &c.Timezone, &c.CreatedAt, &c.Status, &c.Background)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("case %q not found", caseID)
 	}
@@ -746,13 +769,69 @@ func (m *Manager) RegisterCase(ctx context.Context, c CaseRow) error {
 		c.Status = "active"
 	}
 	_, err := m.db.ExecContext(ctx, `
-		INSERT INTO cases (case_id, name, examiner, timezone, created_at, status)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO cases (case_id, name, examiner, timezone, created_at, status, background)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (case_id) DO UPDATE SET
 		  name=excluded.name, examiner=excluded.examiner,
-		  timezone=excluded.timezone, status=excluded.status`,
-		c.CaseID, c.Name, c.Examiner, c.Timezone, c.CreatedAt, c.Status)
+		  timezone=excluded.timezone, status=excluded.status,
+		  background=excluded.background`,
+		c.CaseID, c.Name, c.Examiner, c.Timezone, c.CreatedAt, c.Status, c.Background)
 	return err
+}
+
+// UpdateCaseBackground replaces the examiner-provided background text for an
+// existing case. Background often emerges mid-investigation, so it stays
+// editable after creation (Web "Context" editor / `tlvb case set-background`).
+// Requires a ReadWrite open, which has already run ensureSchema, so the
+// background column is guaranteed present.
+func (m *Manager) UpdateCaseBackground(ctx context.Context, caseID, background string) error {
+	if m.mode == ReadOnly {
+		return errors.New("casedb opened read-only")
+	}
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE cases SET background = ? WHERE case_id = ?`, background, caseID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("case %q not found", caseID)
+	}
+	return nil
+}
+
+// GetCaseBackground returns the examiner-provided background text for a case
+// (empty when none, the case is unknown, or the column predates this binary).
+// The Tier 1B / 2 / 3 runners call this to inject the background as UNVERIFIED
+// context into their LLM prompts. Read-only safe.
+func (m *Manager) GetCaseBackground(ctx context.Context, caseID string) (string, error) {
+	if !m.columnExists(ctx, "cases", "background") {
+		return "", nil
+	}
+	var bg sql.NullString
+	err := m.db.QueryRowContext(ctx,
+		`SELECT background FROM cases WHERE case_id = ?`, caseID).Scan(&bg)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return bg.String, nil
+}
+
+// ReadBackground reads a case's examiner background straight off an existing
+// read-only *sql.DB connection, best-effort. The Tier 1B / 2 runners already
+// hold an open read-only handle to cases.duckdb, so this avoids a second Open.
+// Returns "" on any error — including the column being absent on a DB written
+// before background existed — because the background is advisory context, never
+// load-bearing.
+func ReadBackground(ctx context.Context, db *sql.DB, caseID string) string {
+	var bg sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT background FROM cases WHERE case_id = ?`, caseID).Scan(&bg); err != nil {
+		return ""
+	}
+	return bg.String
 }
 
 // DeleteCase removes the case row plus all dependent rows (evidence,

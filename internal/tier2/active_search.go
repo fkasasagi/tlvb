@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tlvb/tlvb/internal/auditlog"
+	"github.com/tlvb/tlvb/internal/common"
 )
 
 // activeSearchSystemPrompt is the additional instruction Tier 2 sends
@@ -101,7 +102,7 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, db *sql.DB, c *Clu
 	if len(c.OpenQuestions) == 0 {
 		return nil, nil
 	}
-	prompt, err := buildActiveSearchPrompt(ctx, db, cfg.CaseID, c)
+	prompt, err := buildActiveSearchPrompt(ctx, db, cfg.CaseID, cfg.CaseBackground, c)
 	if err != nil {
 		return nil, err
 	}
@@ -125,23 +126,25 @@ func generateActiveSearchSQL(ctx context.Context, cfg Config, db *sql.DB, c *Clu
 	return entries, nil
 }
 
-func buildActiveSearchPrompt(ctx context.Context, db *sql.DB, caseID string, c *Cluster) (string, error) {
+func buildActiveSearchPrompt(ctx context.Context, db *sql.DB, caseID, background string, c *Cluster) (string, error) {
 	type clusterCtx struct {
-		ClusterID       int            `json:"cluster_id"`
-		AttackPhase     string         `json:"attack_phase,omitempty"`
-		WindowStart     string         `json:"window_start,omitempty"`
-		WindowEnd       string         `json:"window_end,omitempty"`
-		MITRETechniques []string       `json:"mitre_techniques,omitempty"`
-		Narrative       string         `json:"narrative_so_far,omitempty"`
-		OpenQuestions   []string       `json:"open_questions"`
-		SchemaSamples   *schemaSamples `json:"schema_samples,omitempty"`
+		ClusterID          int                     `json:"cluster_id"`
+		AttackPhase        string                  `json:"attack_phase,omitempty"`
+		WindowStart        string                  `json:"window_start,omitempty"`
+		WindowEnd          string                  `json:"window_end,omitempty"`
+		ExaminerBackground *common.ExaminerContext `json:"examiner_background,omitempty"`
+		MITRETechniques    []string                `json:"mitre_techniques,omitempty"`
+		Narrative          string                  `json:"narrative_so_far,omitempty"`
+		OpenQuestions      []string                `json:"open_questions"`
+		SchemaSamples      *schemaSamples          `json:"schema_samples,omitempty"`
 	}
 	pkt := clusterCtx{
-		ClusterID:       c.ID,
-		AttackPhase:     c.AttackPhase,
-		MITRETechniques: c.MITRETechniques,
-		Narrative:       c.Narrative,
-		OpenQuestions:   c.OpenQuestions,
+		ClusterID:          c.ID,
+		AttackPhase:        c.AttackPhase,
+		ExaminerBackground: common.NewExaminerContext(background),
+		MITRETechniques:    c.MITRETechniques,
+		Narrative:          c.Narrative,
+		OpenQuestions:      c.OpenQuestions,
 	}
 	if !c.StartTS.IsZero() {
 		pkt.WindowStart = c.StartTS.Format(time.RFC3339)

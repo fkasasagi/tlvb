@@ -212,6 +212,8 @@ func runCase(args []string) error {
 	switch args[0] {
 	case "init":
 		return runCaseInit(args[1:])
+	case "set-background":
+		return runCaseSetBackground(args[1:])
 	case "export":
 		return runCaseExport(args[1:])
 	case "import":
@@ -231,12 +233,18 @@ func runCaseInit(args []string) error {
 	name := fs.String("name", "", "required")
 	examiner := fs.String("examiner", "", "required")
 	tz := fs.String("timezone", "UTC", "case timezone")
+	background := fs.String("background", "", "examiner case background (UNVERIFIED context fed to Tier 1B/2/3 LLM prompts)")
+	backgroundFile := fs.String("background-file", "", "read case background from a file (overrides --background)")
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *caseID == "" || *name == "" || *examiner == "" {
 		return fmt.Errorf("--case-id, --name, --examiner are required")
+	}
+	bg, err := resolveBackground(*background, *backgroundFile)
+	if err != nil {
+		return err
 	}
 
 	mgr, err := casedb.Open(*dbPath, casedb.ReadWrite)
@@ -246,15 +254,60 @@ func runCaseInit(args []string) error {
 	defer mgr.Close()
 
 	if err := mgr.RegisterCase(context.Background(), casedb.CaseRow{
-		CaseID:    *caseID,
-		Name:      *name,
-		Examiner:  *examiner,
-		Timezone:  *tz,
-		CreatedAt: time.Now().UTC(),
+		CaseID:     *caseID,
+		Name:       *name,
+		Examiner:   *examiner,
+		Timezone:   *tz,
+		Background: bg,
+		CreatedAt:  time.Now().UTC(),
 	}); err != nil {
 		return err
 	}
 	fmt.Printf("case registered: %s (%s)\n", *caseID, *name)
+	return nil
+}
+
+// resolveBackground returns the case background text, preferring a file when
+// given. Trims a trailing newline. Both empty → "".
+func resolveBackground(inline, file string) (string, error) {
+	if strings.TrimSpace(file) != "" {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("read --background-file: %w", err)
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	}
+	return inline, nil
+}
+
+// runCaseSetBackground updates an existing case's examiner background. Background
+// often emerges mid-investigation, so it stays editable after `case init`; the
+// next Tier 1B/2/3 run picks up the new text from the DB.
+func runCaseSetBackground(args []string) error {
+	fs := flag.NewFlagSet("case set-background", flag.ContinueOnError)
+	caseID := fs.String("case-id", "", "required")
+	background := fs.String("background", "", "examiner case background (UNVERIFIED context fed to Tier 1B/2/3 LLM prompts)")
+	backgroundFile := fs.String("background-file", "", "read case background from a file (overrides --background)")
+	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caseID == "" {
+		return fmt.Errorf("--case-id is required")
+	}
+	bg, err := resolveBackground(*background, *backgroundFile)
+	if err != nil {
+		return err
+	}
+	mgr, err := casedb.Open(*dbPath, casedb.ReadWrite)
+	if err != nil {
+		return err
+	}
+	defer mgr.Close()
+	if err := mgr.UpdateCaseBackground(context.Background(), *caseID, bg); err != nil {
+		return err
+	}
+	fmt.Printf("case background updated: %s (%d chars)\n", *caseID, len(bg))
 	return nil
 }
 
