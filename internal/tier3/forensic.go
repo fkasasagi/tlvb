@@ -1,11 +1,43 @@
 package tier3
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
 )
+
+// proseISOUTCRe matches an ISO-8601 UTC timestamp embedded in narrative prose
+// (date, T or space separator, time, optional seconds/fraction, Z or +00:00).
+// Tier 2 is instructed to emit timestamps ONLY in this canonical form, so the
+// match — and therefore the localisation below — is reliable.
+var proseISOUTCRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\+00:?00)`)
+
+var proseISOLayouts = []string{
+	time.RFC3339Nano, time.RFC3339,
+	"2006-01-02T15:04:05Z", "2006-01-02T15:04Z",
+	"2006-01-02 15:04:05Z", "2006-01-02 15:04Z",
+	"2006-01-02 15:04:05Z07:00", "2006-01-02 15:04Z07:00",
+}
+
+// localizeProseTimestamps rewrites ISO-8601 UTC timestamps embedded in LLM
+// narrative prose into the report display timezone (formatTSIn form), so the
+// prose agrees with the structured timestamps. A nil/UTC loc is a no-op; any
+// substring that does not parse is left untouched (never a wrong conversion).
+func localizeProseTimestamps(s string, loc *time.Location) string {
+	if s == "" || loc == nil || loc == time.UTC {
+		return s
+	}
+	return proseISOUTCRe.ReplaceAllStringFunc(s, func(m string) string {
+		for _, layout := range proseISOLayouts {
+			if t, err := time.Parse(layout, m); err == nil {
+				return formatTSIn(t.UTC(), loc)
+			}
+		}
+		return m
+	})
+}
 
 // forensic.go derives the three incident-response narrative sections that a
 // DFIR report needs but synthesis.json (v0.1) does not yet carry explicitly:

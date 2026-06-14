@@ -248,11 +248,13 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 	}
 
 	// Executive summary layers. TechSummary falls back to OverallStory for
-	// synthesis.json written before the two-layer split.
-	v.ExecBrief = cs.ExecBrief
-	v.TechSummary = cs.TechSummary
+	// synthesis.json written before the two-layer split. The LLM prose carries
+	// ISO-8601 UTC timestamps (Tier 2 emits them canonically); localise them to
+	// the report timezone so the prose agrees with the structured timestamps.
+	v.ExecBrief = localizeProseTimestamps(cs.ExecBrief, loc)
+	v.TechSummary = localizeProseTimestamps(cs.TechSummary, loc)
 	if v.TechSummary == "" {
-		v.TechSummary = cs.OverallStory
+		v.TechSummary = localizeProseTimestamps(cs.OverallStory, loc)
 	}
 
 	// IOC three-tier split: confirmed (signature) / suspected (anomaly) / noise
@@ -279,7 +281,7 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 			AttackPhase:     c.AttackPhase,
 			StartTS:         c.StartTS,
 			EndTS:           c.EndTS,
-			Narrative:       c.Narrative,
+			Narrative:       localizeProseTimestamps(c.Narrative, loc),
 			MITRETechniques: c.MITRETechniques,
 			OpenQuestions:   c.OpenQuestions,
 			ActiveSearch:    c.ActiveSearch,

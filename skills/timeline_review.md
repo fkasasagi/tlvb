@@ -14,6 +14,10 @@ findings. You are reviewing the *aggregate temporal picture* and
 looking for properties that only become visible when you see all
 findings together.
 
+**Timestamp format:** whenever you cite a time in prose, write it in ISO-8601
+UTC (e.g. `2026-06-12T10:39:37Z`) — not `(UTC)`, local time, or other formats.
+The report converts this canonical form to the reader's timezone.
+
 ---
 
 ## What you receive

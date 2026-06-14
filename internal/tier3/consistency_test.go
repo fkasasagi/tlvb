@@ -244,3 +244,28 @@ func TestOrderAttackClusters_EntryLeadsWhenUnreliable(t *testing.T) {
 		t.Error("reliable timeline must not reorder")
 	}
 }
+
+// localizeProseTimestamps converts ISO-8601 UTC timestamps in LLM prose to the
+// report display timezone, leaving everything else untouched.
+func TestLocalizeProseTimestamps(t *testing.T) {
+	jst, _ := time.LoadLocation("Asia/Tokyo")
+	in := "ブルートフォースは 2026-06-12T10:39:37Z に成功し、2026-06-12T10:40Z まで継続した。"
+	got := localizeProseTimestamps(in, jst)
+	if !strings.Contains(got, "2026-06-12T19:39:37+09:00") {
+		t.Errorf("seconds-precision UTC should convert to JST, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T19:40:00+09:00") {
+		t.Errorf("minute-precision UTC should convert to JST, got %q", got)
+	}
+	if strings.Contains(got, "Z") {
+		t.Errorf("no UTC Z marker should remain, got %q", got)
+	}
+	// UTC display → no-op.
+	if localizeProseTimestamps(in, time.UTC) != in {
+		t.Error("UTC display must be a no-op")
+	}
+	// Non-timestamp text is untouched; a malformed near-match is left alone.
+	if localizeProseTimestamps("no times here", jst) != "no times here" {
+		t.Error("plain text must be unchanged")
+	}
+}
