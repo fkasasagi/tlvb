@@ -1,6 +1,7 @@
 package tier3
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,10 +29,19 @@ import (
 
 // ConsistencyIssue is one detected internal contradiction in the report.
 type ConsistencyIssue struct {
-	Code       string `json:"code"`
-	Severity   string `json:"severity"` // "blocker" | "warning"
-	Detail     string `json:"detail"`
-	Resolution string `json:"resolution"` // the 裏取り / reconciliation that resolves it
+	Code     string `json:"code"`
+	Severity string `json:"severity"` // "blocker" | "warning" | "advisory"
+	Detail   string `json:"detail"`
+	// Resolution is the 裏取り / reconciliation that resolves a deterministic
+	// issue. For LLM advisory items it holds the recommended next step.
+	Resolution string `json:"resolution"`
+	// Source is "deterministic" (the rule-based gate) or "llm" (the advisory
+	// free-text reviewer). LLM items are advisory only — they never block.
+	Source string `json:"source,omitempty"`
+	// ConflictsWith / Grounding are populated by the LLM reviewer to locate the
+	// opposing statement and the finding/evidence that corroborates the call.
+	ConflictsWith string `json:"conflicts_with,omitempty"`
+	Grounding     string `json:"grounding,omitempty"`
 }
 
 // ConsistencyReport is the persisted record of the gate — written to
@@ -39,11 +49,27 @@ type ConsistencyIssue struct {
 // and what (if anything) was found.
 type ConsistencyReport struct {
 	CaseID   string             `json:"case_id"`
-	Status   string             `json:"status"` // "clean" | "unresolved"
+	Status   string             `json:"status"` // "clean" | "unresolved" | "advisory"
 	Blockers int                `json:"blockers"`
 	Warnings int                `json:"warnings"`
+	Advisory int                `json:"advisory"`
 	Checks   []string           `json:"checks_run"`
 	Issues   []ConsistencyIssue `json:"issues,omitempty"`
+	// LLMReview records whether the advisory LLM pass ran, and why not when it
+	// was requested but skipped (no transport, error). Nil when not requested.
+	LLMReview *LLMReviewMeta `json:"llm_review,omitempty"`
+}
+
+// LLMReviewMeta is the audit of the advisory LLM consistency pass.
+type LLMReviewMeta struct {
+	Requested    bool    `json:"requested"`
+	Ran          bool    `json:"ran"`
+	Transport    string  `json:"transport,omitempty"`
+	Model        string  `json:"model,omitempty"`
+	InputTokens  int     `json:"input_tokens,omitempty"`
+	OutputTokens int     `json:"output_tokens,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+	Error        string  `json:"error,omitempty"`
 }
 
 // consistencyChecks names every check this gate runs, for the persisted record.
@@ -167,30 +193,48 @@ func pickLang(ja bool, j, e string) string {
 	return e
 }
 
-// runConsistencyGate runs the checks, writes reports/report_consistency.json,
-// and returns the issues so the caller (CLI / pipeline) can warn or block before
-// declaring the report done. Writing the record is best-effort: a write failure
-// never blocks rendering.
-func runConsistencyGate(outDir, caseID, lang string, cs tier2.CaseSynthesis) []ConsistencyIssue {
-	issues := checkReportConsistency(cs, lang)
+// runConsistencyGate runs the deterministic checks (the hard gate), then — when
+// cfg.ConsistencyLLM is set — the advisory LLM free-text reviewer, writes the
+// merged reports/report_consistency.json, and returns the issues so the caller
+// (CLI / pipeline) can warn before declaring the report done. The LLM pass is
+// best-effort: any failure is recorded and never blocks rendering.
+func runConsistencyGate(ctx context.Context, cfg Config, cs tier2.CaseSynthesis, en *enrichment) []ConsistencyIssue {
+	issues := checkReportConsistency(cs, cfg.Language)
+	for i := range issues {
+		issues[i].Source = "deterministic"
+	}
+
 	rep := ConsistencyReport{
-		CaseID: caseID,
+		CaseID: cfg.CaseID,
 		Status: "clean",
 		Checks: consistencyChecks,
-		Issues: issues,
 	}
+
+	if cfg.ConsistencyLLM {
+		llmIssues, meta := llmConsistencyReview(ctx, cfg, cs, en)
+		rep.LLMReview = meta
+		issues = append(issues, llmIssues...)
+	}
+
+	rep.Issues = issues
 	for _, is := range issues {
-		if is.Severity == "blocker" {
+		switch is.Severity {
+		case "blocker":
 			rep.Blockers++
-		} else {
+		case "advisory":
+			rep.Advisory++
+		default:
 			rep.Warnings++
 		}
 	}
-	if rep.Blockers > 0 {
+	switch {
+	case rep.Blockers > 0:
 		rep.Status = "unresolved"
+	case rep.Advisory > 0 && rep.Warnings == 0:
+		rep.Status = "advisory"
 	}
 	if body, err := json.MarshalIndent(rep, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(outDir, "report_consistency.json"), body, 0o644)
+		_ = os.WriteFile(filepath.Join(cfg.OutDir, "report_consistency.json"), body, 0o644)
 	}
 	return issues
 }

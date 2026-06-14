@@ -1,6 +1,7 @@
 package tier3
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,8 +73,12 @@ func Render(cfg Config) (*Report, error) {
 	// Self-check gate: verify the derived sections do not contradict the
 	// synthesis (or each other) before the report is treated as done, and
 	// persist the result to reports/report_consistency.json. Runs on the same
-	// `cs` the renderers consume, so what it checks is what gets written.
-	rep.ConsistencyIssues = runConsistencyGate(cfg.OutDir, cfg.CaseID, cfg.Language, cs)
+	// `cs` the renderers consume, so what it checks is what gets written. The
+	// optional advisory LLM pass (cfg.ConsistencyLLM) gets its own bounded
+	// deadline so a slow/hung model never stalls report generation.
+	gateCtx, gateCancel := context.WithTimeout(context.Background(), consistencyLLMTimeout)
+	rep.ConsistencyIssues = runConsistencyGate(gateCtx, cfg, cs, en)
+	gateCancel()
 
 	for _, f := range cfg.Formats {
 		switch f {

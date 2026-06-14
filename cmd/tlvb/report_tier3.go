@@ -33,6 +33,11 @@ func runReportTier3(caseID string, args []string) error {
 	tz := fs.String("timezone", "",
 		"report display timezone, IANA name (default: the case timezone). "+
 			"Events are stored UTC; this only changes rendered times.")
+	llmConsistency := fs.Bool("llm-consistency", false,
+		"run the advisory LLM consistency reviewer (flags free-text contradictions "+
+			"for Review Gate 2; costs tokens, never blocks or edits the report)")
+	model := fs.String("model", "",
+		"LLM model id for --llm-consistency (default: claude-opus-4-8)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,6 +82,8 @@ func runReportTier3(caseID string, args []string) error {
 		Organization:   *org,
 		Classification: *classification,
 		ToolVersion:    "TLVB " + version,
+		ConsistencyLLM: *llmConsistency,
+		Model:          *model,
 	})
 	if err != nil {
 		return err
@@ -177,20 +184,40 @@ func reportConsistencyIssues(issues []tier3.ConsistencyIssue) {
 		fmt.Printf("  consistency check: ✓ no internal contradictions\n")
 		return
 	}
-	blockers := 0
+	var blockers, warnings, advisory int
 	for _, is := range issues {
-		if is.Severity == "blocker" {
+		switch is.Severity {
+		case "blocker":
 			blockers++
+		case "advisory":
+			advisory++
+		default:
+			warnings++
 		}
 	}
-	if blockers > 0 {
-		fmt.Printf("  consistency check: ⚠ %d blocker(s), %d warning(s) — report is internally inconsistent\n",
-			blockers, len(issues)-blockers)
-	} else {
-		fmt.Printf("  consistency check: %d warning(s)\n", len(issues))
+	switch {
+	case blockers > 0:
+		fmt.Printf("  consistency check: ⚠ %d blocker(s), %d warning(s), %d advisory — report is internally inconsistent\n",
+			blockers, warnings, advisory)
+	case warnings > 0:
+		fmt.Printf("  consistency check: %d warning(s), %d advisory\n", warnings, advisory)
+	default:
+		fmt.Printf("  consistency check: ✓ no deterministic contradictions; %d advisory (LLM, for Review Gate 2)\n", advisory)
 	}
 	for _, is := range issues {
-		fmt.Printf("    [%s] %s\n", is.Severity, is.Detail)
-		fmt.Printf("        → %s\n", is.Resolution)
+		src := is.Source
+		if src == "" {
+			src = "deterministic"
+		}
+		fmt.Printf("    [%s/%s] %s\n", is.Severity, src, is.Detail)
+		if is.ConflictsWith != "" {
+			fmt.Printf("        ↔ %s\n", is.ConflictsWith)
+		}
+		if is.Grounding != "" {
+			fmt.Printf("        裏取り: %s\n", is.Grounding)
+		}
+		if is.Resolution != "" {
+			fmt.Printf("        → %s\n", is.Resolution)
+		}
 	}
 }
