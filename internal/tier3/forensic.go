@@ -47,17 +47,164 @@ func collectTactics(cs tier2.CaseSynthesis) map[string]bool {
 	return t
 }
 
+// intrusionTechniques returns the initial-access MITRE technique IDs detected in
+// the case (from the confirmed mapping). These render as chips on the intrusion
+// step of the attack-story timeline. Empty when none were detected.
+func intrusionTechniques(cs tier2.CaseSynthesis) []string {
+	var out []string
+	for _, m := range cs.MITREMapping {
+		if strings.ToLower(m.Tactic) == "initial-access" {
+			out = appendUniq(out, m.Technique)
+		}
+	}
+	return out
+}
+
+// baseTechnique strips a sub-technique suffix ("T1059.001" → "T1059") so the
+// plain-language lookups can be keyed by the parent technique.
+func baseTechnique(id string) string {
+	if i := strings.IndexByte(id, '.'); i > 0 {
+		return id[:i]
+	}
+	return strings.TrimSpace(id)
+}
+
+// mitrePlain maps a base MITRE technique ID to a short, plain-language label a
+// non-specialist can understand. Used for the intrusion path and the
+// attack-story step chips — i.e. everything OUTSIDE the analyst sections, which
+// keep the raw technique IDs. {ja, en}. Unmapped IDs fall back to the raw ID.
+var mitrePlain = map[string][2]string{
+	// initial access
+	"T1190": {"公開アプリ/サーバの脆弱性を悪用", "Exploit public-facing app"},
+	"T1133": {"外部リモートサービス経由の侵入", "External remote services"},
+	"T1078": {"正規アカウントの不正利用", "Valid accounts (stolen logins)"},
+	"T1566": {"フィッシング(不正メール等)", "Phishing"},
+	"T1189": {"改ざんサイト閲覧による侵入", "Drive-by compromise"},
+	"T1199": {"取引先など信頼関係の悪用", "Trusted relationship abuse"},
+	"T1195": {"サプライチェーン経由の侵入", "Supply-chain compromise"},
+	"T1091": {"USB等メディア経由の侵入", "Removable-media spread"},
+	"T1200": {"不正ハードウェア接続", "Hardware additions"},
+	// execution
+	"T1059": {"コマンド/スクリプト実行", "Command & scripting"},
+	"T1204": {"利用者をだましての実行", "User execution"},
+	"T1106": {"OS機能を使った実行", "Native API execution"},
+	"T1047": {"WMIによる遠隔実行", "WMI execution"},
+	// persistence / priv-esc
+	"T1053": {"タスクスケジューラへの常駐", "Scheduled task"},
+	"T1547": {"自動起動への登録", "Autostart entry"},
+	"T1543": {"サービス化による常駐", "System service"},
+	"T1546": {"イベント連動の常駐", "Event-triggered persistence"},
+	"T1505": {"サーバへの裏口設置(Webシェル等)", "Server component (web shell)"},
+	"T1098": {"アカウント設定の改ざん", "Account manipulation"},
+	"T1136": {"不正アカウントの作成", "Create account"},
+	"T1574": {"正規プログラムの読込先乗っ取り", "Hijack execution flow"},
+	"T1055": {"他プロセスへのコード注入", "Process injection"},
+	"T1548": {"権限昇格の悪用", "Abuse elevation control"},
+	"T1134": {"アクセストークンの操作", "Access-token manipulation"},
+	// defense evasion
+	"T1070": {"証跡(ログ)の消去", "Log/indicator removal"},
+	"T1562": {"セキュリティ機能の無効化", "Impair defenses"},
+	"T1027": {"難読化・隠蔽", "Obfuscation"},
+	"T1036": {"正規ファイルへの偽装", "Masquerading"},
+	"T1202": {"コマンドの間接実行", "Indirect command execution"},
+	"T1620": {"メモリ内実行(ファイルレス)", "In-memory (fileless) execution"},
+	"T1112": {"レジストリの改ざん", "Modify registry"},
+	"T1218": {"正規ツールを悪用した実行", "Living-off-the-land binary"},
+	// credential access
+	"T1003": {"認証情報の窃取(ダンプ)", "Credential dumping"},
+	"T1552": {"設定等に残る認証情報の窃取", "Unsecured credentials"},
+	"T1558": {"Kerberosチケットの窃取", "Steal Kerberos tickets"},
+	"T1550": {"窃取した認証情報での認証", "Use stolen auth material"},
+	"T1110": {"パスワード総当たり攻撃", "Brute force"},
+	"T1056": {"キー入力等の盗聴", "Input capture"},
+	// discovery
+	"T1016": {"ネットワーク構成の調査", "Network config discovery"},
+	"T1018": {"他ホストの探索", "Remote host discovery"},
+	"T1082": {"システム情報の調査", "System info discovery"},
+	"T1087": {"アカウントの調査", "Account discovery"},
+	"T1482": {"ドメイン信頼関係の調査", "Domain trust discovery"},
+	"T1083": {"ファイル/フォルダの探索", "File & directory discovery"},
+	"T1057": {"実行中プロセスの調査", "Process discovery"},
+	"T1069": {"権限グループの調査", "Permission-group discovery"},
+	"T1033": {"ログインユーザーの調査", "User discovery"},
+	"T1518": {"導入ソフトの調査", "Software discovery"},
+	"T1012": {"レジストリの調査", "Query registry"},
+	"T1007": {"サービスの調査", "Service discovery"},
+	"T1049": {"ネットワーク接続の調査", "Network connection discovery"},
+	"T1135": {"ネットワーク共有の調査", "Network share discovery"},
+	"T1201": {"パスワードポリシーの調査", "Password-policy discovery"},
+	"T1614": {"システムの地域設定の調査", "System location discovery"},
+	"T1588": {"攻撃ツール/証明書の入手", "Obtain capabilities"},
+	// lateral movement / collection / c2 / exfil / impact
+	"T1021": {"リモート接続での横展開", "Remote-service lateral move"},
+	"T1570": {"横方向へのツール転送", "Lateral tool transfer"},
+	"T1005": {"端末内データの収集", "Local data collection"},
+	"T1074": {"持ち出し用データの集約", "Data staging"},
+	"T1560": {"データの圧縮/暗号化(持ち出し準備)", "Archive collected data"},
+	"T1071": {"通常通信を装ったC2", "App-layer C2"},
+	"T1105": {"外部からのツール持ち込み", "Ingress tool transfer"},
+	"T1041": {"C2経由のデータ持ち出し", "Exfiltration over C2"},
+	"T1567": {"Webサービス経由の持ち出し", "Exfil over web service"},
+	"T1486": {"データ暗号化(ランサム)", "Data encrypted (ransomware)"},
+	"T1490": {"復旧手段の妨害(シャドウコピー削除等)", "Inhibit system recovery"},
+	"T1489": {"サービスの停止", "Service stop"},
+	"T1531": {"アカウント締め出し", "Account access removal"},
+}
+
+// intrusionExplain gives a fuller, plain-language sentence fragment for the
+// initial-access techniques shown in the intrusion-path step. {ja, en}.
+var intrusionExplain = map[string][2]string{
+	"T1190": {"外部に公開されたアプリやサーバの弱点(脆弱性)を突いて侵入する手口", "exploiting a vulnerability in an internet-facing app or server"},
+	"T1133": {"VPN やリモートデスクトップなど外部公開サービス経由で侵入する手口", "entering through external remote services such as VPN or RDP"},
+	"T1078": {"盗まれた正規の ID とパスワードでログインして侵入する手口", "logging in with stolen but otherwise legitimate credentials"},
+	"T1566": {"不正なメールやリンク(フィッシング)で利用者をだまして侵入する手口", "tricking a user with a phishing email or link"},
+	"T1189": {"改ざんされた Web サイトを閲覧しただけで侵入される手口(ドライブバイ)", "a drive-by compromise from visiting a booby-trapped website"},
+	"T1199": {"取引先や委託先など、信頼関係を悪用して侵入する手口", "abusing a trusted third-party relationship"},
+	"T1195": {"ソフトウェアの供給網(サプライチェーン)を経由した侵入", "compromise through the software supply chain"},
+	"T1091": {"USB などリムーバブルメディア経由で持ち込まれる侵入", "spreading in via removable media such as USB"},
+	"T1098": {"アカウントの権限や認証設定を改ざんして侵入の足場を作る手口", "manipulating account privileges or authentication settings"},
+	"T1200": {"不正なハードウェアを接続して侵入する手口", "adding malicious hardware to gain entry"},
+}
+
+// mitrePlainLabel returns the short plain-language label for a technique ID, or
+// the raw ID when there is no mapping.
+func mitrePlainLabel(id, lang string) string {
+	if v, ok := mitrePlain[baseTechnique(id)]; ok {
+		if lang == "en" {
+			return v[1]
+		}
+		return v[0]
+	}
+	return strings.TrimSpace(id)
+}
+
+// intrusionPhrase renders one initial-access technique as a plain-language
+// phrase with the ID kept in parentheses for reference.
+func intrusionPhrase(id, lang string) string {
+	if v, ok := intrusionExplain[baseTechnique(id)]; ok {
+		if lang == "en" {
+			return v[1] + " (" + id + ")"
+		}
+		return v[0] + "（" + id + "）"
+	}
+	if lbl := mitrePlainLabel(id, lang); lbl != strings.TrimSpace(id) {
+		if lang == "en" {
+			return lbl + " (" + id + ")"
+		}
+		return lbl + "（" + id + "）"
+	}
+	if lang == "en" {
+		return "an initial-access technique (" + id + ")"
+	}
+	return "初期侵入の手口（" + id + "）"
+}
+
 // deriveIntrusionPath produces a best-effort initial-access narrative. Returns
 // "" only when there is nothing at all to say (no clusters, no mapping).
 func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	ja := lang != "en"
 
-	var iaTechs []string
-	for _, m := range cs.MITREMapping {
-		if strings.ToLower(m.Tactic) == "initial-access" {
-			iaTechs = appendUniq(iaTechs, m.Technique)
-		}
-	}
+	iaTechs := intrusionTechniques(cs)
 
 	var firstPhase, firstNarr string
 	if len(cs.Clusters) > 0 { // clusters are time-ordered by the Tier 2 runner
@@ -66,12 +213,16 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	}
 
 	if len(iaTechs) > 0 {
-		if ja {
-			return "初期侵入に関連する MITRE technique " + strings.Join(iaTechs, ", ") +
-				" (initial-access) が検出された。該当クラスタの分析と最初期のイベントを以下にそのまま示す。"
+		var phrases []string
+		for _, t := range iaTechs {
+			phrases = append(phrases, intrusionPhrase(t, lang))
 		}
-		return "MITRE technique(s) " + strings.Join(iaTechs, ", ") +
-			" (initial-access) were detected. The relevant cluster analysis and the earliest events are inlined below."
+		if ja {
+			return "攻撃の入り口（侵入経路）として、" + strings.Join(phrases, "、また") +
+				" が検出されました。これが最初の侵入手段になったと推定されます。"
+		}
+		return "The likely entry point was " + strings.Join(phrases, ", and ") +
+			". This is how the attacker most likely first got in."
 	}
 
 	if firstPhase == "initial-access" && firstNarr != "" {
@@ -80,17 +231,19 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 
 	if firstPhase == "" {
 		if ja {
-			return "侵入経路を判断できる finding が得られなかった。"
+			return "侵入の起点を特定できる手がかりは得られませんでした。"
 		}
-		return "No findings were available from which to determine the intrusion path."
+		return "There was not enough evidence to determine how the attacker first got in."
 	}
 
 	if ja {
-		return "初期侵入経路は本ケースの証拠群からは特定できなかった。最も早く観測された活動は「" +
-			phaseLabelJA(firstPhase) + "」フェーズであり、それ以前の侵入手段は収集対象外のデータソースに痕跡が残っている可能性がある。"
+		return "侵入の入り口（最初の侵入手段）は、今回集めた証拠からは特定できませんでした。" +
+			"最も早く確認できた不審な活動は「" + phaseLabelJA(firstPhase) +
+			"」で、それより前の侵入手段は、今回収集していないデータ（例: 通信ログ等）に痕跡が残っている可能性があります。"
 	}
-	return "The initial access vector could not be determined from the available evidence. The earliest observed activity was the \"" +
-		firstPhase + "\" phase; the entry method may reside in data sources that were not collected."
+	return "The way the attacker first got in could not be determined from the evidence collected. " +
+		"The earliest suspicious activity seen was \"" + phaseLabelEN(firstPhase) +
+		"\"; the entry method may live in data that was not collected (e.g. network logs)."
 }
 
 // deriveAffectedScope pulls hosts / accounts from the IOC set and infers

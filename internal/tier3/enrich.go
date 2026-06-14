@@ -442,9 +442,15 @@ var severityOrder = []string{"critical", "high", "medium", "low", "informational
 func normSeverity(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "critical", "high", "medium", "low":
-		return s
-	case "info", "informational":
+	case "critical", "crit", "severe":
+		return "critical"
+	case "high", "hi":
+		return "high"
+	case "medium", "med", "moderate":
+		return "medium"
+	case "low", "lo":
+		return "low"
+	case "info", "informational", "information":
 		return "informational"
 	case "":
 		return "unknown"

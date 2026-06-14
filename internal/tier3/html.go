@@ -29,7 +29,8 @@ import (
 //  10. Open Questions (case-wide)
 //     - Appendix: Audit / Provenance
 //
-// All CSS is inline; no JS, no external assets — the file is fully portable.
+// All CSS is inline; the only JS is a tiny inline severity-summary navigation
+// helper (no external assets) — the file stays fully portable.
 func renderHTML(path string, cs tier2.CaseSynthesis, cfg Config, en *enrichment, loc *time.Location) error {
 	d := selectDict(cfg.Language)
 	view := buildView(cs, cfg, en, d, loc)
@@ -100,13 +101,12 @@ type reportView struct {
 
 	// Rule-derived IR narrative (best-effort, not LLM).
 	IntrusionPath string
-	// IntrusionDetail inlines the evidence behind the intrusion-path statement —
-	// the relevant initial-access cluster (narrative + findings) and the earliest
-	// key events — so the section is self-contained and never defers the reader to
-	// "see the relevant cluster / the timeline". nil when no cluster qualifies.
-	IntrusionDetail *intrusionView
-	Scope           *scopeView
-	Reco            *recoView
+	// IntrusionChips are the initial-access technique(s) behind the intrusion-path
+	// statement as plain-language chips on the intrusion timeline step (so it
+	// reads like the cluster steps). Empty when none were detected.
+	IntrusionChips []techChip
+	Scope          *scopeView
+	Reco           *recoView
 
 	// Verdict is the at-a-glance judgement box at the top of the report
 	// (auto-derived from the findings, deliberately conservative). nil when there
@@ -172,19 +172,38 @@ type storyStepView struct {
 	StartTS     time.Time
 	EndTS       time.Time
 	HasTS       bool
-	Desc        string // first paragraph of the cluster narrative
-	Techniques  []string
+	Desc        string     // first paragraph of the cluster narrative
+	Chips       []techChip // plain-language technique chips (deduped)
 	WorstSev    string
 	// GapBefore, when non-empty, is a localized "N-long quiet window" marker
 	// rendered as a dashed break above this step.
 	GapBefore string
 }
 
-// intrusionView inlines the evidence behind the intrusion-path statement.
-type intrusionView struct {
-	Statement string             // the derived prose (no "see X" deferral)
-	Cluster   *clusterArticleCtx // the relevant cluster, rendered inline (or nil)
-	Timeline  []timelineRow      // the earliest key events, inline (capped)
+// techChip is one plain-language technique chip for the attack-story timeline.
+// Label is the human label; Title carries the underlying MITRE ID(s) for the
+// hover tooltip (so analysts can still recover the exact technique).
+type techChip struct {
+	Label string
+	Title string
+}
+
+// plainChips maps a technique-ID list to deduped plain-language chips. Sub-
+// techniques that share a parent (T1059.001/.003/...) collapse to a single
+// chip ("コマンド/スクリプト実行"); the merged IDs all go in the tooltip.
+func plainChips(ids []string, lang string) []techChip {
+	at := map[string]int{}
+	var out []techChip
+	for _, id := range ids {
+		lbl := mitrePlainLabel(id, lang)
+		if i, ok := at[lbl]; ok {
+			out[i].Title += ", " + id
+			continue
+		}
+		at[lbl] = len(out)
+		out = append(out, techChip{Label: lbl, Title: id})
+	}
+	return out
 }
 
 type findingRow struct {
@@ -288,9 +307,9 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 	}
 
 	ja := cfg.Language != "en"
-	v.Story = buildStory(v.AttackClusters, ja)
+	v.Story = buildStory(v.AttackClusters, cfg.Language)
 	v.Verdict = buildVerdict(v.AttackClusters, v.Scope, loc, ja)
-	v.IntrusionDetail = buildIntrusionDetail(v.IntrusionPath, v.AttackClusters, en)
+	v.IntrusionChips = plainChips(intrusionTechniques(cs), cfg.Language)
 	return v
 }
 
@@ -308,7 +327,8 @@ func worstSeverity(rows []findingRow) string {
 // buildStory turns the time-ordered attack clusters into a vertical-timeline
 // step list, inserting a "quiet window" gap marker between clusters separated by
 // more than 30 minutes of silence.
-func buildStory(clusters []clusterArticleCtx, ja bool) []storyStepView {
+func buildStory(clusters []clusterArticleCtx, lang string) []storyStepView {
+	ja := lang != "en"
 	var steps []storyStepView
 	var prevEnd time.Time
 	for _, ctx := range clusters {
@@ -320,7 +340,7 @@ func buildStory(clusters []clusterArticleCtx, ja bool) []storyStepView {
 			EndTS:       c.EndTS,
 			HasTS:       !c.StartTS.IsZero(),
 			Desc:        firstParagraph(c.Narrative),
-			Techniques:  c.MITRETechniques,
+			Chips:       plainChips(c.MITRETechniques, lang),
 			WorstSev:    c.WorstSeverity,
 		}
 		if step.HasTS && !prevEnd.IsZero() {
@@ -416,35 +436,6 @@ func buildVerdict(clusters []clusterArticleCtx, scope *scopeView, loc *time.Loca
 		v.Pills = append(v.Pills, "Auto-derived (review required)")
 	}
 	return v
-}
-
-// buildIntrusionDetail picks the cluster that best explains initial access and
-// inlines it (plus the earliest key events) so the intrusion-path section is
-// self-contained — it never tells the reader to "see the relevant cluster".
-func buildIntrusionDetail(statement string, clusters []clusterArticleCtx, en *enrichment) *intrusionView {
-	if statement == "" {
-		return nil
-	}
-	iv := &intrusionView{Statement: statement}
-	// Prefer an explicit initial-access cluster; else the earliest attack cluster.
-	for i := range clusters {
-		if strings.EqualFold(clusters[i].C.AttackPhase, "initial-access") {
-			iv.Cluster = &clusters[i]
-			break
-		}
-	}
-	if iv.Cluster == nil && len(clusters) > 0 {
-		iv.Cluster = &clusters[0] // clusters are time-ordered → earliest
-	}
-	// Earliest key events, inline (capped). en.Timeline is sorted ascending.
-	const maxRows = 8
-	if n := len(en.Timeline); n > 0 {
-		if n > maxRows {
-			n = maxRows
-		}
-		iv.Timeline = en.Timeline[:n]
-	}
-	return iv
 }
 
 // firstParagraph returns the first blank-line-delimited paragraph of s, trimmed.
@@ -569,6 +560,7 @@ type labelDict struct {
 	Scope                  string
 	ScopeBody              string
 	SeveritySummary        string
+	SevJumpHint            string
 	EvidenceChain          string
 	EvidenceID             string
 	SourcePath             string
@@ -723,6 +715,7 @@ var dictJA = labelDict{
 	Scope:                  "解析スコープ",
 	ScopeBody:              "本レポートは、提供された Windows フォレンジック・アーティファクトに対する自動解析の結果である。対象は下記「証拠インベントリ」に列挙した証拠に限定される。ネットワークログ・メモリダンプ等、収集対象外のデータソースは解析範囲に含まれない。",
 	SeveritySummary:        "重要度サマリ",
+	SevJumpHint:            "クリックでこの重要度の検出に移動・ハイライト",
 	EvidenceChain:          "証拠インベントリと完全性 (Chain of Custody)",
 	EvidenceID:             "証拠 ID",
 	SourcePath:             "取得元",
@@ -871,6 +864,7 @@ var dictEN = labelDict{
 	Scope:                  "Scope",
 	ScopeBody:              "This report presents the result of automated analysis of the provided Windows forensic artifacts. Its scope is limited to the evidence listed under \"Evidence Inventory\" below. Data sources that were not collected (e.g. network logs, memory dumps) are out of scope.",
 	SeveritySummary:        "Severity Summary",
+	SevJumpHint:            "Click to jump to and highlight findings of this severity",
 	EvidenceChain:          "Evidence Inventory & Integrity (Chain of Custody)",
 	EvidenceID:             "Evidence ID",
 	SourcePath:             "Source",
@@ -1208,8 +1202,12 @@ const htmlTemplate = `<!DOCTYPE html>
   .conf-confirmed { background:transparent; border:1px solid var(--verify); color:var(--verify); }
   .conf-inferred { background:transparent; border:1px solid var(--amber); color:var(--amber); }
   .sevgrid { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 16px; }
-  .sevcard { border:1px solid var(--line); border-radius:6px; background:var(--card); padding:6px 12px; min-width:5rem; text-align:center; }
+  .sevcard { border:1px solid var(--line); border-radius:6px; background:var(--card); padding:6px 12px; min-width:5rem;
+             text-align:center; text-decoration:none; color:inherit; cursor:pointer; display:block; transition:border-color .12s; }
+  .sevcard:hover { border-color:var(--indigo); }
   .sevcard .n { font-size:1.2rem; font-weight:700; display:block; line-height:1.4; }
+  tr.sev-hit > td { background:var(--indigo-soft); }
+  tr.sev-hit > td:first-child { box-shadow:inset 3px 0 0 var(--indigo); }
   .sevbar { display:flex; gap:6px; flex-wrap:wrap; margin:4px 0 12px; }
 
   /* tables */
@@ -1382,7 +1380,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <section id="severity">
       <h3 class="sub">{{.Dict.SeveritySummary}}</h3>
       <div class="sevgrid">
-        {{range .Severity}}<div class="sevcard"><span class="n">{{.Count}}</span><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></div>{{end}}
+        {{range .Severity}}<a class="sevcard" href="#clusters" data-sevcls="{{sevClass .Severity}}" title="{{$.Dict.SevJumpHint}}"><span class="n">{{.Count}}</span><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></a>{{end}}
       </div>
     </section>
     {{end}}
@@ -1408,6 +1406,9 @@ const htmlTemplate = `<!DOCTYPE html>
           <span class="node"></span>
           <div class="act">{{.Dict.IntrusionPathSec}}</div>
           <div class="desc">{{.IntrusionPath}}</div>
+          {{if .IntrusionChips}}
+          <div class="chips">{{range .IntrusionChips}}<span class="chip tech" title="{{.Title}}">{{.Label}}</span>{{end}}</div>
+          {{end}}
         </div>
         {{end}}
         {{range .Story}}
@@ -1418,31 +1419,12 @@ const htmlTemplate = `<!DOCTYPE html>
           <div class="act">#{{.ID}} — {{phaseLabel .AttackPhase}}</div>
           {{if .Desc}}<div class="desc">{{.Desc}}</div>{{end}}
           <div class="chips">
-            {{range .Techniques}}<span class="chip tech">{{.}}</span>{{end}}
+            {{range .Chips}}<span class="chip tech" title="{{.Title}}">{{.Label}}</span>{{end}}
             {{if .WorstSev}}<span class="badge {{sevClass .WorstSev}}">{{sevLabel .WorstSev}}</span>{{end}}
           </div>
         </div>
         {{end}}
       </div>
-      {{with .IntrusionDetail}}
-        {{if .Cluster}}
-        <h3 class="sub">{{$.Dict.IntrusionEvidence}}</h3>
-        {{template "clusterArticle" .Cluster}}
-        {{end}}
-        {{if .Timeline}}
-        <h3 class="sub">{{$.Dict.EarliestEvents}}</h3>
-        <table>
-          <thead><tr><th>{{$.Dict.TimeCol}}</th><th>{{$.Dict.Severity}}</th><th>{{$.Dict.ArtifactName}}</th>
-              <th>{{$.Dict.EventTypeCol}}</th><th>{{$.Dict.Source}}</th><th>{{$.Dict.Title}}</th></tr></thead>
-          <tbody>
-            {{range .Timeline}}
-            <tr><td class="mono">{{fmtTS .TS}}</td><td><span class="badge {{sevClass .Severity}}">{{sevLabel .Severity}}</span></td>
-                <td>{{.Artifact}}</td><td>{{.EventType}}</td><td>{{.Source}}</td><td>{{.Title}}</td></tr>
-            {{end}}
-          </tbody>
-        </table>
-        {{end}}
-      {{end}}
       {{if .IntrusionPath}}<div class="annot-note">{{.Dict.DerivedNote}}</div>{{end}}
     </section>
     {{end}}
@@ -1692,6 +1674,41 @@ const htmlTemplate = `<!DOCTYPE html>
   {{end}}
 </article>
 {{end}}
+
+<script>
+// Severity-summary navigation: clicking a severity card scrolls to and
+// highlights the matching findings in the cluster-detail section (opening any
+// collapsed group). Progressive enhancement — without JS the card's href still
+// jumps to the findings section. No external assets; the file stays portable.
+(function () {
+  var sec = document.getElementById('clusters');
+  if (!sec) return;
+  function clearHits() {
+    var hit = document.querySelectorAll('tr.sev-hit');
+    for (var i = 0; i < hit.length; i++) hit[i].classList.remove('sev-hit');
+  }
+  var cards = document.querySelectorAll('a.sevcard[data-sevcls]');
+  for (var c = 0; c < cards.length; c++) {
+    cards[c].addEventListener('click', function (ev) {
+      var cls = this.getAttribute('data-sevcls');
+      var all = sec.querySelectorAll('tr');
+      var rows = [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].querySelector('td .badge.' + cls)) rows.push(all[i]);
+      }
+      if (!rows.length) return; // let the href fall through to #clusters
+      ev.preventDefault();
+      clearHits();
+      for (var j = 0; j < rows.length; j++) {
+        rows[j].classList.add('sev-hit');
+        var d = rows[j].closest('details');
+        while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
+      }
+      rows[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+})();
+</script>
 
 </body>
 </html>
