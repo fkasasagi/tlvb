@@ -83,6 +83,11 @@ type reportView struct {
 	Meta           *CaseMeta
 	Severity       []sevCount
 	Timeline       []timelineRow
+	// UniqueEvents / TechniqueCount contextualise Case.TotalFindings (which counts
+	// rule×hit): distinct underlying events by audit_id, and distinct MITRE
+	// techniques. 0 when enrichment is skipped (no findings dir).
+	UniqueEvents   int
+	TechniqueCount int
 
 	// Executive summary, two layers. ExecBrief is the non-technical "key
 	// findings" box (Layer 1); TechSummary is the analyst prose (Layer 2),
@@ -242,6 +247,8 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		Meta:           cfg.CaseMeta,
 		Severity:       en.SeverityCounts,
 		Timeline:       en.Timeline,
+		UniqueEvents:   en.UniqueEvents,
+		TechniqueCount: en.TechniqueCount,
 		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language, loc),
 		Scope:          deriveAffectedScope(cs, en, cfg.Language),
 		Reco:           deriveRecommendations(cs, cfg.Language),
@@ -568,6 +575,8 @@ type labelDict struct {
 	Timezone                   string
 	Model                      string
 	TotalFindings              string
+	UniqueEvents               string
+	TechniqueCount             string
 	ClusterCount               string
 	ExecutiveSummary           string
 	ExecSummaryFallbackWarning string
@@ -725,6 +734,8 @@ var dictJA = labelDict{
 	Timezone:                   "表示タイムゾーン",
 	Model:                      "解析モデル",
 	TotalFindings:              "Finding 総数",
+	UniqueEvents:               "ユニーク事象数",
+	TechniqueCount:             "攻撃手口数 (MITRE technique)",
 	ClusterCount:               "クラスタ数",
 	ExecutiveSummary:           "エグゼクティブサマリ",
 	ExecSummaryFallbackWarning: "⚠️ LLM による全体合成が失敗したため、このサマリは攻撃クラスタ要約の自動連結で代替されています。攻撃チェーンとしての論理構成は行われていません。人手でのレビューおよび Tier 2 の再実行を推奨します。",
@@ -875,6 +886,8 @@ var dictEN = labelDict{
 	Timezone:                   "Display timezone",
 	Model:                      "Analysis model",
 	TotalFindings:              "Total findings",
+	UniqueEvents:               "Unique events",
+	TechniqueCount:             "MITRE techniques",
 	ClusterCount:               "Cluster count",
 	ExecutiveSummary:           "Executive Summary",
 	ExecSummaryFallbackWarning: "⚠️ The LLM overall synthesis failed, so this summary is an auto-stitch of the attack-cluster narratives — it has NOT been composed into a coherent attack chain. Manual review and a Tier 2 re-run are recommended.",
@@ -1371,6 +1384,8 @@ const htmlTemplate = `<!DOCTYPE html>
         {{if .Meta.Status}}<dt>{{.Dict.Status}}</dt><dd>{{.Meta.Status}}</dd>{{end}}{{end}}
         <dt>{{.Dict.AnalysisDate}}</dt><dd>{{.GeneratedAt}}</dd>
         <dt>{{.Dict.TotalFindings}}</dt><dd>{{.Case.TotalFindings}}</dd>
+        {{if .UniqueEvents}}<dt>{{.Dict.UniqueEvents}}</dt><dd>{{.UniqueEvents}}</dd>{{end}}
+        {{if .TechniqueCount}}<dt>{{.Dict.TechniqueCount}}</dt><dd>{{.TechniqueCount}}</dd>{{end}}
         <dt>{{.Dict.ClusterCount}}</dt><dd>{{.Case.ClusterCount}}</dd>
         {{if .Meta}}{{if .Meta.Notes}}<dt>{{.Dict.Notes}}</dt><dd>{{.Meta.Notes}}</dd>{{end}}{{end}}
       </dl>

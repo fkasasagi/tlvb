@@ -78,6 +78,12 @@ type enrichment struct {
 	Timeline       []timelineRow
 	IOCs           []iocRow
 	MITRE          []mitreRow
+	// UniqueEvents is the number of distinct underlying event records (by
+	// audit_id) the findings reference; TechniqueCount is the number of distinct
+	// MITRE techniques. Both contextualise TotalFindings, which counts rule×hit
+	// and is inflated when several rules/sources flag the same event or technique.
+	UniqueEvents   int
+	TechniqueCount int
 	// detail keyed by "source\x00ruleid" and by normalised title for fallback.
 	detailByKey   map[string]*findingDetail
 	detailByTitle map[string]*findingDetail
@@ -162,9 +168,16 @@ func loadEnrichment(findingsDir string) *enrichment {
 	sevTotals := map[string]int{}
 	iocAgg := map[string]*iocRow{}     // key: type\x00value
 	mitreAgg := map[string]*mitreRow{} // key: tactic\x00technique
+	auditSet := map[string]bool{}      // distinct underlying events (by audit_id)
+	techSet := map[string]bool{}       // distinct MITRE techniques
 
 	for _, f := range findings {
 		sevTotals[normSeverity(f.Severity)]++
+		for _, t := range f.Techniques {
+			if t != "" {
+				techSet[t] = true
+			}
+		}
 
 		// per-finding detail (first-seen, artifacts, evidence count) plus the
 		// audit_id / computer of the earliest-stamped evidence (used by the
@@ -183,6 +196,9 @@ func loadEnrichment(findingsDir string) *enrichment {
 			}
 			if ev.ArtifactID != "" {
 				artSet[ev.ArtifactID] = true
+			}
+			if ev.AuditID != "" {
+				auditSet[ev.AuditID] = true
 			}
 			if computer == "" {
 				computer = evComputer(ev)
@@ -239,6 +255,8 @@ func loadEnrichment(findingsDir string) *enrichment {
 	en.SeverityCounts = orderSeverities(sevTotals)
 	en.IOCs = finalizeIOCs(iocAgg)
 	en.MITRE = finalizeMITRE(mitreAgg)
+	en.UniqueEvents = len(auditSet)
+	en.TechniqueCount = len(techSet)
 	return en
 }
 
