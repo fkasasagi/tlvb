@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,9 @@ type reportView struct {
 	// in a digestible "what happened" form; the full per-cluster tables stay in
 	// the findings section.
 	Story []storyStepView
+	// StoryReordered is true when the attack steps were ordered by attack logic
+	// (entry first) rather than recorded time, because the timeline is unreliable.
+	StoryReordered bool
 
 	// IsExecutiveSummaryFallback is true when the overall_story was produced
 	// by tier2's deterministic fallback (LLM overall synthesis failed) rather
@@ -151,6 +155,11 @@ type clusterView struct {
 	// WorstSeverity is the strongest finding severity in the cluster, used for
 	// the per-cluster severity badge in the attack-story timeline.
 	WorstSeverity string
+	// StepNo is the cluster's 1-based position in the (possibly reordered) attack
+	// story, shown as "#N" in the story step and the cluster heading so the
+	// numbering reflects the attack sequence rather than the raw Tier 2 cluster
+	// id. 0 for noise clusters (they fall back to the cluster id).
+	StepNo int
 }
 
 // verdictView is the conservative, auto-derived at-a-glance judgement box.
@@ -233,17 +242,19 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		Meta:           cfg.CaseMeta,
 		Severity:       en.SeverityCounts,
 		Timeline:       en.Timeline,
-		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language),
+		IntrusionPath:  deriveIntrusionPath(cs, cfg.Language, loc),
 		Scope:          deriveAffectedScope(cs, en, cfg.Language),
 		Reco:           deriveRecommendations(cs, cfg.Language),
 	}
 
 	// Executive summary layers. TechSummary falls back to OverallStory for
-	// synthesis.json written before the two-layer split.
-	v.ExecBrief = cs.ExecBrief
-	v.TechSummary = cs.TechSummary
+	// synthesis.json written before the two-layer split. The LLM prose carries
+	// ISO-8601 UTC timestamps (Tier 2 emits them canonically); localise them to
+	// the report timezone so the prose agrees with the structured timestamps.
+	v.ExecBrief = localizeProseTimestamps(cs.ExecBrief, loc)
+	v.TechSummary = localizeProseTimestamps(cs.TechSummary, loc)
 	if v.TechSummary == "" {
-		v.TechSummary = cs.OverallStory
+		v.TechSummary = localizeProseTimestamps(cs.OverallStory, loc)
 	}
 
 	// IOC three-tier split: confirmed (signature) / suspected (anomaly) / noise
@@ -270,7 +281,7 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 			AttackPhase:     c.AttackPhase,
 			StartTS:         c.StartTS,
 			EndTS:           c.EndTS,
-			Narrative:       c.Narrative,
+			Narrative:       localizeProseTimestamps(c.Narrative, loc),
 			MITRETechniques: c.MITRETechniques,
 			OpenQuestions:   c.OpenQuestions,
 			ActiveSearch:    c.ActiveSearch,
@@ -307,10 +318,47 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 	}
 
 	ja := cfg.Language != "en"
+	// Attack-story ordering: timestamps are the source of truth WHEN the timeline
+	// is reliable. When it is unreliable (a clock rollback), record order and
+	// timestamps diverge — presenting post-compromise activity (defense evasion)
+	// before the way-in (the brute-force entry) just because its rolled-back
+	// timestamp is earlier is misleading. In that case order the steps by attack
+	// logic: the confirmed entry cluster first, then by kill-chain phase. Either
+	// way, number the steps sequentially in display order so the entry is #1.
+	v.StoryReordered = orderAttackClusters(v.AttackClusters, cs)
+	for i := range v.AttackClusters {
+		v.AttackClusters[i].C.StepNo = i + 1
+	}
 	v.Story = buildStory(v.AttackClusters, cfg.Language)
 	v.Verdict = buildVerdict(v.AttackClusters, v.Scope, loc, ja)
 	v.IntrusionChips = plainChips(intrusionTechniques(cs), cfg.Language)
 	return v
+}
+
+// orderAttackClusters sorts the attack clusters in place. With a reliable
+// timeline it keeps timestamp order (the Tier 2 order). With an unreliable
+// timeline it sorts by attack logic — the confirmed entry cluster(s) first, then
+// kill-chain phase, ties broken by timestamp — and returns true so the report
+// can note the steps are in reconstructed (not recorded-time) order.
+func orderAttackClusters(clusters []clusterArticleCtx, cs tier2.CaseSynthesis) bool {
+	if !strings.EqualFold(cs.TimelineReliability, "unreliable") {
+		return false
+	}
+	entry := entryClusterIDs(cs)
+	rank := func(ctx clusterArticleCtx) int {
+		if entry[ctx.C.ID] {
+			return -1 // the way in always leads
+		}
+		return phaseRank(ctx.C.AttackPhase)
+	}
+	sort.SliceStable(clusters, func(i, j int) bool {
+		ri, rj := rank(clusters[i]), rank(clusters[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return clusters[i].C.StartTS.Before(clusters[j].C.StartTS)
+	})
+	return true
 }
 
 // worstSeverity returns the strongest severity across a cluster's findings.
@@ -333,8 +381,12 @@ func buildStory(clusters []clusterArticleCtx, lang string) []storyStepView {
 	var prevEnd time.Time
 	for _, ctx := range clusters {
 		c := ctx.C
+		stepID := c.StepNo
+		if stepID == 0 {
+			stepID = c.ID
+		}
 		step := storyStepView{
-			ID:          c.ID,
+			ID:          stepID,
 			AttackPhase: c.AttackPhase,
 			StartTS:     c.StartTS,
 			EndTS:       c.EndTS,
@@ -634,32 +686,33 @@ type labelDict struct {
 	DerivedNote        string
 
 	// redesign: verdict box / attack story / side-nav / inline intrusion evidence
-	BrandSub          string
-	Subtitle          string
-	NavExec           string
-	NavIR             string
-	NavDetails        string
-	NavAnalyst        string
-	NavVerdict        string
-	NavStory          string
-	NavSummary        string
-	NavScope          string
-	NavIntrusion      string
-	NavReco           string
-	NavOpen           string
-	NavClusters       string
-	NavMitre          string
-	NavIOC            string
-	NavEvidence       string
-	VerdictSec        string
-	VEarliest         string
-	VDwell            string
-	VHosts            string
-	VContainment      string
-	ActionsHeading    string
-	AttackStorySec    string
-	IntrusionEvidence string
-	EarliestEvents    string
+	BrandSub              string
+	Subtitle              string
+	NavExec               string
+	NavIR                 string
+	NavDetails            string
+	NavAnalyst            string
+	NavVerdict            string
+	NavStory              string
+	NavSummary            string
+	NavScope              string
+	NavIntrusion          string
+	NavReco               string
+	NavOpen               string
+	NavClusters           string
+	NavMitre              string
+	NavIOC                string
+	NavEvidence           string
+	VerdictSec            string
+	VEarliest             string
+	VDwell                string
+	VHosts                string
+	VContainment          string
+	ActionsHeading        string
+	AttackStorySec        string
+	StoryLogicalOrderNote string
+	IntrusionEvidence     string
+	EarliestEvents        string
 
 	phaseLabel func(string) string
 	sevLabel   func(string) string
@@ -731,7 +784,7 @@ var dictJA = labelDict{
 	TotalEvents:            "総イベント数",
 	Methodology:            "解析手法と限界",
 	MethodologyBody:        "本解析は TLVB 自律 IR エージェントによる以下のパイプラインで実施した。Tier 0 (パーサ群が各アーティファクトを正規化イベントに変換)、Tier 1A (Sigma / Hayabusa / MITRE ATT&CK 由来のシグネチャを事前生成 SQL として実行し、ヒットを finding 化)、Tier 1B (skill ベースの異常検知を LLM 推論で補完)、Tier 2 (finding を時間クラスタ化し、周辺の生イベントから攻撃シナリオを再構成)、Tier 3 (本レポート生成)。各 finding は event_id・source_artifact・タイムスタンプで裏付けられる。各 finding の「確度」列は導出方法を示す: 確認 = Tier 1A の決定的シグネチャが実際の記録イベントに一致したもの (照合自体は事実)、推論 = Tier 1B の LLM が異常と判断したもの。いずれも悪性の確証ではなく、最終判断は解析担当者のレビューを要する。",
-	Limitations:            "限界・前提: (1) タイムスタンプは原則 UTC。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
+	Limitations:            "限界・前提: (1) タイムスタンプは UTC で正規化保存し、本レポートでは表示タイムゾーンに変換して表示している（各時刻は RFC3339 のオフセット付き）。アーティファクト由来のタイムゾーン誤差は補正していない。(2) シグネチャ未知の攻撃や、収集対象外のアーティファクトに痕跡が残る攻撃は検知できない。(3) 自動再構成された攻撃シナリオは仮説であり、確証には人手レビューを要する。未解決事項は各「未解決の論点」に明示した。",
 	AIDisclaimer:           "AI 利用に関する開示: シナリオ記述・MITRE マッピング・未解決論点は大規模言語モデル (上記「解析モデル」) が生成した。シグネチャ検知部 (Tier 1A) は LLM を実行時に呼び出さず、事前検証済み SQL のみを実行する。最終的な判断は資格を持つ解析担当者によるレビューを前提とする。",
 	CompletenessSec:        "収集完全性 — データ欠落と検知失敗の区別",
 	CompletenessBody:       "以下は検知に関連する収集入力 (EVTX チャネル / Tier 0 アーティファクト) の在否である。「未収集」の項目は検知が失敗したのではなく、調査対象がそもそも収集されていなかったことを意味する (沈黙の不在を「調べて何も無かった」と誤読しないための明示)。",
@@ -747,7 +800,7 @@ var dictJA = labelDict{
 	ConfirmedLabel:         "確認",
 	InferredLabel:          "推論",
 	TimelineSection:        "イベントタイムライン (主要事象)",
-	TimeCol:                "時刻 (UTC)",
+	TimeCol:                "時刻",
 	EventTypeCol:           "イベント種別",
 	IOCSection:             "侵害指標 (Indicators of Compromise)",
 	IOCType:                "種別",
@@ -783,32 +836,33 @@ var dictJA = labelDict{
 	RecRecovery:        "復旧 (Recovery)",
 	DerivedNote:        "※ 本セクションは検出された finding・MITRE technique・IOC からルールベースで自動導出した参考情報であり、LLM 生成ではない。確証と優先順位付けには人手レビューを要する。",
 
-	BrandSub:          "Forensic Report",
-	Subtitle:          "Windows フォレンジック・アーティファクト自動解析レポート",
-	NavExec:           "総論",
-	NavDetails:        "各論詳細",
-	NavIR:             "IR 対応者向け",
-	NavAnalyst:        "アナリスト向け",
-	NavVerdict:        "判定と推奨対応",
-	NavStory:          "攻撃の経緯",
-	NavSummary:        "エグゼクティブサマリ",
-	NavScope:          "影響範囲",
-	NavIntrusion:      "侵入経路",
-	NavReco:           "推奨対応",
-	NavOpen:           "未解決の論点",
-	NavClusters:       "攻撃クラスタ詳細",
-	NavMitre:          "MITRE ATT&CK",
-	NavIOC:            "侵害指標 (IOC)",
-	NavEvidence:       "証拠・手法・付録",
-	VerdictSec:        "判定と推奨対応",
-	VEarliest:         "最古の確認活動",
-	VDwell:            "活動期間 (滞留)",
-	VHosts:            "影響ホスト",
-	VContainment:      "封じ込め状態",
-	ActionsHeading:    "今すぐやること (推奨初動)",
-	AttackStorySec:    "攻撃の経緯",
-	IntrusionEvidence: "侵入経路の根拠 (該当クラスタをインライン表示)",
-	EarliestEvents:    "最初期の主要イベント",
+	BrandSub:              "Forensic Report",
+	Subtitle:              "Windows フォレンジック・アーティファクト自動解析レポート",
+	NavExec:               "総論",
+	NavDetails:            "各論詳細",
+	NavIR:                 "IR 対応者向け",
+	NavAnalyst:            "アナリスト向け",
+	NavVerdict:            "判定と推奨対応",
+	NavStory:              "攻撃の経緯",
+	NavSummary:            "エグゼクティブサマリ",
+	NavScope:              "影響範囲",
+	NavIntrusion:          "侵入経路",
+	NavReco:               "推奨対応",
+	NavOpen:               "未解決の論点",
+	NavClusters:           "攻撃クラスタ詳細",
+	NavMitre:              "MITRE ATT&CK",
+	NavIOC:                "侵害指標 (IOC)",
+	NavEvidence:           "証拠・手法・付録",
+	VerdictSec:            "判定と推奨対応",
+	VEarliest:             "最古の確認活動",
+	VDwell:                "活動期間 (滞留)",
+	VHosts:                "影響ホスト",
+	VContainment:          "封じ込め状態",
+	ActionsHeading:        "今すぐやること (推奨初動)",
+	AttackStorySec:        "攻撃の経緯",
+	StoryLogicalOrderNote: "※ 本ケースは時刻が信頼できない（巻き戻し検出）ため、各ステップは記録時刻順ではなく攻撃の論理的順序（侵入を起点）で並べ替えて番号付けしています。",
+	IntrusionEvidence:     "侵入経路の根拠 (該当クラスタをインライン表示)",
+	EarliestEvents:        "最初期の主要イベント",
 
 	phaseLabel: phaseLabelJA,
 	sevLabel:   sevLabelJA,
@@ -880,7 +934,7 @@ var dictEN = labelDict{
 	TotalEvents:            "Total events",
 	Methodology:            "Methodology & Limitations",
 	MethodologyBody:        "Analysis was performed by the TLVB autonomous IR agent through the following pipeline: Tier 0 (parsers normalise each artifact into unified events), Tier 1A (Sigma / Hayabusa / MITRE ATT&CK signatures compiled to pre-baked SQL, matches become findings), Tier 1B (skill-based anomaly detection augmented by LLM reasoning), Tier 2 (findings are clustered temporally and the surrounding raw events are reconstructed into an attack narrative), Tier 3 (this report). Every finding is backed by event_id, source_artifact and a timestamp. The \"Confidence\" column records how each finding was derived: Confirmed = a deterministic Tier 1A signature matched real logged events (the match itself is factual); Inferred = a Tier 1B LLM judged the pattern anomalous. Neither asserts malice — final adjudication requires analyst review.",
-	Limitations:            "Limitations & assumptions: (1) Timestamps are UTC; artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
+	Limitations:            "Limitations & assumptions: (1) Timestamps are normalised and stored in UTC and rendered in the report display timezone (each value carries its RFC3339 offset); artifact-specific timezone skew is not corrected. (2) Attacks with no known signature, or whose traces live in uncollected artifacts, cannot be detected. (3) The reconstructed attack narrative is a hypothesis and requires human review to confirm; unresolved items are listed under \"Open questions\".",
 	AIDisclaimer:           "AI disclosure: narratives, MITRE mappings and open questions were generated by a large language model (see \"Analysis model\"). The signature-detection tier (Tier 1A) invokes no LLM at runtime — it executes only pre-validated SQL. Final determinations are expected to be reviewed by a qualified examiner.",
 	CompletenessSec:        "Collection completeness - data gap vs detection miss",
 	CompletenessBody:       "The table below lists detection-relevant collection inputs (EVTX channels and Tier 0 artefacts) and whether each was present. A NOT-collected row means the input was never acquired, so a related miss is a DATA GAP rather than a detection failure; absence here must not be read as looked-and-found-nothing.",
@@ -896,7 +950,7 @@ var dictEN = labelDict{
 	ConfirmedLabel:         "Confirmed",
 	InferredLabel:          "Inferred",
 	TimelineSection:        "Event Timeline (key events)",
-	TimeCol:                "Time (UTC)",
+	TimeCol:                "Time",
 	EventTypeCol:           "Event type",
 	IOCSection:             "Indicators of Compromise",
 	IOCType:                "Type",
@@ -932,32 +986,33 @@ var dictEN = labelDict{
 	RecRecovery:        "Recovery",
 	DerivedNote:        "Note: this section is auto-derived (rule-based, not LLM) from the detected findings, MITRE techniques and IOCs. It requires human review for confirmation and prioritisation.",
 
-	BrandSub:          "Forensic Report",
-	Subtitle:          "Automated analysis of Windows forensic artifacts",
-	NavExec:           "Overview",
-	NavDetails:        "Details",
-	NavIR:             "For IR responders",
-	NavAnalyst:        "For analysts",
-	NavVerdict:        "Verdict & actions",
-	NavStory:          "Attack story",
-	NavSummary:        "Executive summary",
-	NavScope:          "Affected scope",
-	NavIntrusion:      "Intrusion path",
-	NavReco:           "Recommendations",
-	NavOpen:           "Open questions",
-	NavClusters:       "Attack clusters",
-	NavMitre:          "MITRE ATT&CK",
-	NavIOC:            "Indicators (IOC)",
-	NavEvidence:       "Evidence & method",
-	VerdictSec:        "Verdict & Recommended Actions",
-	VEarliest:         "Earliest observed activity",
-	VDwell:            "Activity span (dwell)",
-	VHosts:            "Affected hosts",
-	VContainment:      "Containment status",
-	ActionsHeading:    "Immediate actions (recommended)",
-	AttackStorySec:    "Attack Story",
-	IntrusionEvidence: "Intrusion evidence (relevant cluster, inlined)",
-	EarliestEvents:    "Earliest key events",
+	BrandSub:              "Forensic Report",
+	Subtitle:              "Automated analysis of Windows forensic artifacts",
+	NavExec:               "Overview",
+	NavDetails:            "Details",
+	NavIR:                 "For IR responders",
+	NavAnalyst:            "For analysts",
+	NavVerdict:            "Verdict & actions",
+	NavStory:              "Attack story",
+	NavSummary:            "Executive summary",
+	NavScope:              "Affected scope",
+	NavIntrusion:          "Intrusion path",
+	NavReco:               "Recommendations",
+	NavOpen:               "Open questions",
+	NavClusters:           "Attack clusters",
+	NavMitre:              "MITRE ATT&CK",
+	NavIOC:                "Indicators (IOC)",
+	NavEvidence:           "Evidence & method",
+	VerdictSec:            "Verdict & Recommended Actions",
+	VEarliest:             "Earliest observed activity",
+	VDwell:                "Activity span (dwell)",
+	VHosts:                "Affected hosts",
+	VContainment:          "Containment status",
+	ActionsHeading:        "Immediate actions (recommended)",
+	AttackStorySec:        "Attack Story",
+	StoryLogicalOrderNote: "Note: this case has an unreliable clock (rollback detected), so the steps are ordered and numbered by attack logic (entry first), not by recorded time.",
+	IntrusionEvidence:     "Intrusion evidence (relevant cluster, inlined)",
+	EarliestEvents:        "Earliest key events",
 
 	phaseLabel: phaseLabelEN,
 	sevLabel:   sevLabelEN,
@@ -1400,6 +1455,7 @@ const htmlTemplate = `<!DOCTYPE html>
         <span class="tx"><b>{{.Dict.TimelineUnreliableHeading}}</b> {{range .Case.TimelineNotes}}{{.}} {{end}}</span>
       </div>
       {{end}}
+      {{if .StoryReordered}}<div class="annot-note">{{.Dict.StoryLogicalOrderNote}}</div>{{end}}
       <div class="storyflow">
         {{if .IntrusionPath}}
         <div class="step step-intrusion">
@@ -1601,7 +1657,7 @@ const htmlTemplate = `<!DOCTYPE html>
       <details>
         <summary>{{.Dict.TimelineSection}}</summary>
         <table>
-          <thead><tr><th>{{.Dict.TimeCol}}</th><th>{{.Dict.Severity}}</th><th>{{.Dict.ArtifactName}}</th>
+          <thead><tr><th>{{.Dict.TimeCol}} ({{.Timezone}})</th><th>{{.Dict.Severity}}</th><th>{{.Dict.ArtifactName}}</th>
               <th>{{.Dict.EventTypeCol}}</th><th>{{.Dict.Source}}</th><th>{{.Dict.Title}}</th></tr></thead>
           <tbody>
             {{range .Timeline}}
@@ -1627,7 +1683,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 {{define "clusterArticle"}}
 <article class="cluster{{if .C.IsLikelyNoise}} cluster-noise{{end}}" id="cluster-{{.C.ID}}">
-  <h3>#{{.C.ID}} — {{phaseLabel .C.AttackPhase}}
+  <h3>#{{if .C.StepNo}}{{.C.StepNo}}{{else}}{{.C.ID}}{{end}} — {{phaseLabel .C.AttackPhase}}
     {{if .C.IsLikelyNoise}}<span class="badge sev-info">{{.Dict.NoiseBadge}}</span>{{else if .C.WorstSeverity}}<span class="badge {{sevClass .C.WorstSeverity}}">{{sevLabel .C.WorstSeverity}}</span>{{end}}
   </h3>
   <header>

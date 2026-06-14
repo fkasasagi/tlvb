@@ -93,6 +93,7 @@ type timelineRow struct {
 	Artifact  string
 	EventType string
 	Source    string
+	RuleID    string
 	Severity  string
 	Title     string
 	Tactic    string
@@ -111,8 +112,16 @@ type iocRow struct {
 	//   inferred  → extracted from a Tier 1B anomaly (LLM-judged) finding
 	//   noise     → a known parser artifact / non-actionable value
 	Confidence string
-	tactics    map[string]bool // owning findings' mitre_tactics
-	findings   map[string]bool // owning findings' titles (for the "src" column)
+	// Class is the IOC-tab presentation bucket, orthogonal to Confidence
+	// (which drives the report's confirmed/suspected/noise tiers):
+	//   ioc        → a real indicator (host/account/command/file/network)
+	//   source     → a data feed (log-source / channel), not an indicator
+	//   provenance → detection metadata leaking as a value (Defender field
+	//                labels, the detecting process) — context, not a threat IOC
+	//   excluded   → parser noise / sysprep ghost — hidden by default
+	Class    string
+	tactics  map[string]bool // owning findings' mitre_tactics
+	findings map[string]bool // owning findings' titles (for the "src" column)
 }
 
 // mitreRow aggregates one MITRE technique across findings. Derived
@@ -192,6 +201,7 @@ func loadEnrichment(findingsDir string) *enrichment {
 				Artifact:  firstOr(det.Artifacts, ""),
 				EventType: firstEventType(f.Evidence),
 				Source:    f.Source,
+				RuleID:    f.RuleID,
 				Severity:  normSeverity(f.Severity),
 				Title:     f.Title,
 				Tactic:    firstOr(f.Tactics, ""),
@@ -327,6 +337,9 @@ func collectIOCs(agg map[string]*iocRow, ev findingEvidence, tactics []string, f
 		if val == "" || val == "-" || val == "<nil>" || len(val) > 300 {
 			continue
 		}
+		// Strip leak-y label prefixes (e.g. "Target: DOMAIN\\user") so the IOC
+		// reads as a bare value and de-dups against the un-prefixed form.
+		val = normalizeIOCValue(cls, val)
 		// A value-level parser artifact (e.g. "LogonType 3") is noise no matter
 		// which finding surfaced it — keep it out of the confirmed/suspected
 		// tiers so it never lands on a blocklist.
@@ -390,6 +403,73 @@ func isParserNoise(iocType, value string) bool {
 	return noiseIOCValues[strings.ToLower(strings.TrimSpace(value))]
 }
 
+// iocLabelPrefixes are label tokens that some Sigma/Defender rules prepend to an
+// otherwise-clean value (an SQL/field-label leak), e.g. "Target: WIN\\Administrator".
+// Stripped from account values so the IOC reads as a bare DOMAIN\user and de-dups
+// against the un-prefixed occurrence.
+var iocLabelPrefixes = []string{"target:", "source:", "account name:", "account:", "user:"}
+
+// normalizeIOCValue cleans a raw IOC value before it becomes an aggregation key.
+func normalizeIOCValue(cls, val string) string {
+	if cls == "account" {
+		lower := strings.ToLower(val)
+		for _, p := range iocLabelPrefixes {
+			if strings.HasPrefix(lower, p) {
+				val = strings.TrimSpace(val[len(p):])
+				break
+			}
+		}
+	}
+	return val
+}
+
+// provenanceValuePrefixes mark values that are detection metadata leaking into an
+// IOC slot (a Defender field label, the detecting tool/process), not a threat
+// indicator. Surfaced in the IOC tab's "provenance" bucket instead of confirmed.
+var provenanceValuePrefixes = []string{
+	"description:", "process (if real-time detection):", "process name:",
+	"modifyingapplication:", "detection source:", "detection time:", "detection user:",
+}
+
+func isProvenanceValue(val string) bool {
+	lower := strings.ToLower(strings.TrimSpace(val))
+	for _, p := range provenanceValuePrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// sysprepGhostSIDs are the well-known service SIDs that, paired with a machine
+// account ("\\MINWINPC$"), mark a pre-provisioning Sysprep/WinPE ghost rather
+// than a compromised account.
+var sysprepGhostSIDs = []string{"$ (s-1-5-18)", "$ (s-1-5-19)", "$ (s-1-5-20)"}
+
+func isSysprepGhost(val string) bool {
+	lower := strings.ToLower(val)
+	for _, s := range sysprepGhostSIDs {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// iocClass assigns the IOC-tab presentation bucket (see iocRow.Class).
+func iocClass(r *iocRow) string {
+	if r.Type == "log-source" {
+		return "source"
+	}
+	if isProvenanceValue(r.Value) {
+		return "provenance"
+	}
+	if r.Confidence == "noise" || isSysprepGhost(r.Value) {
+		return "excluded"
+	}
+	return "ioc"
+}
+
 // mergeIOCConfidence keeps the strongest confidence seen for an IOC, except that
 // a "noise" verdict is sticky (value-level, so it applies to every occurrence).
 func mergeIOCConfidence(existing, incoming string) string {
@@ -418,6 +498,7 @@ func iocConfRank(c string) int {
 func finalizeIOCs(agg map[string]*iocRow) []iocRow {
 	out := make([]iocRow, 0, len(agg))
 	for _, r := range agg {
+		r.Class = iocClass(r)
 		out = append(out, *r)
 	}
 	// type asc, then count desc, then value asc — stable, deterministic.
@@ -613,6 +694,12 @@ type WebTimelineEntry struct {
 	Artifact  string    `json:"artifact,omitempty"`
 	Severity  string    `json:"severity,omitempty"`
 	AuditID   string    `json:"audit_id,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	RuleID    string    `json:"rule_id,omitempty"`
+	// ClusterID / Noise are populated by BuildTimelineView (synthesis-aware);
+	// the plain LoadWebEnrichment path leaves them zero.
+	ClusterID int  `json:"cluster_id,omitempty"`
+	Noise     bool `json:"noise,omitempty"`
 }
 
 // WebIOC mirrors the iocDTO the Web UI IOC table reads.
@@ -622,6 +709,8 @@ type WebIOC struct {
 	Count    int      `json:"count"`
 	Findings []string `json:"findings"`
 	Tactics  []string `json:"tactics"`
+	// Class is the IOC-tab bucket: ioc | source | provenance | excluded.
+	Class string `json:"class,omitempty"`
 }
 
 // WebMITRE mirrors the MITRE matrix cell the Web UI reads.
@@ -661,6 +750,8 @@ func LoadWebEnrichment(findingsDir string) *WebEnrichment {
 			Artifact:  t.Artifact,
 			Severity:  t.Severity,
 			AuditID:   t.AuditID,
+			Source:    t.Source,
+			RuleID:    t.RuleID,
 		})
 	}
 	const maxIOCLabels = 8
@@ -675,6 +766,7 @@ func LoadWebEnrichment(findingsDir string) *WebEnrichment {
 			Count:    r.Count,
 			Findings: labels,
 			Tactics:  sortedKeys(r.tactics),
+			Class:    r.Class,
 		})
 	}
 	for _, m := range en.MITRE {

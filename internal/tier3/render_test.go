@@ -128,7 +128,7 @@ func TestDeriveIRSections(t *testing.T) {
 		{Type: "account", Value: "alice"},
 	}}
 
-	if got := deriveIntrusionPath(cs, "ja"); !strings.Contains(got, "T1078") {
+	if got := deriveIntrusionPath(cs, "ja", nil); !strings.Contains(got, "T1078") {
 		t.Errorf("intrusion path should cite the initial-access technique, got %q", got)
 	}
 

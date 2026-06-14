@@ -1260,6 +1260,11 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		Language     string   `json:"language"`
 		Formats      []string `json:"formats"`
 		OnlyApproved bool     `json:"only_approved"`
+		// Timezone is the display timezone selected in the Web UI; the report
+		// renders all timestamps in it. Empty or the per-evidence sentinel
+		// ("__evidence__", which can't map to a single document) falls back to
+		// the case timezone.
+		Timezone string `json:"timezone"`
 	}
 	_ = decodeJSON(r, &req)
 	if req.Language == "" {
@@ -1283,6 +1288,12 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 	lang := req.Language
 	formats := req.Formats
 	onlyApproved := req.OnlyApproved
+	// "__evidence__" is the Web UI's per-evidence sentinel — it can't map to a
+	// single report document, so it falls back to the case timezone below.
+	reqTZ := req.Timezone
+	if reqTZ == "__evidence__" {
+		reqTZ = ""
+	}
 
 	st := s.jobs.Start(id, JobReport, lang, func(ctx context.Context, progress func(string)) (string, error) {
 		progress("rendering report")
@@ -1290,6 +1301,12 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// per-artifact event counts) for the report's section 4. Best-effort —
 		// nil simply omits that section, matching the CLI `report --tier 3`.
 		meta, examiner, caseTZ := s.reportCaseMeta(ctx, caseID)
+		// Report display timezone: the Web UI selection wins; fall back to the
+		// case timezone when none was sent (or the per-evidence sentinel).
+		reportTZ := caseTZ
+		if reqTZ != "" {
+			reportTZ = reqTZ
+		}
 		// Tier 3 (DFIR Reporter) — same renderer the CLI `tlvb report --tier 3`
 		// drives. Reads the tier2 synthesis.json + derives timeline/IOC/MITRE
 		// from findings/. Timestamps render in the case timezone (UTC store →
@@ -1302,7 +1319,7 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 			FindingsDir:   filepath.Join(root, caseID, "findings"),
 			Formats:       formats,
 			Language:      lang,
-			Timezone:      caseTZ,
+			Timezone:      reportTZ,
 			OnlyApproved:  onlyApproved,
 			CaseMeta:      meta,
 			Examiner:      examiner,
@@ -1449,15 +1466,13 @@ func (s *Server) findingsDir(caseID string) string {
 
 func (s *Server) handleGetTimeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	en := tier3.LoadWebEnrichment(s.findingsDir(id))
-	// intrusion_path / cross_evidence_correlations were legacy-synthesizer
-	// concepts; the tier2/tier3 pipeline doesn't produce them. Return empty
-	// arrays so the UI renders the timeline without those panels.
-	writeJSON(w, 200, map[string]any{
-		"timeline":                    en.Timeline,
-		"intrusion_path":              []any{},
-		"cross_evidence_correlations": []any{},
-	})
+	// BuildTimelineView joins the findings-derived flat timeline to the Tier 2
+	// synthesis (clusters / clock reliability / logical-order intrusion path) so
+	// the Timeline tab renders the SAME phase grouping + clock warning the report
+	// uses. Degrades to a flat timeline when no synthesis.json exists yet.
+	synthPath := filepath.Join(s.cfg.OutputsRoot, id, "synthesis.json")
+	view := tier3.BuildTimelineView(s.findingsDir(id), synthPath)
+	writeJSON(w, 200, view)
 }
 
 func (s *Server) handleGetIOCs(w http.ResponseWriter, r *http.Request) {

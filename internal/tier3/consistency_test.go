@@ -1,0 +1,271 @@
+package tier3
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tlvb/tlvb/internal/tier2"
+)
+
+// bruteForceEntryCS models the WinRM-spray case shape: the only initial-access
+// technique was demoted, and the confirmed entry is a successful brute force
+// (T1110.001 under credential-access). The intrusion-path step must NOT disclaim
+// the entry — that disclaimer contradicted the brute-force conclusion.
+func bruteForceEntryCS() tier2.CaseSynthesis {
+	return tier2.CaseSynthesis{
+		CaseID:              "winrm-spray",
+		TimelineReliability: "unreliable",
+		Clusters: []tier2.SynthCluster{
+			{ID: 1, AttackPhase: "defense-evasion", Narrative: "clock rolled back during provisioning"},
+			{ID: 2, AttackPhase: "credential-access", Narrative: "20x 4625 then success from WS01"},
+		},
+		MITREMapping: []tier2.MITREEntry{
+			{Technique: "T1110.001", Tactic: "credential-access", FindingCount: 1, ClusterIDs: []int{2}},
+			{Technique: "T1059.001", Tactic: "execution", FindingCount: 2, ClusterIDs: []int{1, 2}},
+			{Technique: "T1021.006", Tactic: "execution", FindingCount: 1, ClusterIDs: []int{2}},
+		},
+		MITREUnconfirmed: []tier2.MITREEntry{
+			{Technique: "T1190", Tactic: "initial-access", FindingCount: 1, ClusterIDs: []int{2}},
+		},
+	}
+}
+
+func TestDeriveIntrusionPath_BruteForceIsEntry(t *testing.T) {
+	cs := bruteForceEntryCS()
+	got := deriveIntrusionPath(cs, "ja", nil)
+	if intrusionDisclaimsEntry(got) {
+		t.Errorf("brute-force entry must not disclaim the entry point, got %q", got)
+	}
+	if !strings.Contains(got, "T1110") {
+		t.Errorf("intrusion path should cite the brute-force technique T1110, got %q", got)
+	}
+	// EN side too.
+	if got := deriveIntrusionPath(cs, "en", nil); intrusionDisclaimsEntry(got) || !strings.Contains(got, "T1110") {
+		t.Errorf("EN intrusion path wrong: %q", got)
+	}
+}
+
+// The fixed report must be internally consistent: the gate finds no blockers.
+func TestCheckReportConsistency_CleanOnBruteForce(t *testing.T) {
+	issues := checkReportConsistency(bruteForceEntryCS(), nil, "ja")
+	for _, is := range issues {
+		if is.Severity == "blocker" {
+			t.Errorf("brute-force case should have no blocker, got %+v", is)
+		}
+	}
+}
+
+// The gate must actually be able to catch the contradiction class — prove the
+// two ingredients (disclaimer text + a confirmed entry vector) are detected, so
+// a future regression that re-introduces the disclaimer would fire C1.
+func TestConsistencyGate_DetectsContradictionClass(t *testing.T) {
+	if !intrusionDisclaimsEntry("侵入の入り口（最初の侵入手段）は、今回集めた証拠からは特定できませんでした。") {
+		t.Error("disclaimer phrasing should be detected")
+	}
+	if vec := confirmedEntryVector(bruteForceEntryCS()); !strings.Contains(vec, "T1110") {
+		t.Errorf("confirmed entry vector should include T1110, got %q", vec)
+	}
+}
+
+// No entry vector + unreliable clock → the fallback must not assert a
+// timestamp-order "earliest", and the gate must not flag a C2 it just created.
+func TestDeriveIntrusionPath_UnreliableNoEarliestClaim(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		TimelineReliability: "unreliable",
+		Clusters: []tier2.SynthCluster{
+			{ID: 1, AttackPhase: "execution", Narrative: "cmd.exe recon burst"},
+		},
+		MITREMapping: []tier2.MITREEntry{
+			{Technique: "T1059", Tactic: "execution", FindingCount: 1, ClusterIDs: []int{1}},
+		},
+	}
+	got := deriveIntrusionPath(cs, "ja", nil)
+	if intrusionAssertsEarliest(got) {
+		t.Errorf("unreliable timeline must not claim a timestamp-order earliest, got %q", got)
+	}
+	for _, is := range checkReportConsistency(cs, nil, "ja") {
+		if is.Code == "earliest-claim-on-unreliable-timeline" {
+			t.Errorf("gate should not flag C2 after the fix avoids the earliest claim")
+		}
+	}
+}
+
+// The fallback skips a leading noise/provisioning cluster rather than naming it
+// as the earliest attack phase.
+func TestDeriveIntrusionPath_SkipsNoiseCluster(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		Clusters: []tier2.SynthCluster{
+			{ID: 1, AttackPhase: "noise", Narrative: "Windows OOBE provisioning"},
+			{ID: 2, AttackPhase: "execution", Narrative: "cmd.exe recon"},
+		},
+	}
+	got := deriveIntrusionPath(cs, "en", nil)
+	if strings.Contains(strings.ToLower(got), "noise") {
+		t.Errorf("fallback should skip the noise cluster, got %q", got)
+	}
+}
+
+// C3: a technique in both the confirmed and unconfirmed matrices is a warning.
+func TestCheckReportConsistency_DuplicateTechnique(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		MITREMapping:     []tier2.MITREEntry{{Technique: "T1003.001", Tactic: "credential-access"}},
+		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1003.001"}},
+	}
+	found := false
+	for _, is := range checkReportConsistency(cs, nil, "ja") {
+		if is.Code == "technique-confirmed-and-unconfirmed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a technique-confirmed-and-unconfirmed warning")
+	}
+}
+
+// C4: an UNHEDGED assertion of a demoted technique is flagged...
+func TestC4_DemotedTechniqueAssertedUnhedged(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		TechSummary:      "攻撃者は Web シェルを設置してサーバを掌握した。",
+		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1505.003"}},
+	}
+	if !hasCode(checkReportConsistency(cs, nil, "ja"), "demoted-technique-asserted-in-prose") {
+		t.Error("unhedged assertion of a demoted technique should be flagged")
+	}
+}
+
+// ...but a HEDGED mention (the report correctly RULING IT OUT) must NOT fire —
+// this is the WinRM-spray prose that says "NOT Pass-the-Hash".
+func TestC4_HedgedDemotedTechniqueNotFlagged(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		TechSummary:      "ハッシュ窃取の証拠が無いため、パス・ザ・ハッシュではなく通常のパスワード認証です。",
+		MITREUnconfirmed: []tier2.MITREEntry{{Technique: "T1550.002"}},
+	}
+	if hasCode(checkReportConsistency(cs, nil, "ja"), "demoted-technique-asserted-in-prose") {
+		t.Error("a hedged mention that rules the technique out must NOT be flagged (false positive)")
+	}
+}
+
+// C5: an ungrounded mention stated as fact in the executive brief is flagged.
+func TestC5_UngroundedMentionInExecBrief(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		ExecBrief:          "攻撃者は Mimikatz で認証情報を盗み出しました。",
+		UngroundedMentions: []string{"Mimikatz"},
+	}
+	if !hasCode(checkReportConsistency(cs, nil, "ja"), "ungrounded-mention-in-exec-brief") {
+		t.Error("ungrounded mention asserted in exec brief should be flagged")
+	}
+	// Hedged exec brief → not flagged.
+	cs.ExecBrief = "Mimikatz の使用は確証が無く未確認です。"
+	if hasCode(checkReportConsistency(cs, nil, "ja"), "ungrounded-mention-in-exec-brief") {
+		t.Error("hedged exec brief must not be flagged")
+	}
+}
+
+// C6: a noise IOC that leaked into the affected scope is flagged.
+func TestC6_NoiseIOCInScope(t *testing.T) {
+	cs := tier2.CaseSynthesis{
+		MITREMapping: []tier2.MITREEntry{{Technique: "T1003", Tactic: "credential-access"}},
+	}
+	en := &enrichment{IOCs: []iocRow{
+		{Type: "host", Value: "LogonType 3", Confidence: "noise"},
+	}}
+	// deriveAffectedScope filters noise, so to exercise the guard we confirm it
+	// does NOT leak (clean), then a confirmed host is NOT mis-flagged.
+	if hasCode(checkReportConsistency(cs, en, "ja"), "noise-ioc-in-affected-scope") {
+		t.Error("noise IOC is filtered by deriveAffectedScope; gate should stay clean")
+	}
+	en.IOCs = append(en.IOCs, iocRow{Type: "host", Value: "WIN-HOST", Confidence: "confirmed"})
+	for _, is := range checkReportConsistency(cs, en, "ja") {
+		if is.Code == "noise-ioc-in-affected-scope" {
+			t.Error("a confirmed host must not be flagged as noise")
+		}
+	}
+}
+
+func hasCode(issues []ConsistencyIssue, code string) bool {
+	for _, is := range issues {
+		if is.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// The intrusion path must carry the entry's recorded time, hedged when the
+// timeline is unreliable (the WinRM-spray case has a clock rollback).
+func TestDeriveIntrusionPath_CarriesEntryTime(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2, timeline unreliable
+	cs.Clusters[1].StartTS = time.Date(2026, 6, 12, 10, 39, 37, 0, time.UTC)
+	cs.Clusters[1].EndTS = time.Date(2026, 6, 12, 10, 40, 11, 0, time.UTC)
+
+	got := deriveIntrusionPath(cs, "ja", time.UTC)
+	if !strings.Contains(got, "2026-06-12T10:39:37") {
+		t.Errorf("intrusion path should carry the entry start time, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T10:40:11") {
+		t.Errorf("intrusion path should carry the entry end time, got %q", got)
+	}
+	if !strings.Contains(got, "巻き戻し") {
+		t.Errorf("unreliable timeline must hedge the time, got %q", got)
+	}
+
+	// Reliable timeline → time shown without the rollback caveat.
+	cs.TimelineReliability = "reliable"
+	got = deriveIntrusionPath(cs, "en", time.UTC)
+	if !strings.Contains(got, "Time of entry") || strings.Contains(got, "rollback") {
+		t.Errorf("reliable EN path should state the time without a rollback caveat, got %q", got)
+	}
+}
+
+// On an unreliable timeline the attack story must lead with the confirmed entry
+// cluster (credential-access brute force), not the earlier-timestamped
+// defense-evasion provisioning window — and number it #1.
+func TestOrderAttackClusters_EntryLeadsWhenUnreliable(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2; timeline unreliable
+	clusters := []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if !orderAttackClusters(clusters, cs) {
+		t.Fatal("unreliable timeline should reorder and return true")
+	}
+	if clusters[0].C.ID != 2 {
+		t.Errorf("entry cluster (id 2, credential-access) should lead, got id %d first", clusters[0].C.ID)
+	}
+
+	// Reliable timeline → keep timestamp order (no reorder).
+	cs.TimelineReliability = "reliable"
+	clusters = []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if orderAttackClusters(clusters, cs) || clusters[0].C.ID != 1 {
+		t.Error("reliable timeline must not reorder")
+	}
+}
+
+// localizeProseTimestamps converts ISO-8601 UTC timestamps in LLM prose to the
+// report display timezone, leaving everything else untouched.
+func TestLocalizeProseTimestamps(t *testing.T) {
+	jst, _ := time.LoadLocation("Asia/Tokyo")
+	in := "ブルートフォースは 2026-06-12T10:39:37Z に成功し、2026-06-12T10:40Z まで継続した。"
+	got := localizeProseTimestamps(in, jst)
+	if !strings.Contains(got, "2026-06-12T19:39:37+09:00") {
+		t.Errorf("seconds-precision UTC should convert to JST, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-12T19:40:00+09:00") {
+		t.Errorf("minute-precision UTC should convert to JST, got %q", got)
+	}
+	if strings.Contains(got, "Z") {
+		t.Errorf("no UTC Z marker should remain, got %q", got)
+	}
+	// UTC display → no-op.
+	if localizeProseTimestamps(in, time.UTC) != in {
+		t.Error("UTC display must be a no-op")
+	}
+	// Non-timestamp text is untouched; a malformed near-match is left alone.
+	if localizeProseTimestamps("no times here", jst) != "no times here" {
+		t.Error("plain text must be unchanged")
+	}
+}

@@ -49,6 +49,19 @@ type Config struct {
 	Organization   string
 	Classification string // e.g. "CONFIDENTIAL" / "社外秘"
 	ToolVersion    string // TLVB build identifier
+
+	// ConsistencyLLM opts into the advisory LLM consistency reviewer that reads
+	// the assembled report against the findings and flags FREE-TEXT internal
+	// contradictions the deterministic gate cannot pattern-match. Off by default
+	// (it costs tokens and is non-deterministic). Its findings are advisory only
+	// — they never block the report or auto-edit it, only surface for Review
+	// Gate 2. Empty transport / binary → the pass is skipped and noted.
+	ConsistencyLLM bool
+	// Model is the LLM id for the consistency reviewer (default claude-opus-4-8);
+	// a "[1m]" routing suffix is stripped for the raw API. ClaudeBinary is the
+	// CLI fallback used only when no API/Vertex transport is configured.
+	Model        string
+	ClaudeBinary string
 }
 
 // CaseMeta is the forensic case context the renderer pulls from the case DB.
@@ -91,6 +104,10 @@ type Report struct {
 	GeneratedAt time.Time
 	Files       []OutputFile
 	Sections    int // for HTML, number of cluster sections
+	// ConsistencyIssues are the internal contradictions the post-render gate
+	// found (empty when the report is internally consistent). Callers surface
+	// blockers before treating the report as done.
+	ConsistencyIssues []ConsistencyIssue
 }
 
 // OutputFile is one rendered file.

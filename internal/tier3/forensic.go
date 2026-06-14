@@ -1,10 +1,43 @@
 package tier3
 
 import (
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
 )
+
+// proseISOUTCRe matches an ISO-8601 UTC timestamp embedded in narrative prose
+// (date, T or space separator, time, optional seconds/fraction, Z or +00:00).
+// Tier 2 is instructed to emit timestamps ONLY in this canonical form, so the
+// match — and therefore the localisation below — is reliable.
+var proseISOUTCRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\+00:?00)`)
+
+var proseISOLayouts = []string{
+	time.RFC3339Nano, time.RFC3339,
+	"2006-01-02T15:04:05Z", "2006-01-02T15:04Z",
+	"2006-01-02 15:04:05Z", "2006-01-02 15:04Z",
+	"2006-01-02 15:04:05Z07:00", "2006-01-02 15:04Z07:00",
+}
+
+// localizeProseTimestamps rewrites ISO-8601 UTC timestamps embedded in LLM
+// narrative prose into the report display timezone (formatTSIn form), so the
+// prose agrees with the structured timestamps. A nil/UTC loc is a no-op; any
+// substring that does not parse is left untouched (never a wrong conversion).
+func localizeProseTimestamps(s string, loc *time.Location) string {
+	if s == "" || loc == nil || loc == time.UTC {
+		return s
+	}
+	return proseISOUTCRe.ReplaceAllStringFunc(s, func(m string) string {
+		for _, layout := range proseISOLayouts {
+			if t, err := time.Parse(layout, m); err == nil {
+				return formatTSIn(t.UTC(), loc)
+			}
+		}
+		return m
+	})
+}
 
 // forensic.go derives the three incident-response narrative sections that a
 // DFIR report needs but synthesis.json (v0.1) does not yet carry explicitly:
@@ -55,6 +88,33 @@ func intrusionTechniques(cs tier2.CaseSynthesis) []string {
 	for _, m := range cs.MITREMapping {
 		if strings.ToLower(m.Tactic) == "initial-access" {
 			out = appendUniq(out, m.Technique)
+		}
+	}
+	return out
+}
+
+// entryEquivalentBases lists, in entry-likelihood order, the parent technique
+// ids that ARE how an attacker got in when no initial-access technique is
+// confirmed: a successful brute force (T1110), valid-account abuse (T1078), or
+// an external remote service such as VPN/RDP (T1133). ATT&CK files these under
+// credential-access / lateral-movement, but a successful external login IS the
+// initial access — and the case narrative already treats it that way. Surfacing
+// them keeps the intrusion-path step from contradicting the conclusion.
+var entryEquivalentBases = []string{"T1110", "T1078", "T1133"}
+
+// entryEquivalentTechniques returns the confirmed entry-equivalent parent
+// technique ids (see entryEquivalentBases), in entry-likelihood order. Only
+// consulted when intrusionTechniques is empty. Sub-technique ids in the matrix
+// (e.g. T1110.001) are matched on their parent.
+func entryEquivalentTechniques(cs tier2.CaseSynthesis) []string {
+	confirmed := map[string]bool{}
+	for _, m := range cs.MITREMapping {
+		confirmed[baseTechnique(m.Technique)] = true
+	}
+	var out []string
+	for _, base := range entryEquivalentBases {
+		if confirmed[base] {
+			out = append(out, base)
 		}
 	}
 	return out
@@ -157,6 +217,7 @@ var intrusionExplain = map[string][2]string{
 	"T1190": {"外部に公開されたアプリやサーバの弱点(脆弱性)を突いて侵入する手口", "exploiting a vulnerability in an internet-facing app or server"},
 	"T1133": {"VPN やリモートデスクトップなど外部公開サービス経由で侵入する手口", "entering through external remote services such as VPN or RDP"},
 	"T1078": {"盗まれた正規の ID とパスワードでログインして侵入する手口", "logging in with stolen but otherwise legitimate credentials"},
+	"T1110": {"パスワードの総当たり(ブルートフォース)でログイン認証を突破して侵入する手口", "breaking in by brute-forcing the login password"},
 	"T1566": {"不正なメールやリンク(フィッシング)で利用者をだまして侵入する手口", "tricking a user with a phishing email or link"},
 	"T1189": {"改ざんされた Web サイトを閲覧しただけで侵入される手口(ドライブバイ)", "a drive-by compromise from visiting a booby-trapped website"},
 	"T1199": {"取引先や委託先など、信頼関係を悪用して侵入する手口", "abusing a trusted third-party relationship"},
@@ -200,29 +261,49 @@ func intrusionPhrase(id, lang string) string {
 }
 
 // deriveIntrusionPath produces a best-effort initial-access narrative. Returns
-// "" only when there is nothing at all to say (no clusters, no mapping).
-func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
+// "" only when there is nothing at all to say (no clusters, no mapping). loc is
+// the report display timezone for the entry timestamp; nil → UTC.
+func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string, loc *time.Location) string {
 	ja := lang != "en"
-
-	iaTechs := intrusionTechniques(cs)
-
-	var firstPhase, firstNarr string
-	if len(cs.Clusters) > 0 { // clusters are time-ordered by the Tier 2 runner
-		firstPhase = cs.Clusters[0].AttackPhase
-		firstNarr = cs.Clusters[0].Narrative
+	if loc == nil {
+		loc = time.UTC
 	}
 
-	if len(iaTechs) > 0 {
+	// 1. Confirmed initial-access techniques are the textbook entry vector.
+	// 2. Failing that, an entry-EQUIVALENT vector the case confirmed — a
+	//    successful brute force / valid-account abuse / external remote service.
+	//    These are how the attacker got in when nothing earlier is confirmed, and
+	//    the narrative already says so, so they must drive this step too (else it
+	//    contradicts the conclusion — the WinRM-spray case).
+	entryTechs := intrusionTechniques(cs)
+	if len(entryTechs) == 0 {
+		entryTechs = entryEquivalentTechniques(cs)
+	}
+	if len(entryTechs) > 0 {
 		var phrases []string
-		for _, t := range iaTechs {
+		for _, t := range entryTechs {
 			phrases = append(phrases, intrusionPhrase(t, lang))
 		}
+		when := entryTimePhrase(cs, entryTechs, loc, lang)
 		if ja {
 			return "攻撃の入り口（侵入経路）として、" + strings.Join(phrases, "、また") +
-				" が検出されました。これが最初の侵入手段になったと推定されます。"
+				" が検出されました。これが最初の侵入手段になったと推定されます。" + when
 		}
 		return "The likely entry point was " + strings.Join(phrases, ", and ") +
-			". This is how the attacker most likely first got in."
+			". This is how the attacker most likely first got in." + when
+	}
+
+	// 3. No entry vector confirmed → fall back to the earliest NON-NOISE cluster's
+	// phase. Skip provisioning / benign clusters (they are not "the earliest
+	// attack"), and never assert timestamp order when the timeline is unreliable.
+	var firstPhase, firstNarr string
+	for _, c := range cs.Clusters { // clusters are time-ordered by the Tier 2 runner
+		if tier2.IsNoiseCluster(c.AttackPhase, c.Narrative) {
+			continue
+		}
+		firstPhase = c.AttackPhase
+		firstNarr = c.Narrative
+		break
 	}
 
 	if firstPhase == "initial-access" && firstNarr != "" {
@@ -236,6 +317,17 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 		return "There was not enough evidence to determine how the attacker first got in."
 	}
 
+	if strings.EqualFold(cs.TimelineReliability, "unreliable") {
+		if ja {
+			return "確定した初期アクセスの痕跡は無く、かつ本ケースは時刻情報が信頼できない（クロックの巻き戻し等）ため、" +
+				"出来事の発生順から侵入経路を断定することはできません。観測された活動のうち比較的早い段階に現れたのは「" +
+				phaseLabelJA(firstPhase) + "」です。"
+		}
+		return "No initial-access technique was confirmed, and because this case has an unreliable clock " +
+			"(e.g. a time rollback), the order of events cannot establish the entry path. " +
+			"An early-stage phase among the observed activity was \"" + phaseLabelEN(firstPhase) + "\"."
+	}
+
 	if ja {
 		return "侵入の入り口（最初の侵入手段）は、今回集めた証拠からは特定できませんでした。" +
 			"最も早く確認できた不審な活動は「" + phaseLabelJA(firstPhase) +
@@ -244,6 +336,106 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	return "The way the attacker first got in could not be determined from the evidence collected. " +
 		"The earliest suspicious activity seen was \"" + phaseLabelEN(firstPhase) +
 		"\"; the entry method may live in data that was not collected (e.g. network logs)."
+}
+
+// entryClusterIDs returns the IDs of the clusters that carry the case's confirmed
+// entry vector (initial-access first, else the entry-equivalent brute-force /
+// valid-account / external-remote-service techniques), resolved via the MITRE
+// matrix's cluster_ids. Empty when no entry vector is confirmed.
+func entryClusterIDs(cs tier2.CaseSynthesis) map[int]bool {
+	techs := intrusionTechniques(cs)
+	if len(techs) == 0 {
+		techs = entryEquivalentTechniques(cs)
+	}
+	want := map[string]bool{}
+	for _, t := range techs {
+		want[baseTechnique(t)] = true
+	}
+	ids := map[int]bool{}
+	for _, m := range cs.MITREMapping {
+		if want[baseTechnique(m.Technique)] {
+			for _, id := range m.ClusterIDs {
+				ids[id] = true
+			}
+		}
+	}
+	return ids
+}
+
+// entryClusterWindow returns the time window of the earliest cluster that the
+// entry techniques map to (via the MITRE matrix's cluster_ids). ok is false when
+// no such cluster carries a timestamp. Matching is on the parent technique so a
+// sub-technique in the matrix (T1110.001) maps to its base entry tech (T1110).
+func entryClusterWindow(cs tier2.CaseSynthesis, entryTechs []string) (start, end time.Time, ok bool) {
+	want := map[string]bool{}
+	for _, t := range entryTechs {
+		want[baseTechnique(t)] = true
+	}
+	ids := map[int]bool{}
+	for _, m := range cs.MITREMapping {
+		if want[baseTechnique(m.Technique)] {
+			for _, id := range m.ClusterIDs {
+				ids[id] = true
+			}
+		}
+	}
+	for _, c := range cs.Clusters {
+		if !ids[c.ID] || c.StartTS.IsZero() {
+			continue
+		}
+		if !ok || c.StartTS.Before(start) {
+			start, end, ok = c.StartTS, c.EndTS, true
+		}
+	}
+	return start, end, ok
+}
+
+// killChainRank orders MITRE tactics roughly along the attack lifecycle, used to
+// present attack steps in a logical order when timestamps are unreliable.
+var killChainRank = map[string]int{
+	"initial-access": 1, "execution": 2, "persistence": 3, "privilege-escalation": 4,
+	"defense-evasion": 5, "credential-access": 6, "discovery": 7, "lateral-movement": 8,
+	"collection": 9, "command-and-control": 10, "exfiltration": 11, "impact": 12,
+}
+
+func phaseRank(p string) int {
+	if r, ok := killChainRank[strings.ToLower(strings.TrimSpace(p))]; ok {
+		return r
+	}
+	return 50
+}
+
+// entryTimePhrase renders the entry's recorded time window (in loc), appended to
+// the intrusion-path sentence. When the timeline is unreliable (a clock
+// rollback), the time is still shown — examiners need it — but explicitly
+// flagged as record-order-only, so this never silently asserts a wall-clock fact
+// the timeline cannot support. Returns "" when no entry timestamp is available.
+func entryTimePhrase(cs tier2.CaseSynthesis, entryTechs []string, loc *time.Location, lang string) string {
+	start, end, ok := entryClusterWindow(cs, entryTechs)
+	if !ok {
+		return ""
+	}
+	ja := lang != "en"
+	s := formatTSIn(start, loc)
+	window := s
+	if e := formatTSIn(end, loc); e != "" && !end.Equal(start) {
+		if ja {
+			window = s + " 〜 " + e
+		} else {
+			window = s + " – " + e
+		}
+	}
+	unreliable := strings.EqualFold(cs.TimelineReliability, "unreliable")
+	if ja {
+		if unreliable {
+			return "（記録上の発生時刻: " + window + "。ただし本ケースは時刻の巻き戻しが検出されており、発生順・絶対時刻は確実ではありません。）"
+		}
+		return "（発生時刻: " + window + "）"
+	}
+	if unreliable {
+		return " Recorded time of entry: " + window + " (note: a clock rollback was detected in this case, so the ordering and absolute time are not certain)."
+	}
+	return " Time of entry: " + window + "."
 }
 
 // deriveAffectedScope pulls hosts / accounts from the IOC set and infers
