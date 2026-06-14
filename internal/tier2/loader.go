@@ -37,7 +37,47 @@ func LoadFindings(findingsBase string) ([]Finding, error) {
 		out = append(out, more...)
 	}
 
-	return out, nil
+	return mergeHayabusaIntoSigma(out), nil
+}
+
+// mergeHayabusaIntoSigma drops Hayabusa pass-through findings that duplicate a
+// Sigma signature finding. Hayabusa runs the SigmaHQ ruleset internally, so the
+// SAME rule fires in both engines and lands as two findings (rule_source
+// "hayabusa" and "sigma"). The match key is the rule TITLE, not the rule_id:
+// Hayabusa re-IDs upstream Sigma rules (UUIDv5) so the ids differ, but the title
+// is preserved verbatim.
+//
+// Hayabusa findings with no Sigma twin are KEPT — these are Hayabusa's genuine
+// added value: native (ruletype:Hayabusa) rules absent from SigmaHQ, and Sigma
+// categories TLVB does not prebake into SQL (process_creation, ps_script,
+// wmi_event). Only the redundant overlap is folded.
+//
+// Non-destructive on disk: the raw by-rule/hayabusa/*.json files stay for audit
+// (the cross-detection is still recorded); only the in-memory view Tier 2
+// clusters / Tier 3 reports is deduplicated. The Sigma twin survives because its
+// evidence points at the real source events (EVTX), whereas the Hayabusa twin's
+// evidence is the tool's own artifact_id='hayabusa' projection of the same rows.
+func mergeHayabusaIntoSigma(in []Finding) []Finding {
+	sigmaTitles := map[string]bool{}
+	for i := range in {
+		if strings.EqualFold(in[i].Source, "sigma") {
+			sigmaTitles[normMergeTitle(in[i].Title)] = true
+		}
+	}
+	out := make([]Finding, 0, len(in))
+	for i := range in {
+		if strings.EqualFold(in[i].Source, "hayabusa") && sigmaTitles[normMergeTitle(in[i].Title)] {
+			continue // folded into the Sigma twin
+		}
+		out = append(out, in[i])
+	}
+	return out
+}
+
+// normMergeTitle is the case/space-insensitive title key used to pair a Hayabusa
+// pass-through finding with its Sigma twin.
+func normMergeTitle(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func loadByRuleDir(root string) ([]Finding, error) {

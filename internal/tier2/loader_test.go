@@ -122,6 +122,37 @@ func TestLoadFindingsFromBothSources(t *testing.T) {
 	}
 }
 
+func TestMergeHayabusaIntoSigma(t *testing.T) {
+	in := []Finding{
+		{Source: "sigma", RuleID: "s1", Title: "Antivirus Password Dumper Detection"},
+		{Source: "hayabusa", RuleID: "h1", Title: "Antivirus Password Dumper Detection"}, // dup of s1
+		{Source: "hayabusa", RuleID: "h2", Title: "  antivirus password dumper detection "}, // dup (case/space)
+		{Source: "sigma", RuleID: "s2", Title: "Encoded PowerShell"},
+		{Source: "hayabusa", RuleID: "h3", Title: "Suspicious Service Path"},               // native, no sigma twin → keep
+		{Source: "anomaly_hunter", RuleID: "A5", Title: "Antivirus Password Dumper Detection"}, // other source → keep
+	}
+	got := mergeHayabusaIntoSigma(in)
+
+	bySource := map[string]int{}
+	for _, f := range got {
+		bySource[f.Source]++
+	}
+	if bySource["hayabusa"] != 1 {
+		t.Errorf("hayabusa: got %d, want 1 (only the native Suspicious Service Path survives)", bySource["hayabusa"])
+	}
+	if bySource["sigma"] != 2 {
+		t.Errorf("sigma: got %d, want 2 (both kept)", bySource["sigma"])
+	}
+	if bySource["anomaly_hunter"] != 1 {
+		t.Errorf("anomaly_hunter: got %d, want 1 (non-hayabusa sources untouched)", bySource["anomaly_hunter"])
+	}
+	for _, f := range got {
+		if f.Source == "hayabusa" && f.Title != "Suspicious Service Path" {
+			t.Errorf("unexpected surviving hayabusa finding: %q", f.Title)
+		}
+	}
+}
+
 func TestLoadFindingsToleratesMissingDirs(t *testing.T) {
 	dir := t.TempDir()
 	got, err := LoadFindings(dir)

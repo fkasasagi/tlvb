@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tlvb/tlvb/internal/tier2"
@@ -41,6 +42,11 @@ func Render(cfg Config) (*Report, error) {
 	if err := json.Unmarshal(body, &cs); err != nil {
 		return nil, fmt.Errorf("parse synthesis: %w", err)
 	}
+	// Fold Hayabusa pass-through finding refs that duplicate a Sigma signature so
+	// cluster tables / findings.csv / clusters.csv / report.json count each rule
+	// once. Cleans synthesis.json written before Tier 2 deduplicated at the source
+	// (a no-op for fresh runs); matches the enrichment-derived severity summary.
+	mergeHayabusaFindingRefs(&cs)
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
@@ -154,6 +160,65 @@ func mitreEntriesFromEnrichment(en *enrichment) []tier2.MITREEntry {
 		})
 	}
 	return out
+}
+
+// mergeTitleKey is the case/space-insensitive title key used to pair a Hayabusa
+// pass-through finding with its Sigma twin. Hayabusa re-IDs upstream Sigma rules
+// so rule_id cannot be the key, but the rule title is preserved verbatim.
+func mergeTitleKey(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// dropHayabusaDuplicates removes Hayabusa pass-through findings whose title
+// matches a Sigma signature finding. Hayabusa runs the SigmaHQ ruleset
+// internally, so the same rule lands as two findings; the Sigma twin is kept
+// (its evidence points at the real source events). Hayabusa findings with no
+// Sigma twin — native rules and Sigma categories TLVB does not prebake into SQL
+// (process_creation, ps_script, wmi_event) — are kept: that is Hayabusa's real
+// added value. Operates on the findings-derived list backing the severity
+// summary, IOC, MITRE and key-event timeline.
+func dropHayabusaDuplicates(in []loadedFinding) []loadedFinding {
+	sigmaTitles := map[string]bool{}
+	for i := range in {
+		if strings.EqualFold(in[i].Source, "sigma") {
+			sigmaTitles[mergeTitleKey(in[i].Title)] = true
+		}
+	}
+	out := make([]loadedFinding, 0, len(in))
+	for i := range in {
+		if strings.EqualFold(in[i].Source, "hayabusa") && sigmaTitles[mergeTitleKey(in[i].Title)] {
+			continue // folded into the Sigma twin
+		}
+		out = append(out, in[i])
+	}
+	return out
+}
+
+// mergeHayabusaFindingRefs deduplicates the cluster finding refs in place using
+// the same Sigma-twin rule as dropHayabusaDuplicates, and decrements
+// TotalFindings by the number folded. Per-cluster scope: a Hayabusa/Sigma twin
+// pair always lands in the same temporal cluster (same events, same time).
+func mergeHayabusaFindingRefs(cs *tier2.CaseSynthesis) {
+	dropped := 0
+	for ci := range cs.Clusters {
+		refs := cs.Clusters[ci].FindingRefs
+		sigmaTitles := map[string]bool{}
+		for _, r := range refs {
+			if strings.EqualFold(r.Source, "sigma") {
+				sigmaTitles[mergeTitleKey(r.Title)] = true
+			}
+		}
+		kept := refs[:0]
+		for _, r := range refs {
+			if strings.EqualFold(r.Source, "hayabusa") && sigmaTitles[mergeTitleKey(r.Title)] {
+				dropped++
+				continue
+			}
+			kept = append(kept, r)
+		}
+		cs.Clusters[ci].FindingRefs = kept
+	}
+	if cs.TotalFindings -= dropped; cs.TotalFindings < 0 {
+		cs.TotalFindings = 0
+	}
 }
 
 func fileMeta(format, path string) OutputFile {
