@@ -1444,7 +1444,7 @@ async function startReport(caseID) {
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/report`, {
             language: $("#r_lang").value,
             only_approved: $("#r_approved").checked,
-            timezone: viewTZ(), // render report times in the Web UI display TZ
+            timezone: currentViewTZ(), // render report times in the Web UI display TZ
           });
           close(); toast("Report generation started", "success");
         } catch (e) { toast(e.message, "error"); }
