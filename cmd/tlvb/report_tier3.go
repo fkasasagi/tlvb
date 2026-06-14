@@ -33,6 +33,11 @@ func runReportTier3(caseID string, args []string) error {
 	tz := fs.String("timezone", "",
 		"report display timezone, IANA name (default: the case timezone). "+
 			"Events are stored UTC; this only changes rendered times.")
+	llmConsistency := fs.Bool("llm-consistency", false,
+		"run the advisory LLM consistency reviewer (flags free-text contradictions "+
+			"for Review Gate 2; costs tokens, never blocks or edits the report)")
+	model := fs.String("model", "",
+		"LLM model id for --llm-consistency (default: claude-opus-4-8)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,6 +82,8 @@ func runReportTier3(caseID string, args []string) error {
 		Organization:   *org,
 		Classification: *classification,
 		ToolVersion:    "TLVB " + version,
+		ConsistencyLLM: *llmConsistency,
+		Model:          *model,
 	})
 	if err != nil {
 		return err
@@ -93,6 +100,7 @@ func runReportTier3(caseID string, args []string) error {
 	for _, f := range rep.Files {
 		fmt.Printf("  [%-13s] %-60s  %d bytes\n", f.Format, f.Path, f.SizeBytes)
 	}
+	reportConsistencyIssues(rep.ConsistencyIssues)
 	return nil
 }
 
@@ -165,4 +173,51 @@ func loadReportCaseMeta(dbPath, caseID string) (*tier3.CaseMeta, string, string)
 		return nil, examiner, timezone
 	}
 	return meta, examiner, timezone
+}
+
+// reportConsistencyIssues prints the post-render consistency gate's result. A
+// clean report says so in one line; blockers/warnings are listed with the
+// reconciliation each needs, and a blocker is called out as a contradiction the
+// report should not ship with. The full record is in report_consistency.json.
+func reportConsistencyIssues(issues []tier3.ConsistencyIssue) {
+	if len(issues) == 0 {
+		fmt.Printf("  consistency check: ✓ no internal contradictions\n")
+		return
+	}
+	var blockers, warnings, advisory int
+	for _, is := range issues {
+		switch is.Severity {
+		case "blocker":
+			blockers++
+		case "advisory":
+			advisory++
+		default:
+			warnings++
+		}
+	}
+	switch {
+	case blockers > 0:
+		fmt.Printf("  consistency check: ⚠ %d blocker(s), %d warning(s), %d advisory — report is internally inconsistent\n",
+			blockers, warnings, advisory)
+	case warnings > 0:
+		fmt.Printf("  consistency check: %d warning(s), %d advisory\n", warnings, advisory)
+	default:
+		fmt.Printf("  consistency check: ✓ no deterministic contradictions; %d advisory (LLM, for Review Gate 2)\n", advisory)
+	}
+	for _, is := range issues {
+		src := is.Source
+		if src == "" {
+			src = "deterministic"
+		}
+		fmt.Printf("    [%s/%s] %s\n", is.Severity, src, is.Detail)
+		if is.ConflictsWith != "" {
+			fmt.Printf("        ↔ %s\n", is.ConflictsWith)
+		}
+		if is.Grounding != "" {
+			fmt.Printf("        裏取り: %s\n", is.Grounding)
+		}
+		if is.Resolution != "" {
+			fmt.Printf("        → %s\n", is.Resolution)
+		}
+	}
 }

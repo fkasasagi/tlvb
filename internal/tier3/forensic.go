@@ -60,6 +60,33 @@ func intrusionTechniques(cs tier2.CaseSynthesis) []string {
 	return out
 }
 
+// entryEquivalentBases lists, in entry-likelihood order, the parent technique
+// ids that ARE how an attacker got in when no initial-access technique is
+// confirmed: a successful brute force (T1110), valid-account abuse (T1078), or
+// an external remote service such as VPN/RDP (T1133). ATT&CK files these under
+// credential-access / lateral-movement, but a successful external login IS the
+// initial access — and the case narrative already treats it that way. Surfacing
+// them keeps the intrusion-path step from contradicting the conclusion.
+var entryEquivalentBases = []string{"T1110", "T1078", "T1133"}
+
+// entryEquivalentTechniques returns the confirmed entry-equivalent parent
+// technique ids (see entryEquivalentBases), in entry-likelihood order. Only
+// consulted when intrusionTechniques is empty. Sub-technique ids in the matrix
+// (e.g. T1110.001) are matched on their parent.
+func entryEquivalentTechniques(cs tier2.CaseSynthesis) []string {
+	confirmed := map[string]bool{}
+	for _, m := range cs.MITREMapping {
+		confirmed[baseTechnique(m.Technique)] = true
+	}
+	var out []string
+	for _, base := range entryEquivalentBases {
+		if confirmed[base] {
+			out = append(out, base)
+		}
+	}
+	return out
+}
+
 // baseTechnique strips a sub-technique suffix ("T1059.001" → "T1059") so the
 // plain-language lookups can be keyed by the parent technique.
 func baseTechnique(id string) string {
@@ -157,6 +184,7 @@ var intrusionExplain = map[string][2]string{
 	"T1190": {"外部に公開されたアプリやサーバの弱点(脆弱性)を突いて侵入する手口", "exploiting a vulnerability in an internet-facing app or server"},
 	"T1133": {"VPN やリモートデスクトップなど外部公開サービス経由で侵入する手口", "entering through external remote services such as VPN or RDP"},
 	"T1078": {"盗まれた正規の ID とパスワードでログインして侵入する手口", "logging in with stolen but otherwise legitimate credentials"},
+	"T1110": {"パスワードの総当たり(ブルートフォース)でログイン認証を突破して侵入する手口", "breaking in by brute-forcing the login password"},
 	"T1566": {"不正なメールやリンク(フィッシング)で利用者をだまして侵入する手口", "tricking a user with a phishing email or link"},
 	"T1189": {"改ざんされた Web サイトを閲覧しただけで侵入される手口(ドライブバイ)", "a drive-by compromise from visiting a booby-trapped website"},
 	"T1199": {"取引先や委託先など、信頼関係を悪用して侵入する手口", "abusing a trusted third-party relationship"},
@@ -204,17 +232,19 @@ func intrusionPhrase(id, lang string) string {
 func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	ja := lang != "en"
 
-	iaTechs := intrusionTechniques(cs)
-
-	var firstPhase, firstNarr string
-	if len(cs.Clusters) > 0 { // clusters are time-ordered by the Tier 2 runner
-		firstPhase = cs.Clusters[0].AttackPhase
-		firstNarr = cs.Clusters[0].Narrative
+	// 1. Confirmed initial-access techniques are the textbook entry vector.
+	// 2. Failing that, an entry-EQUIVALENT vector the case confirmed — a
+	//    successful brute force / valid-account abuse / external remote service.
+	//    These are how the attacker got in when nothing earlier is confirmed, and
+	//    the narrative already says so, so they must drive this step too (else it
+	//    contradicts the conclusion — the WinRM-spray case).
+	entryTechs := intrusionTechniques(cs)
+	if len(entryTechs) == 0 {
+		entryTechs = entryEquivalentTechniques(cs)
 	}
-
-	if len(iaTechs) > 0 {
+	if len(entryTechs) > 0 {
 		var phrases []string
-		for _, t := range iaTechs {
+		for _, t := range entryTechs {
 			phrases = append(phrases, intrusionPhrase(t, lang))
 		}
 		if ja {
@@ -223,6 +253,19 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 		}
 		return "The likely entry point was " + strings.Join(phrases, ", and ") +
 			". This is how the attacker most likely first got in."
+	}
+
+	// 3. No entry vector confirmed → fall back to the earliest NON-NOISE cluster's
+	// phase. Skip provisioning / benign clusters (they are not "the earliest
+	// attack"), and never assert timestamp order when the timeline is unreliable.
+	var firstPhase, firstNarr string
+	for _, c := range cs.Clusters { // clusters are time-ordered by the Tier 2 runner
+		if tier2.IsNoiseCluster(c.AttackPhase, c.Narrative) {
+			continue
+		}
+		firstPhase = c.AttackPhase
+		firstNarr = c.Narrative
+		break
 	}
 
 	if firstPhase == "initial-access" && firstNarr != "" {
@@ -234,6 +277,17 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 			return "侵入の起点を特定できる手がかりは得られませんでした。"
 		}
 		return "There was not enough evidence to determine how the attacker first got in."
+	}
+
+	if strings.EqualFold(cs.TimelineReliability, "unreliable") {
+		if ja {
+			return "確定した初期アクセスの痕跡は無く、かつ本ケースは時刻情報が信頼できない（クロックの巻き戻し等）ため、" +
+				"出来事の発生順から侵入経路を断定することはできません。観測された活動のうち比較的早い段階に現れたのは「" +
+				phaseLabelJA(firstPhase) + "」です。"
+		}
+		return "No initial-access technique was confirmed, and because this case has an unreliable clock " +
+			"(e.g. a time rollback), the order of events cannot establish the entry path. " +
+			"An early-stage phase among the observed activity was \"" + phaseLabelEN(firstPhase) + "\"."
 	}
 
 	if ja {
