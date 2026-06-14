@@ -98,6 +98,12 @@ Your ONLY job is to find INTERNAL CONTRADICTIONS:
 - two statements in the report that cannot both be true (e.g. "the entry point is unknown" vs "the attacker broke in via brute force from WS01"); or
 - a statement in the report's prose that the FINDINGS directly refute (e.g. asserting a tool/technique as fact that no finding supports, or naming a host/account/time that conflicts with the findings).
 
+PAY PARTICULAR ATTENTION to these recurring patterns (still apply the conservative, grounded rules below — only report a GENUINE conflict, and respect each pitfall):
+1. DWELL TIME vs UNRELIABLE TIMELINE — the prose states a specific dwell time or duration as fact (e.g. "the attacker was present for 3 days", "約40分後") while the TIMELINE RELIABILITY section says the timeline is unreliable / the clock was rolled back. A hard duration cannot be asserted on an unreliable clock. (A duration that is explicitly hedged as approximate/uncertain is NOT a contradiction.)
+2. CONTAINMENT vs RECOMMENDATIONS — the summary claims containment/eradication is already complete ("the threat was contained/removed/isolated") while the RECOMMENDATIONS still tell the reader to isolate / contain / reset credentials. Both cannot be true. (A summary that says containment status is unknown is NOT a contradiction.)
+3. COUNT vs TOTAL FINDINGS — a count in the prose contradicts the authoritative TOTAL FINDINGS / the FINDINGS list. PITFALL: event counts ("20 failed logons", "3 processes spawned") are NOT the finding count — they describe events, not findings. Only flag a real mismatch of the SAME quantity; never flag an event-count-vs-finding-count difference.
+4. HOST/ACCOUNT vs AFFECTED SCOPE — a host or account the prose names as compromised/affected is absent from the AFFECTED SCOPE, or the scope lists one the narrative never ties to the attack. PITFALL: a host named only as the SOURCE/origin of an attack, or one explicitly excluded as benign/uncertain, is NOT a scope omission.
+
 STRICT RULES:
 - Report a contradiction ONLY when two specific statements genuinely conflict. Do NOT report mere incompleteness, open questions, hedged language, or things that are simply "not mentioned". Missing information is not a contradiction.
 - GROUND every item: name the two conflicting statements (which sections) and, when the conflict is with evidence, cite the finding(s). If you cannot ground it, do not report it.
@@ -134,6 +140,8 @@ func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang string) stri
 	}
 	w("TECHNICAL SUMMARY", tech)
 	w("INTRUSION PATH (derived)", deriveIntrusionPath(cs, lang))
+	// Authoritative finding count for pattern #3 (count vs total findings).
+	w("TOTAL FINDINGS", fmt.Sprintf("%d", cs.TotalFindings))
 
 	if sv := deriveAffectedScope(cs, en, lang); sv != nil {
 		var sb strings.Builder
@@ -147,6 +155,21 @@ func buildReportDigest(cs tier2.CaseSynthesis, en *enrichment, lang string) stri
 			sb.WriteString("data at risk: " + strings.Join(sv.DataAtRisk, "; ") + "\n")
 		}
 		w("AFFECTED SCOPE (derived)", sb.String())
+	}
+
+	// Recommendations for pattern #2 (containment-complete vs still-recommend-isolate).
+	if rv := deriveRecommendations(cs, lang); rv != nil {
+		var rb strings.Builder
+		if len(rv.Containment) > 0 {
+			rb.WriteString("containment: " + strings.Join(rv.Containment, "; ") + "\n")
+		}
+		if len(rv.Eradication) > 0 {
+			rb.WriteString("eradication: " + strings.Join(rv.Eradication, "; ") + "\n")
+		}
+		if len(rv.Recovery) > 0 {
+			rb.WriteString("recovery: " + strings.Join(rv.Recovery, "; ") + "\n")
+		}
+		w("RECOMMENDATIONS (derived)", rb.String())
 	}
 
 	if cs.TimelineReliability != "" {

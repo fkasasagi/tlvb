@@ -82,13 +82,27 @@ func TestBuildReportDigest(t *testing.T) {
 	cs.Clusters[1].FindingRefs = []tier2.FindingRef{
 		{Source: "heuristic", RuleID: "TLVB-BRUTEFORCE-4625", Title: "Password brute force burst", Severity: "high"},
 	}
+	cs.TotalFindings = 7
 	d := buildReportDigest(cs, &enrichment{}, "ja")
 	for _, want := range []string{
 		"EXECUTIVE BRIEF", "INTRUSION PATH (derived)", "FINDINGS (ground truth)",
 		"TLVB-BRUTEFORCE-4625", "MITRE CONFIRMED", "T1110.001",
+		"TOTAL FINDINGS", "RECOMMENDATIONS (derived)",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("digest missing %q\n---\n%s", want, d)
+		}
+	}
+}
+
+// The advisory prompt must explicitly name the high-FP patterns we deliberately
+// route to the LLM (dwell-time, containment, counts, scope) so the model is
+// steered to look for them.
+func TestConsistencySystemPrompt_NamesAdvisoryPatterns(t *testing.T) {
+	p := consistencySystemPrompt("ja")
+	for _, want := range []string{"DWELL TIME", "CONTAINMENT", "COUNT vs TOTAL FINDINGS", "HOST/ACCOUNT vs AFFECTED SCOPE", "PITFALL"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt should name pattern %q", want)
 		}
 	}
 }
