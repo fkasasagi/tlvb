@@ -72,9 +72,12 @@ PARSER_VERSION = "prefetch_parser/3.0.0+altpf-primary"
 # be auditable per-case, and /opt/altpf is the SIFT-convention placement.
 ALTPF_BIN = "/opt/altpf/altpf"
 
-# Plaso fallback output. psteal manages the intermediate `.plaso` storage
-# internally; we only need to point at the final CSV destination.
+# Plaso fallback output. psteal writes an intermediate `.plaso` storage file
+# in addition to the `-w` CSV; without --storage_file it lands in the CWD as
+# <timestamp>-<source>.plaso and never gets cleaned up. We pin it into the
+# case workspace and delete it after the run — only the CSV is consumed.
 PLASO_CSV_NAME     = "prefetch_plaso.csv"
+PLASO_STORAGE_NAME = "prefetch.plaso"
 
 # UnifiedEvent output (case-DB-bound).
 DEFAULT_JSONL_NAME = "prefetch.jsonl"
@@ -190,15 +193,21 @@ def parse(req: ParseRequest) -> ParseResult:
     # Fallback: Plaso psteal.py (single-step extract + format)
     # =========================================================================
     plaso_csv = req.output_dir / PLASO_CSV_NAME
+    plaso_storage = req.output_dir / PLASO_STORAGE_NAME
     # psteal refuses to overwrite an existing -w target (rc=1). Pre-clean
     # the destination so re-parsing the same case doesn't trip this on the
     # fallback path. Same fix as srum_parser.py.
     if plaso_csv.exists():
         plaso_csv.unlink()
+    # Pin the intermediate storage into the case workspace (see comment on
+    # PLASO_STORAGE_NAME) and pre-clean it so log2timeline doesn't refuse a
+    # stale file from a previous run.
+    plaso_storage.unlink(missing_ok=True)
     psteal_cmd = [
         "psteal.py",
         "--source", str(req.input_path),
         "--parsers", "prefetch",
+        "--storage_file", str(plaso_storage),
         "-o", "dynamic",
         "-w", str(plaso_csv),
         "-q",
@@ -212,6 +221,7 @@ def parse(req: ParseRequest) -> ParseResult:
     cmd_str = " ".join(psteal_cmd)
 
     rc, stdout, stderr, elapsed = run_command(psteal_cmd, timeout=req.timeout_seconds)
+    plaso_storage.unlink(missing_ok=True)
     plaso_ok = rc == 0 and plaso_csv.exists()
 
     if plaso_ok:

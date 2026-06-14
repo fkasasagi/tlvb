@@ -5,7 +5,9 @@
 
 *日本語版: [README.ja.md](README.ja.md)*
 
-An autonomous IR agent that combines Sigma / Hayabusa / ATT&CK STIX rules with skills-driven anomaly detection to extract traces of an attack from Windows forensic artifacts, then has an LLM reconstruct the attack chain and emit HTML/CSV/JSON reports.
+An autonomous IR agent that combines Sigma / Hayabusa / ATT&CK STIX rules with skills-driven anomaly detection to extract traces of an attack from Windows disk-forensic artifacts, then has an LLM reconstruct the attack chain and emit HTML/CSV/JSON reports.
+
+**Scope — Windows disk forensics for incident response.** TLVB operates on **disk-resident** Windows artifacts (MFT, EVTX, registry, prefetch, amcache, shimcache, shellbags, jumplists, LNK, SRUM, browser history, web-server logs, …) acquired as a triage collection or disk image (E01 / raw / VMDK / VHD / VHDX). Live **memory forensics** and **network / packet (PCAP) forensics** are out of scope — memory- and Sysmon-dependent rules stay disabled unless those artifacts happen to be present in the evidence.
 
 ## Status
 
@@ -37,12 +39,45 @@ Tier 3   Reporter                                             🟢
 
 ## Usage
 
-```bash
-# First-time setup — this alone gets you to a working Tier 1A
-# (verifies prerequisites, creates .venv, runs go build, and imports the
-#  vendored rule SQL cache — all automatically)
-./scripts/setup.sh
+TLVB is driven primarily from its **Web UI** — an Examiner runs a whole
+investigation from the browser. The command line is there too, for scripting,
+headless/CI runs, and MCP integration.
 
+### 1. Setup (first time only)
+
+```bash
+# Verifies prerequisites, creates .venv, runs go build, and imports the vendored
+# rule SQL cache — this alone gets you to a working Tier 1A.
+./scripts/setup.sh
+```
+
+### 2. Run it from the Web UI (the main way to use TLVB)
+
+```bash
+./bin/tlvb serve --port 8080      # then open http://localhost:8080/
+                                  # remote / VM: http://<host-ip>:8080/
+```
+
+From the browser:
+
+- **Create a case** on the dashboard and point it at your evidence — a collector
+  `.zip`, a disk image (E01 / raw / VMDK / VHD / VHDX), or a triage directory.
+- **🤖 Autopilot** runs the whole pipeline (Tier 0 parse → 1A → 1B → 2 → 3) end to
+  end in a single click — or drive each stage yourself with its own **Parse /
+  Analyze / Synthesize / Report** button, each with a live progress bar + ETA.
+- **Review Gates** are built into the tabs: approve/reject parse results in
+  **Events** (Gate 0), signature + anomaly findings in **Findings** (Gate 1A —
+  severity-based auto-approve + one-click bulk approval), and the reconstructed
+  attack timeline in **Timeline** (Gate 2).
+- **Read and download the report** (HTML / CSV / JSON) from the **Report** tab;
+  **IOCs**, the **MITRE ATT&CK** map, and the per-tier **Audit** trail each get
+  their own tab. The original evidence is never modified.
+
+See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the screen-by-screen guide.
+
+### 3. Or from the command line (scripting / automation / headless)
+
+```bash
 # Run every tier in one command (evidence location is up to you:
 #  zip / disk image / triage directory). Tier 2's self-correcting,
 #  re-sequencing active-search agent (the autonomy showcase: it fixes its own
@@ -64,9 +99,8 @@ Tier 3   Reporter                                             🟢
 git submodule update --init --recursive          # Sigma / Hayabusa / mitre-attack
 ./bin/tlvb rules build --max-rules 100
 
-# Web UI / MCP server
-./bin/tlvb serve --port 8080     # http://localhost:8080
-./bin/tlvb mcp-serve              # connect from an MCP client over stdio
+# Read-only MCP server (Tier 0): connect from an MCP client over stdio
+./bin/tlvb mcp-serve
 ```
 
 TLVB is **API-first**: configure your LLM transport once in a `.env.local` at the repository root. TLVB reads it at startup for every subcommand. Use the **Anthropic API** (`ANTHROPIC_API_KEY`) or **Vertex AI** (Anthropic on Google Cloud, via a service-account key).

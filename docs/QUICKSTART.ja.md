@@ -7,12 +7,20 @@ SIFT Workstation を主な前提にしていますが、Linux が
 すべてのコマンドは **このリポジトリのクローン先で(リポジトリのルート)** 実行する前提で書いています。
 本文中のパスはすべてリポジトリルート相対表記です。
 
+**TLVB は基本 Web UI で操作するツールです。** 初回セットアップ(0a/0b)が済んだら、
+一番手っ取り早いのは下の **「Web UI で全部やる」** 節です — ブラウザでケースを作って
+🤖 Autopilot に任せるだけ。続く番号付きの Step 1〜7 は同じパイプラインを
+**コマンドライン**から動かす手順(スクリプト化・ヘッドレス/CI 実行・MCP 連携・低レベルな
+中身の確認向け)です。画面ごとの GUI ツアーは [`USER_GUIDE.ja.md`](USER_GUIDE.ja.md) を参照。
+
 所要時間の目安:
 
 | 項目 | 時間 | LLM 呼び出し |
 |---|---|---|
 | 0a. ビルド + ヘルプ確認 | 2 分 | なし |
 | 0b. サンプル EVTX を取得 | 1 分 | なし |
+| ▶ **Web UI で全部やる(推奨)** | 10–35 分 | あり (Tier 1B + Tier 2) |
+| — または コマンドラインから — | | |
 | 1. MCP サーバ経由で覗く | 5 分 | なし |
 | 2. Review Gate 1 を体験する | 5 分 | なし(Step 4 か 5 完了が前提) |
 | 3. 小さい新規ケースで `analyze --tier 1a` (任意で 1b) | 5–10 分 | Tier 1A なし / 1B 1 回 |
@@ -128,6 +136,62 @@ ls "$EVTX_DIR/Persistence/" | head -3
 > `C:\Windows\System32\winevt\Logs\` から取ってきた evtx でも構いません。
 
 ---
+
+## Web UI で全部やる(推奨)
+
+TLVB の主たる使い方は Web UI です — Examiner はブラウザから調査一式を回します。
+まずサーバを起動:
+
+```bash
+./bin/tlvb serve --port 8080
+# → ブラウザで http://localhost:8080/ を開く
+# → リモート / VM 外からは http://<VM-IP>:8080/   (IP は `ip a` で確認)
+```
+
+`.env.local` を置いておけば(上の「認証情報を設定する」参照)、ブラウザ UI も同じ
+Anthropic / Vertex の認証情報を自動で拾います — 追加設定は不要です。
+
+### 最短ルート — 🤖 Autopilot(ワンクリック)
+
+1. **ダッシュボード**で **New case** をクリックし、ケース ID / 名前 / examiner を
+   入力して作成。
+2. ケースページで **🤖 Autopilot** をクリックし、証拠(0b のサンプル
+   `EVTX-ATTACK-SAMPLES` ディレクトリ、collector の `.zip`、ディスクイメージのいずれか)
+   を指定して開始。
+3. Autopilot が **Tier 0 parse → 1A → 1B → 2 → 3** を一気通貫実行し(両 Review Gate は
+   自動スキップ)、findings・攻撃タイムライン・ダウンロード可能な HTML/CSV/JSON
+   レポートまで仕上げます。進捗は **Status** タブでライブ表示。
+
+### レビュー付きルート — Review Gate を挟んで段階実行
+
+各段を自分で確認して findings を人間が承認したい場合は、Autopilot の代わりに
+ケースヘッダの各ステージボタンを使います:
+
+1. **Parse** — 証拠パスを指定すると Tier 0 がイベントを抽出・正規化。**Events** タブで
+   パース済みアーティファクトを承認/却下(**Review Gate 0**)、または「Skip all」。
+2. **Analyze** — Tier 1A(キャッシュ署名 SQL、LLM 無し)を実行し、チェックボックスで
+   Tier 1B(異常ハンター、LLM)も。結果は **Findings** タブでトリアージ
+   (**Review Gate 1A**): finding 単位で承認/却下、または MITRE クラスタ丸ごと一括承認。
+   critical/high はレビュー必須、それ以外は自動承認。
+3. **Synthesize** — Tier 2 が findings をクラスタリングしてクラスタ毎の攻撃ナラティブを
+   生成。**Active search** にチェックを入れると自己修正エージェントが open questions を
+   SQL で深掘り。**Timeline** タブでエントリを承認/却下(**Review Gate 2**)。
+4. **Report** — Tier 3 がレポートを生成。**Report** タブでインライン表示し、
+   HTML / CSV / JSON をダウンロード(言語選択、任意で「承認済みのみ」)。
+
+その他のタブ: **IOCs** と **MITRE ATT&CK** マップがケースを要約、**Audit** が各 finding の
+Tier 別の「なぜ」を表示、浮動 **💬** ボタンで TLVB Assistant チャット。ダッシュボードからは
+**evidence 単位の表示タイムゾーン**設定や、ケースの `.fcz` アーカイブ **export/import** も可能。
+
+画面ごとの完全ガイドは [`USER_GUIDE.ja.md`](USER_GUIDE.ja.md) を参照。
+
+---
+
+## コマンドラインから(スクリプト・自動化・MCP)
+
+上の Web UI だけで調査一式は完結します。以下の番号付き手順は同じパイプライン
+(と MCP サーバ・legacy レビュー TUI などの追加機能)を**コマンドライン**から動かす
+ものです — スクリプト化・ヘッドレス/CI 実行・MCP 連携のときに使ってください。
 
 ## 1. MCP サーバ経由でケースを覗く (LLM 呼び出しなし)
 
@@ -416,24 +480,12 @@ CASE=MY-FULL-001    # 自分のケース ID
 
 ---
 
-## 7. Web UI で全部やる
+## 7. Web UI
 
-CLI ではなく WebUI を使う場合:
-
-```bash
-./bin/tlvb serve --port 8080
-# → ブラウザで http://localhost:8080/
-# → リモート(VM 外)からアクセスする場合は http://<VM-IP>:8080/
-```
-
-WebUI 側では:
-- 新規ケース作成 → Parse → Analyze All → Synthesize → Generate Report が
-  4 ボタンで一直線(各ボタンの右に進捗バー + ETA)
-- Findings タブで Approve / Reject(= Review Gate 1)
-- Events タブで Review Gate 0(parse 結果の承認)
-- 浮動 💬 ボタンで TLVB Assistant チャット
-
-詳細は `docs/USER_GUIDE.md` 参照。
+Web UI はこのガイドの冒頭で解説しています — **「Web UI で全部やる(推奨)」** を
+参照してください。同じパイプライン(parse → analyze → synthesize → report)を
+各タブに内蔵した Review Gate 付きで回せ、ワンクリック一気通貫の 🤖 Autopilot も
+あります。画面ごとの完全ガイドは [`USER_GUIDE.ja.md`](USER_GUIDE.ja.md)。
 
 ---
 

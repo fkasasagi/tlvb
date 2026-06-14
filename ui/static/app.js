@@ -171,7 +171,9 @@ const VIEW_TZ_EVIDENCE = "__evidence__"; // sentinel: use each evidence's zone
 let TZ_CTX = { caseTZ: "UTC", evidence: {} }; // {evidence_id: IANA zone}
 
 function currentViewTZ() {
-  return localStorage.getItem("tlvb_view_tz") || VIEW_TZ_EVIDENCE;
+  // Default to UTC so timestamps are unambiguous until the examiner explicitly
+  // picks a zone (per-evidence or a forced IANA zone). The choice persists.
+  return localStorage.getItem("tlvb_view_tz") || "UTC";
 }
 function setViewTZ(v) {
   localStorage.setItem("tlvb_view_tz", v);
@@ -319,14 +321,15 @@ window.addEventListener("DOMContentLoaded", () => {
     sel.value = currentLocale();
     sel.addEventListener("change", (e) => setLocale(e.target.value));
   }
-  // Display-timezone switcher: "Evidence-local" (per-evidence) + IANA zones.
+  // Display-timezone switcher: "Per-evidence (configured)" (each evidence's
+  // examiner-configured zone — not auto-detected) + IANA zones.
   const tzSel = document.getElementById("tz-switcher");
   if (tzSel) {
     const mk = (value, text) => {
       const o = document.createElement("option");
       o.value = value; o.textContent = text; return o;
     };
-    tzSel.appendChild(mk(VIEW_TZ_EVIDENCE, "🕓 Evidence-local"));
+    tzSel.appendChild(mk(VIEW_TZ_EVIDENCE, "🕓 Per-evidence (configured)"));
     tzSel.appendChild(mk("UTC", "UTC"));
     supportedTimezones().forEach((z) => { if (z !== "UTC") tzSel.appendChild(mk(z, z)); });
     tzSel.value = currentViewTZ();
@@ -2759,55 +2762,78 @@ async function renderTimeline(pane, caseID) {
   rows.forEach((t) => {
     const aid = t.audit_id || "";
     const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
+    // Review-state chip — same visual language as the findings gate
+    // (✓ 承認済 / ✕ 却下 / 未レビュー), carrying reviewer / reason in its title.
     const stateClass = {
       approved: "approved", rejected: "rejected",
-      skipped:  "pending",  pending:  "pending",
+      skipped:  "approved", pending:  "pending",
     }[rev.state] || "pending";
-    const stateBadge = h("span", { class: "badge " + stateClass, title: rev.reason || "" }, rev.state || "pending");
+    const stateText = {
+      approved: "✓ 承認済", rejected: "✕ 却下",
+      skipped:  "✓ auto",  pending:  "未レビュー",
+    }[rev.state] || "未レビュー";
+    const stateTitle = rev.state === "rejected"
+      ? (rev.reason ? "却下理由: " + rev.reason : "却下")
+      : (rev.reviewed_by ? "reviewed by " + rev.reviewed_by + (rev.reviewed_at ? " · " + fmtTS(rev.reviewed_at) : "") : "");
+    const stateBadge = h("span", { class: "badge " + stateClass, title: stateTitle }, stateText);
     const sev = tlSeverity(t.severity);
 
-    const action = h("div", { class: "row timeline-action", style: "gap: 4px;" });
+    // Action cell — mirrors the findings review controls (rebuildActionButtons):
+    // a decision is never frozen. approved → 却下/リセット, rejected → 承認/リセット,
+    // pending → 承認/却下. リセット clears the prior decision back to pending.
+    const action = h("div", { class: "row timeline-action", style: "gap: 4px; align-items: center;" });
     if (!aid) {
       action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" }, "(no audit_id)"));
-    } else if (rev.state === "approved" || rev.state === "rejected") {
-      action.appendChild(h("span", { class: "muted", style: "font-size: 10px;" },
-        (rev.reviewed_by || "?") + " · " + fmtTS(rev.reviewed_at).slice(0, 16)));
     } else {
-      action.appendChild(h("button", {
-        style: "padding: 1px 8px; font-size: 10px;",
-        onclick: async (ev) => {
+      const post = async (verb, okMsg) => {
+        try {
+          await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/${verb}`);
+          toast(okMsg + " " + aid.slice(0, 8), "success");
+          await renderTimeline(pane, caseID);
+        } catch (e) { toast(e.message, "error"); }
+      };
+      const approveBtn = () => h("button", {
+        class: "fbtn",
+        onclick: (ev) => { ev.stopPropagation(); post("approve", "承認"); },
+      }, "承認");
+      const rejectBtn = () => h("button", {
+        class: "fbtn danger",
+        onclick: (ev) => {
           ev.stopPropagation();
-          try {
-            await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/approve`);
-            toast("Approved " + aid.slice(0, 8), "success");
-            await renderTimeline(pane, caseID);
-          } catch (e) { toast(e.message, "error"); }
-        },
-      }, "Approve"));
-      action.appendChild(h("button", {
-        class: "danger",
-        style: "padding: 1px 8px; font-size: 10px;",
-        onclick: (clickEv) => {
-          clickEv.stopPropagation();
           const close = modal([
-            h("h3", {}, "Reject timeline entry"),
+            h("h3", {}, "却下 — timeline entry"),
             h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
-            h("div", { class: "form-row" }, [h("label", {}, "Reason"),
-              h("input", { id: "tl_reason", placeholder: "why is this entry not relevant?" })]),
+            h("div", { class: "form-row" }, [h("label", {}, "理由"),
+              h("input", { id: "tl_reason", value: rev.reason || "", placeholder: "why is this entry not relevant?" })]),
             h("div", { class: "actions" }, [
-              h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+              h("button", { class: "ghost", onclick: () => close() }, "キャンセル"),
               h("button", { class: "danger", onclick: async () => {
                 try {
                   await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/reject`,
                     { reason: $("#tl_reason").value.trim() });
-                  close(); toast("Rejected " + aid.slice(0, 8), "success");
+                  close(); toast("却下 " + aid.slice(0, 8), "success");
                   await renderTimeline(pane, caseID);
                 } catch (e) { toast(e.message, "error"); }
-              }}, "Reject"),
+              }}, "却下"),
             ]),
           ]);
         },
-      }, "Reject"));
+      }, "却下");
+      const resetBtn = () => h("button", {
+        class: "fbtn",
+        title: "判断を取り消して未レビューに戻す",
+        onclick: (ev) => { ev.stopPropagation(); post("reset", "リセット"); },
+      }, "リセット");
+      if (rev.state === "approved") {
+        action.appendChild(rejectBtn());
+        action.appendChild(resetBtn());
+      } else if (rev.state === "rejected") {
+        action.appendChild(approveBtn());
+        action.appendChild(resetBtn());
+      } else {
+        action.appendChild(approveBtn());
+        action.appendChild(rejectBtn());
+      }
     }
 
     // Detail row — built lazily on first expand, hidden until then.

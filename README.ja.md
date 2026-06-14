@@ -6,8 +6,15 @@
 *English: [README.md](README.md)*
 
 Sigma / Hayabusa / ATT&CK STIX / skills-driven anomaly detection を組み合わせて、
-Windows フォレンジック・アーティファクトから攻撃の痕跡を抽出し、
+Windows のディスクフォレンジック・アーティファクトから攻撃の痕跡を抽出し、
 LLM が攻撃チェーンを再構成して HTML/CSV/JSON レポートまで吐く自律型 IR エージェント。
+
+**スコープ — Windows インシデント対応のディスクフォレンジック。** TLVB が対象とするのは
+**ディスク常駐**の Windows アーティファクト(MFT / EVTX / レジストリ / prefetch / amcache /
+shimcache / shellbags / jumplists / LNK / SRUM / ブラウザ履歴 / Web サーバログ 等)で、
+triage 収集物またはディスクイメージ(E01 / raw / VMDK / VHD / VHDX)として取得したものを解析する。
+ライブの**メモリフォレンジック**や**ネットワーク / パケット(PCAP)フォレンジック**は対象外
+(メモリ・Sysmon 依存ルールは、当該アーティファクトが証拠に含まれていない限り無効のまま)。
 
 ## 状態
 
@@ -40,13 +47,49 @@ Tier 3   Reporter                                             🟢
 
 ## 使い方
 
-```bash
-# 初回セットアップ — これだけで Tier 1A まで動く状態になる
-# (依存検証 + .venv 作成 + go build + vendored ルール SQL cache の import を自動実行)
-./scripts/setup.sh
+TLVB は基本 **Web UI** で操作するツールです — Examiner はブラウザから調査一式を回します。
+コマンドラインも用意していますが、こちらはスクリプト化・ヘッドレス/CI 実行・MCP 連携向けです。
 
-# 1 コマンドで全 Tier 実行 (証拠の置き場所は任意: zip / ディスクイメージ / triage ディレクトリ)
-./bin/tlvb run MY-CASE-001 --tier all --evidence /path/to/triage.zip --active-search
+### 1. セットアップ (初回のみ)
+
+```bash
+# 依存検証 + .venv 作成 + go build + vendored ルール SQL cache の import を自動実行。
+# これだけで Tier 1A まで動く状態になる。
+./scripts/setup.sh
+```
+
+### 2. Web UI で動かす (主たる使い方)
+
+```bash
+./bin/tlvb serve --port 8080      # ブラウザで http://localhost:8080/ を開く
+                                  # リモート / VM 外からは http://<host-ip>:8080/
+```
+
+ブラウザ上で:
+
+- **ダッシュボードでケースを作成**し、証拠を指定する — collector の `.zip`、
+  ディスクイメージ (E01 / raw / VMDK / VHD / VHDX)、または triage ディレクトリ。
+- **🤖 Autopilot** で全パイプライン (Tier 0 parse → 1A → 1B → 2 → 3) をワンクリック
+  一気通貫実行。あるいは **Parse / Analyze / Synthesize / Report** の各ボタンで
+  段階実行も可能(各ボタンにライブ進捗バー + ETA)。
+- **Review Gate** は各タブに内蔵: **Events** タブで parse 結果を承認/却下 (Gate 0)、
+  **Findings** タブで署名 + 異常 findings (Gate 1A — 重要度ベース自動承認 +
+  クラスタ単位のワンクリック一括承認)、**Timeline** タブで再構成した攻撃タイムライン
+  (Gate 2)。
+- **レポートの閲覧とダウンロード** (HTML / CSV / JSON) は **Report** タブから。
+  **IOCs**・**MITRE ATT&CK** マップ・Tier 別の **Audit** トレイルもそれぞれ専用タブ。
+  元の証拠は一切変更しません。
+
+画面ごとの詳細は [`docs/USER_GUIDE.ja.md`](docs/USER_GUIDE.ja.md) を参照。
+
+### 3. または コマンドラインから (スクリプト / 自動化 / ヘッドレス)
+
+```bash
+# 1 コマンドで全 Tier 実行 (証拠の置き場所は任意: zip / ディスクイメージ / triage ディレクトリ)。
+# Tier 2 の自己修正・再シーケンス active-search エージェント (自律性の見せ場: 失敗クエリを
+# 自分で直し、0 件のときは別仮説へ pivot する) は既定 ON。安価・非エージェント実行は
+# --no-active-search を付ける。
+./bin/tlvb run MY-CASE-001 --tier all --evidence /path/to/triage.zip
 
 # 段階的に走らせる場合 (Tier 1A の SQL cache は setup.sh が import 済み)
 ./bin/tlvb case init --case-id MY-CASE-001 --name "Sep IR" --examiner alice
@@ -61,9 +104,8 @@ Tier 3   Reporter                                             🟢
 git submodule update --init --recursive          # Sigma / Hayabusa / mitre-attack
 ./bin/tlvb rules build --max-rules 100
 
-# Web UI / MCP server
-./bin/tlvb serve --port 8080     # http://localhost:8080
-./bin/tlvb mcp-serve              # stdio で MCP クライアントから接続
+# read-only MCP サーバ (Tier 0): stdio で MCP クライアントから接続
+./bin/tlvb mcp-serve
 ```
 
 TLVB は **API ファースト**:LLM トランスポートはリポジトリルートの `.env.local`

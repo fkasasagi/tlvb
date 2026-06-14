@@ -190,6 +190,20 @@ or any visible `MFT` rows) for:
 Cite the suspect `audit_id`s. Reference: SANS DFIR blog on timestamp
 manipulation (Magnet Forensics NTFS Timestamp Mismatch).
 
+**Attribution discipline (do NOT over-call timestomp / clock tampering):**
+A clock that jumps backward, an `Original Install Date` later than the
+activity, or events whose record order disagrees with their timestamps is
+**most often a provisioning artifact** (a VM/image built with a future date
+then corrected with `Set-Date`, or W32Time stepping the clock) — NOT an
+attacker. Only attribute `T1070.006` or "the attacker changed the clock"
+when you have **corroboration**: a Security `4616` (system time change)
+whose **Subject is an interactive/attacker context** — explicitly NOT
+`LOCAL SERVICE` (`S-1-5-19`), `SYSTEM` (`S-1-5-18`), or W32Time — or a
+time-change API called from a process already established as attacker-run.
+Absent that, record the inconsistency as "timeline unreliable / re-anchor
+required (likely provisioning)" in an open question, and do **not** invent a
+re-intrusion or second phase to explain the reordering.
+
 ### 11. Multi-host correlation (`multi_host_correlation`)
 
 If `host_count >= 2`:
@@ -285,6 +299,17 @@ its own.
 - **Do not invent technique IDs**. If you see a behaviour, refer to
   it by the closest Tier 1 finding_id rather than inventing
   `T1234.567`.
+- **Do not name a tool you cannot see.** Never assert a specific
+  offensive tool (e.g. Mimikatz, Cobalt Strike) or a technique (web
+  shell, Pass-the-Hash) unless an input finding/evidence supports it.
+  A `comsvcs.dll` / LOLBin LSASS dump is **not** Mimikatz; say
+  "credential-dump attempt via LOLBin". If unsupported, omit it or put
+  it in an open question — do not put it in `mitre_techniques`.
+- **Logon classification.** A burst of failed logons (`4625`) against
+  one account followed by a success (`4624`) is **password guessing /
+  brute force (`T1110.001`)**, not Pass-the-Hash. Only call
+  `T1550.002` (Pass-the-Hash) when there is concrete hash-theft / hash-use
+  evidence; a successful NTLM logon alone is **password authentication**.
 - **Acknowledge gaps** rather than infer (industry standard).
 - **No actor attribution**. Stay at the technique level.
 - **Stay within the window**: do not speculate about events before

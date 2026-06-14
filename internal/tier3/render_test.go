@@ -91,10 +91,10 @@ func TestRenderHTML(t *testing.T) {
 		"T1059.001", "T1003.001", "Encoded PS", "Mimikatz Execution",
 		"RDP from public IP",
 		"who is the source IP?",
-		"エグゼクティブサマリ",                   // JA dict
-		"2. 侵入経路 (Intrusion Path)",     // rule-derived; present whenever clusters exist
-		"9. 今後の推奨事項 (Recommendations)", // rule-derived; present from generic items
-		"MITRE ATT&amp;CK",             // template encodes & → &amp;
+		"エグゼクティブサマリ",                // JA dict
+		"侵入経路 (Intrusion Path)",     // rule-derived; present whenever clusters exist
+		"今後の推奨事項 (Recommendations)", // rule-derived; present from generic items
+		"MITRE ATT&amp;CK",          // template encodes & → &amp;
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("HTML missing %q", want)

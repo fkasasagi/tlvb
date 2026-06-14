@@ -54,6 +54,7 @@ PARSER_VERSION = "srum_parser/2.0.0+plaso-primary"
 SRUMECMD_DLL = "/opt/zimmermantools/SrumECmd.dll"
 DEFAULT_JSONL_NAME = "srum.jsonl"
 PLASO_CSV_NAME     = "srum_plaso.csv"
+PLASO_STORAGE_NAME = "srum.plaso"
 
 # SrumECmd emits one CSV per known SRUM table.
 _CSV_TABLES = ("NetworkUsages", "ApplicationResourceUsage", "NetworkConnections",
@@ -77,6 +78,7 @@ def parse(req: ParseRequest) -> ParseResult:
     # Primary: Plaso psteal with esedb/srum plugin (Linux-capable)
     # =========================================================================
     plaso_csv = req.output_dir / PLASO_CSV_NAME
+    plaso_storage = req.output_dir / PLASO_STORAGE_NAME
     # psteal (Plaso 20240308+) refuses to overwrite an existing -w target
     # with `ERROR: Output file ... already exists` (rc=1). Re-parsing the
     # same case would always trip this. Pre-clean the destination so we
@@ -84,10 +86,17 @@ def parse(req: ParseRequest) -> ParseResult:
     # case so we're not stomping on anything we don't manage.
     if plaso_csv.exists():
         plaso_csv.unlink()
+    # psteal writes an intermediate .plaso storage file in addition to the
+    # `-w` CSV. Without --storage_file it lands in the CWD as
+    # <timestamp>-<source>.plaso and accumulates forever (51 of these piled
+    # up at the repo root by 2026-06-14). Pin it inside the case workspace
+    # and delete it after the run — we only ever consume the CSV.
+    plaso_storage.unlink(missing_ok=True)
     psteal_cmd = [
         "psteal.py",
         "--source", str(req.input_path),
         "--parsers", "esedb/srum",
+        "--storage_file", str(plaso_storage),
         "-o", "dynamic",
         "-w", str(plaso_csv),
         "-q",
@@ -100,6 +109,7 @@ def parse(req: ParseRequest) -> ParseResult:
     cmd_str = " ".join(psteal_cmd)
 
     rc, stdout, stderr, elapsed = run_command(psteal_cmd, timeout=req.timeout_seconds)
+    plaso_storage.unlink(missing_ok=True)
     plaso_ok = (
         rc == 0 and plaso_csv.is_file()
         and _csv_row_count(plaso_csv) > 0
