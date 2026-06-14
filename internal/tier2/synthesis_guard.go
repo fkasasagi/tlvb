@@ -292,8 +292,13 @@ func findingTechniqueSet(findings []Finding) map[string]bool {
 // values.
 type groundingContext struct {
 	// HasWebArtifact is true when the case contains any web-server artifact
-	// (IIS/Apache/nginx/Tomcat). A web shell / public-facing-app exploit cannot
-	// be confirmed without one.
+	// (IIS/Apache/nginx/Tomcat) OR a web-server document root / live config on
+	// disk (MFT shows inetpub\wwwroot, htdocs, webapps, or a live
+	// applicationHost.config). A web shell / public-facing-app exploit cannot be
+	// confirmed without one. The on-disk signal is independent of whether web
+	// *logs* were parsed, so the corroboration holds even when no web-log parser
+	// ran (the distrib_winrm_spray case had neither web logs nor a web root —
+	// the "web shell" was a LIKE-wildcard FP on an unrelated PnP event).
 	HasWebArtifact bool
 	// BruteForcedAccounts is the set of accounts (lowercased, domain-stripped)
 	// for which a 4625 burst was detected — i.e. whose successful logon is
@@ -315,6 +320,67 @@ var webServerArtifacts = map[string]bool{
 func containsWebArtifact(arts []string) bool {
 	for _, a := range arts {
 		if webServerArtifacts[strings.ToLower(strings.TrimSpace(a))] {
+			return true
+		}
+	}
+	return false
+}
+
+// webRootMarkers are case-insensitive ParentPath substrings that mark a genuine
+// web-server document root on disk (MFT). They are matched only after the OS
+// component store is excluded (see pathIndicatesWebServer), so a dormant
+// framework skeleton never counts.
+// Matched with strings.Contains, so no trailing separator — the marker must hit
+// whether the directory is the path's last segment (a file sitting directly in
+// it) or an intermediate one.
+var webRootMarkers = []string{
+	`\inetpub\wwwroot`, // IIS default site root
+	`\htdocs`,          // Apache document root
+	`\webapps`,         // Tomcat web applications
+	`\nginx\html`,      // nginx default root
+}
+
+// osComponentStoreMarkers are ParentPath fragments under which Windows ships a
+// DORMANT ASP.NET / IIS skeleton (the .NET Framework's ASP.NETWebAdminFiles, the
+// WinSxS component store, servicing packages, catalog signatures). Files here are
+// never a served web site, so a path under any of them is rejected before the
+// web-root / config tests. This is what lets the MFT signal reject the .aspx /
+// applicationHost.config template noise present on every Windows Server.
+var osComponentStoreMarkers = []string{
+	`\winsxs\`,
+	`\servicing\`,
+	`\catroot`,
+	`\microsoft.net\`,
+	`\assembly\`,
+}
+
+// pathIndicatesWebServer reports whether an MFT (ParentPath, FileName) pair
+// evidences a live web server: a document root, or a live IIS site config
+// (applicationHost.config outside the component store). Pure + case-agnostic so
+// it is unit-tested directly.
+func pathIndicatesWebServer(parentPath, fileName string) bool {
+	pp := strings.ToLower(parentPath)
+	// OS component store / servicing — never a live web root or config.
+	for _, m := range osComponentStoreMarkers {
+		if strings.Contains(pp, m) {
+			return false
+		}
+	}
+	// A live IIS site config lives at \Windows\System32\inetsrv\config, so it is
+	// matched BEFORE the \Windows exclusion below. The WinSxS template was already
+	// rejected by the component-store check.
+	if strings.EqualFold(strings.TrimSpace(fileName), "applicationHost.config") {
+		return true
+	}
+	// A genuine web-server document root is never under C:\Windows — that is OS
+	// territory. Windows itself ships web-shaped folders there (e.g. the
+	// CloudExperienceHost's \Windows\SystemApps\...\webapps UI), which must NOT be
+	// read as a served site. Real roots live at C:\inetpub, C:\Apache24, etc.
+	if strings.Contains(pp, `\windows\`) {
+		return false
+	}
+	for _, m := range webRootMarkers {
+		if strings.Contains(pp, m) {
 			return true
 		}
 	}
@@ -393,6 +459,210 @@ func bruteForcedAccountsOf(findings []Finding) map[string]bool {
 				if n := normUser(u); n != "" {
 					out[n] = true
 				}
+			}
+		}
+	}
+	return out
+}
+
+// ----------------------------------------------------------------------------
+// Closing the corroboration loop: once the deterministic layer judges an
+// FP-prone claim uncorroborated, that verdict must reach the human-facing parts
+// of the report — the narrative and the open questions — not just the MITRE
+// metadata. Otherwise the prose still asserts a "web shell detection" and an open
+// question still asks an analyst to hunt for its hash, exactly the gap the
+// distrib_winrm_spray report showed. These functions feed the verdict back.
+// ----------------------------------------------------------------------------
+
+// corroborationGatedClaim links an FP-prone claim to the techniques whose
+// demotion means the case does not corroborate it, plus the prose aliases that
+// signal the claim is being asserted or asked about. The technique→demotion
+// predicate is techniqueDemotionReason (single source of truth); this table only
+// adds the prose vocabulary needed to reach the narrative / open questions.
+type corroborationGatedClaim struct {
+	label      string
+	techniques []string
+	aliases    []string // lowercase phrases, ja + en
+}
+
+var corroborationGatedClaims = []corroborationGatedClaim{
+	{
+		label:      "Web shell",
+		techniques: []string{"T1190", "T1505.003"},
+		aliases:    []string{"web shell", "webshell", "ウェブシェル", "web シェル", "webシェル"},
+	},
+	{
+		label:      "Pass-the-Hash",
+		techniques: []string{"T1550.002"},
+		aliases:    []string{"pass-the-hash", "pass the hash", "passthehash", "パスザハッシュ", "パス・ザ・ハッシュ"},
+	},
+	{
+		label:      "attacker timestomp",
+		techniques: []string{"T1070.006"},
+		aliases:    []string{"timestomp", "タイムスタンプ改ざん", "タイムスタンプの改ざん", "時刻改ざん", "タイムスタンプ改変"},
+	},
+}
+
+// uncorroboratedClaimAliases returns, for the live run, the aliases of every
+// corroboration-gated claim the case does NOT corroborate (per groundingContext).
+// Keyed by label. An empty result means nothing to reframe.
+func uncorroboratedClaimAliases(ctx groundingContext) map[string][]string {
+	out := map[string][]string{}
+	for _, c := range corroborationGatedClaims {
+		for _, t := range c.techniques {
+			if _, demote := techniqueDemotionReason(t, ctx, false); demote {
+				out[c.label] = c.aliases
+				break
+			}
+		}
+	}
+	return out
+}
+
+// uncorroboratedClaimAliasesFromTechniques is the regenerate-path counterpart: it
+// derives the same map from an already-demoted technique set (cs.MITREUnconfirmed),
+// since RegenerateOverall reads a stored synthesis instead of recomputing
+// groundingContext.
+func uncorroboratedClaimAliasesFromTechniques(unconfirmed []MITREEntry) map[string][]string {
+	set := map[string]bool{}
+	for _, e := range unconfirmed {
+		set[strings.TrimSpace(e.Technique)] = true
+	}
+	out := map[string][]string{}
+	for _, c := range corroborationGatedClaims {
+		for _, t := range c.techniques {
+			if set[t] {
+				out[c.label] = c.aliases
+				break
+			}
+		}
+	}
+	return out
+}
+
+// matchUncorroboratedClaim returns the label of the (single) uncorroborated claim
+// a question mentions, or "" if none. First match wins.
+func matchUncorroboratedClaim(question string, aliases map[string][]string) string {
+	low := strings.ToLower(question)
+	for _, c := range corroborationGatedClaims { // deterministic order
+		al, ok := aliases[c.label]
+		if !ok {
+			continue
+		}
+		for _, a := range al {
+			if strings.Contains(low, a) {
+				return c.label
+			}
+		}
+	}
+	return ""
+}
+
+// resolvedClaimStatement is the deterministic note that REPLACES an open question
+// asking to confirm/locate an uncorroborated claim. It states the verdict and why,
+// so an analyst is not sent hunting for an artifact the case shows is absent.
+// Case-agnostic: no host names, threat names, or thresholds.
+func resolvedClaimStatement(label string, ja bool) string {
+	if ja {
+		switch label {
+		case "Web shell":
+			return "【自動裏取り済】本ケースには Web サーバ由来アーティファクト (IIS/Apache/nginx 等) もディスク上の Web ルート (inetpub\\wwwroot 等) も存在しないため、Web シェルは裏付けられない。Web シェル検知に見えた痕跡は誤検知の可能性が高く、Web シェルを起点とする初期アクセスは確定しない (実在前提の追加収集は不要)。"
+		case "Pass-the-Hash":
+			return "【自動裏取り済】同一環境でパスワード推測 (4625 バースト→成功) を検出しており、NTLM 成功はパスワード認証で説明できる。ハッシュ窃取/利用の証跡が無いため Pass-the-Hash は裏付けられない。"
+		case "attacker timestomp":
+			return "【自動裏取り済】タイムラインに時刻巻き戻し (4616 後方ジャンプ) があり、プロビジョニング/時刻補正で説明できる。攻撃者によるタイムスタンプ改変は裏付けられず、タイムラインは再アンカー前提で扱う。"
+		}
+		return "【自動裏取り済】" + label + " は本ケースでは裏付けられない (誤検知の可能性)。"
+	}
+	switch label {
+	case "Web shell":
+		return "[auto-corroborated] The case has no web-server artifact (IIS/Apache/nginx) and no web document root on disk (inetpub\\wwwroot etc.), so a web shell is not corroborated. The apparent \"web shell detection\" is most likely a false positive; a web-shell initial-access vector is not established (no collection of a nonexistent file is needed)."
+	case "Pass-the-Hash":
+		return "[auto-corroborated] Password guessing (4625 burst→success) was detected in the same environment, so the NTLM logon is explained by password authentication. With no hash-theft/use evidence, Pass-the-Hash is not corroborated."
+	case "attacker timestomp":
+		return "[auto-corroborated] The timeline has a backward clock step (4616), explainable by provisioning / time correction. An attacker timestomp is not corroborated; treat the timeline as needing re-anchoring."
+	}
+	return "[auto-corroborated] " + label + " is not corroborated in this case (likely a false positive)."
+}
+
+// reframeResolvedOpenQuestions rewrites the flat open-questions list: any question
+// that asks to confirm/locate an uncorroborated claim is dropped and replaced by a
+// single resolved statement per claim (deduped). Questions about corroborated or
+// unrelated matters pass through unchanged, order preserved.
+func reframeResolvedOpenQuestions(questions []string, aliases map[string][]string, ja bool) []string {
+	if len(aliases) == 0 {
+		return questions
+	}
+	out := make([]string, 0, len(questions))
+	emitted := map[string]bool{}
+	for _, q := range questions {
+		if label := matchUncorroboratedClaim(q, aliases); label != "" {
+			if !emitted[label] {
+				emitted[label] = true
+				out = append(out, resolvedClaimStatement(label, ja))
+			}
+			continue
+		}
+		out = append(out, q)
+	}
+	return out
+}
+
+// reframeOpenQuestionsSynth applies the same reframe to the prioritised three-tier
+// view: items about an uncorroborated claim are removed from critical /
+// needs_collection / supplementary (they are not open actions), and one resolved
+// note per claim is appended to supplementary (informational, lowest priority).
+func reframeOpenQuestionsSynth(s OpenQuestionsSynthesis, aliases map[string][]string, ja bool) OpenQuestionsSynthesis {
+	if len(aliases) == 0 {
+		return s
+	}
+	resolved := map[string]bool{}
+	strip := func(in []string) []string {
+		out := make([]string, 0, len(in))
+		for _, q := range in {
+			if label := matchUncorroboratedClaim(q, aliases); label != "" {
+				resolved[label] = true
+				continue
+			}
+			out = append(out, q)
+		}
+		return out
+	}
+	s.Critical = strip(s.Critical)
+	s.NeedsCollection = strip(s.NeedsCollection)
+	s.Supplementary = strip(s.Supplementary)
+	// Append resolved notes in the table's deterministic order.
+	for _, c := range corroborationGatedClaims {
+		if resolved[c.label] {
+			s.Supplementary = append(s.Supplementary, resolvedClaimStatement(c.label, ja))
+		}
+	}
+	return s
+}
+
+// uncorroboratedClaimDirectives returns LLM steering lines for the overall-synthesis
+// prompt that FORBID asserting an uncorroborated claim even when a finding is tagged
+// with it — the override the existing generic GROUNDING RULES lacked (a finding
+// titled "Antivirus Web Shell Detection" was treated as "a finding supports it").
+// `aliases` keys (claim labels) drive which lines are emitted.
+func uncorroboratedClaimDirectives(aliases map[string][]string, ja bool) []string {
+	var out []string
+	for _, c := range corroborationGatedClaims {
+		if _, ok := aliases[c.label]; !ok {
+			continue
+		}
+		switch c.label {
+		case "Web shell":
+			if ja {
+				out = append(out, "- 裏取り結果: Web シェルは本ケースで未裏付け (Web サーバ由来アーティファクトもディスク上の Web ルートも無い)。たとえ署名 finding が Web シェルとタグ付けしていても、事実として断定せず、誤検知/未確認として扱うか省略すること。Web シェル起点の初期アクセスを攻撃ストーリーの前提にしないこと。")
+			} else {
+				out = append(out, "- Corroboration: a web shell is UNCORROBORATED in this case (no web-server artifact and no web document root on disk). Even if a signature finding is tagged as a web shell, do NOT assert it as fact — treat it as a false positive / unconfirmed or omit it, and do not build the attack story on a web-shell initial access.")
+			}
+		case "Pass-the-Hash":
+			if ja {
+				out = append(out, "- 裏取り結果: Pass-the-Hash は本ケースで未裏付け (同一環境のパスワード推測成功で NTLM 成功を説明可能、ハッシュ窃取/利用の証跡無し)。署名 finding がタグ付けしていても断定しないこと。")
+			} else {
+				out = append(out, "- Corroboration: Pass-the-Hash is UNCORROBORATED here (a password-guessing success explains the NTLM logon; no hash-theft/use evidence). Do NOT assert it even if a finding is tagged with it.")
 			}
 		}
 	}

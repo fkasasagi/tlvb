@@ -192,6 +192,17 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if arts, aerr := listArtifacts(ctx, db, cfg.CaseID); aerr == nil {
 		gctx.HasWebArtifact = containsWebArtifact(arts)
 	}
+	// Parser-independent corroboration: even with no web-log artifact, a web
+	// document root / live IIS config on disk (MFT) confirms a web server exists
+	// (so a web-shell claim stays admissible). Its ABSENCE is what lets the layer
+	// confidently demote a web-shell FP. Best-effort.
+	if !gctx.HasWebArtifact {
+		if onDisk, derr := detectWebServerOnDisk(ctx, db, cfg.CaseID); derr == nil && onDisk {
+			gctx.HasWebArtifact = true
+			emit(cfg, Event{Phase: "loading",
+				Message: "web document root / IIS config found on disk (MFT) — web-shell claims are corroboratable"})
+		}
+	}
 	if rev, rerr := detectClockReversal(ctx, db, cfg.CaseID); rerr == nil && rev {
 		gctx.ClockReversed = true
 		emit(cfg, Event{Phase: "loading",
@@ -265,7 +276,11 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err2 != nil {
 		overallSkillBytes = skillBytes // fall back to the cluster skill if absent
 	}
-	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit, gctx.ClockReversed)
+	// Uncorroborated FP-prone claims (web shell with no web server, PtH explained
+	// by a brute-force burst): steer the narrative away from asserting them even
+	// when a finding is tagged, and reframe the open questions below.
+	uncorrobAliases := uncorroboratedClaimAliases(gctx)
+	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(overallSkillBytes), &audit, gctx.ClockReversed, uncorrobAliases)
 	overallFallback := false
 	if err != nil {
 		// Fall back to a deterministic per-cluster stitch so the report
@@ -291,7 +306,10 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	cs := buildCaseSynthesis(cfg.CaseID, findings, clusters, overall, audit, cfg.Language, gctx)
 	cs.OverallStoryFallback = overallFallback
 	if !oqSynth.IsEmpty() {
-		cs.OpenQuestionsSynth = oqSynth
+		// Close the loop on the prioritised view too: drop questions about
+		// uncorroborated claims and append a resolved note (the flat list is
+		// reframed inside buildCaseSynthesis).
+		cs.OpenQuestionsSynth = reframeOpenQuestionsSynth(oqSynth, uncorrobAliases, strings.ToLower(cfg.Language) != "en")
 	}
 	if err := writeSynthesis(cfg.OutputPath, cs); err != nil {
 		return rep, err
@@ -394,10 +412,12 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 	start := time.Now()
 	var audit SynthAudit
 	rep := &OverallRegenReport{OutputPath: cfg.OutputPath}
-	// Reuse the reliability the full run already stored to keep steering the
-	// regenerated summary away from clock-reversal hallucinations.
+	// Reuse the verdicts the full run already stored: the timeline reliability
+	// steers away from clock-reversal hallucinations, and the demoted techniques
+	// (MITREUnconfirmed) steer away from asserting uncorroborated FP claims.
+	uncorrobAliases := uncorroboratedClaimAliasesFromTechniques(cs.MITREUnconfirmed)
 	overall, err := analyseOverallLLM(ctx, cfg, clusters, string(skill), &audit,
-		cs.TimelineReliability == "unreliable")
+		cs.TimelineReliability == "unreliable", uncorrobAliases)
 	if err != nil {
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("overall LLM failed (%v) — falling back to per-cluster stitch", err)})
@@ -415,12 +435,16 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 	// three-tier view as well, so the cheap "refresh executive summary" path
 	// also refreshes the Open Questions section. Best-effort: a failure leaves
 	// the existing flat OpenQuestions list (and prior synthesis) untouched.
+	ja := strings.ToLower(cfg.Language) != "en"
 	if oq, oqErr := analyseOpenQuestionsLLM(ctx, cfg, clusters, &audit); oqErr == nil && !oq.IsEmpty() {
-		cs.OpenQuestionsSynth = oq
+		cs.OpenQuestionsSynth = reframeOpenQuestionsSynth(oq, uncorrobAliases, ja)
 	} else if oqErr != nil {
 		emit(cfg, Event{Phase: "llm",
 			Message: fmt.Sprintf("open-questions synthesis failed (%v) — keeping flat list", oqErr)})
 	}
+	// Reframe the stored flat list too, so an uncorroborated-claim question
+	// resolved here is not left asking to confirm the claim.
+	cs.OpenQuestions = reframeResolvedOpenQuestions(cs.OpenQuestions, uncorrobAliases, ja)
 
 	if err := writeSynthesis(cfg.OutputPath, cs); err != nil {
 		return nil, err
@@ -591,7 +615,7 @@ func countOKSummaries(s []evidencex.FetchSummary) int {
 }
 
 func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
-	systemPrompt string, audit *SynthAudit, clockReversed bool) (string, error) {
+	systemPrompt string, audit *SynthAudit, clockReversed bool, uncorrobAliases map[string][]string) (string, error) {
 
 	// The overall call aggregates EVERY cluster's narrative, so it routinely
 	// needs more wall-clock than a single per-cluster call. Giving it the flat
@@ -622,7 +646,7 @@ func analyseOverallLLM(ctx context.Context, cfg Config, clusters []Cluster,
 	// token counters.
 	for attempt := 1; attempt <= 2; attempt++ {
 		compacted := attempt == 2
-		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, clockReversed)
+		userMsg, err := buildOverallUserMessage(clusters, compacted, cfg.Language, clockReversed, uncorrobAliases)
 		if err != nil {
 			return "", err
 		}
@@ -1068,7 +1092,7 @@ demonstrably called a time-change API. Prefer "timeline unreliable / re-anchor
 required" over an anti-forensic conclusion.`
 }
 
-func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool) (string, error) {
+func buildOverallUserMessage(clusters []Cluster, compactNarratives bool, lang string, clockReversed bool, uncorrobAliases map[string][]string) (string, error) {
 	type clite struct {
 		ID               int      `json:"cluster_id"`
 		AttackPhase      string   `json:"attack_phase,omitempty"`
@@ -1131,6 +1155,13 @@ GROUNDING RULES (must follow):
 		directives.WriteString("- TIMELINE RELIABILITY: UNRELIABLE. ")
 		directives.WriteString(strings.Join(notes, " "))
 		directives.WriteString("\n  Do NOT attribute time reversals/jumps to an attacker timestomp or a later re-intrusion. Treat them as re-anchoring / provisioning artifacts first.\n")
+	}
+	// Per-claim corroboration overrides: forbid asserting an FP-prone claim the
+	// case does not corroborate, even when a finding is tagged with it (the
+	// generic rule above let a "Web Shell Detection"-titled finding through).
+	for _, line := range uncorroboratedClaimDirectives(uncorrobAliases, strings.ToLower(lang) != "en") {
+		directives.WriteString(line)
+		directives.WriteString("\n")
 	}
 
 	return langInst + directives.String() + `
@@ -1293,7 +1324,12 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 	cs.MITREMapping = confirmed
 	cs.MITREUnconfirmed = append(buildUnconfirmedMITRE(clusters), demoted...)
 	cs.MITREDemotionNotes = demoteNotes
-	cs.OpenQuestions = mergeAllOpenQuestions(clusters)
+	// Close the corroboration loop on the flat open-questions list: a question
+	// asking to confirm/locate an uncorroborated claim (e.g. "find the web
+	// shell's hash") is replaced by a resolved note, so the report does not send
+	// an analyst hunting for an artifact the case shows is absent.
+	cs.OpenQuestions = reframeResolvedOpenQuestions(
+		mergeAllOpenQuestions(clusters), uncorroboratedClaimAliases(gctx), strings.ToLower(lang) != "en")
 	cs.TimelineReliability, cs.TimelineNotes = detectTimelineReliability(clusters, gctx.ClockReversed, lang)
 	confirmedTech := map[string]bool{}
 	for _, e := range confirmed {
