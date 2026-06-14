@@ -22,7 +22,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		},
 	}
 	// Without compaction: narrative preserved as-is.
-	full, err := buildOverallUserMessage(clusters, false, "ja", false)
+	full, err := buildOverallUserMessage(clusters, false, "ja", false, nil)
 	if err != nil {
 		t.Fatalf("full: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestBuildOverallUserMessageCompacts(t *testing.T) {
 		t.Error("non-compact build should preserve full narrative")
 	}
 	// With compaction: narrative truncated to 1500 + marker.
-	compact, err := buildOverallUserMessage(clusters, true, "ja", false)
+	compact, err := buildOverallUserMessage(clusters, true, "ja", false, nil)
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestBuildOverallUserMessageValidJSON(t *testing.T) {
 		{ID: 1, AttackPhase: "execution", Narrative: "a"},
 		{ID: 2, AttackPhase: "impact", Narrative: "b"},
 	}
-	msg, err := buildOverallUserMessage(clusters, false, "ja", false)
+	msg, err := buildOverallUserMessage(clusters, false, "ja", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
