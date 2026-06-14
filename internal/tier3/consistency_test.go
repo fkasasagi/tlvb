@@ -217,3 +217,30 @@ func TestDeriveIntrusionPath_CarriesEntryTime(t *testing.T) {
 		t.Errorf("reliable EN path should state the time without a rollback caveat, got %q", got)
 	}
 }
+
+// On an unreliable timeline the attack story must lead with the confirmed entry
+// cluster (credential-access brute force), not the earlier-timestamped
+// defense-evasion provisioning window — and number it #1.
+func TestOrderAttackClusters_EntryLeadsWhenUnreliable(t *testing.T) {
+	cs := bruteForceEntryCS() // T1110.001 → cluster 2; timeline unreliable
+	clusters := []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if !orderAttackClusters(clusters, cs) {
+		t.Fatal("unreliable timeline should reorder and return true")
+	}
+	if clusters[0].C.ID != 2 {
+		t.Errorf("entry cluster (id 2, credential-access) should lead, got id %d first", clusters[0].C.ID)
+	}
+
+	// Reliable timeline → keep timestamp order (no reorder).
+	cs.TimelineReliability = "reliable"
+	clusters = []clusterArticleCtx{
+		{C: clusterView{ID: 1, AttackPhase: "defense-evasion", StartTS: time.Date(2026, 6, 12, 9, 50, 0, 0, time.UTC)}},
+		{C: clusterView{ID: 2, AttackPhase: "credential-access", StartTS: time.Date(2026, 6, 12, 10, 39, 0, 0, time.UTC)}},
+	}
+	if orderAttackClusters(clusters, cs) || clusters[0].C.ID != 1 {
+		t.Error("reliable timeline must not reorder")
+	}
+}

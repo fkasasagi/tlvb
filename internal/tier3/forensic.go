@@ -306,6 +306,30 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string, loc *time.Location
 		"\"; the entry method may live in data that was not collected (e.g. network logs)."
 }
 
+// entryClusterIDs returns the IDs of the clusters that carry the case's confirmed
+// entry vector (initial-access first, else the entry-equivalent brute-force /
+// valid-account / external-remote-service techniques), resolved via the MITRE
+// matrix's cluster_ids. Empty when no entry vector is confirmed.
+func entryClusterIDs(cs tier2.CaseSynthesis) map[int]bool {
+	techs := intrusionTechniques(cs)
+	if len(techs) == 0 {
+		techs = entryEquivalentTechniques(cs)
+	}
+	want := map[string]bool{}
+	for _, t := range techs {
+		want[baseTechnique(t)] = true
+	}
+	ids := map[int]bool{}
+	for _, m := range cs.MITREMapping {
+		if want[baseTechnique(m.Technique)] {
+			for _, id := range m.ClusterIDs {
+				ids[id] = true
+			}
+		}
+	}
+	return ids
+}
+
 // entryClusterWindow returns the time window of the earliest cluster that the
 // entry techniques map to (via the MITRE matrix's cluster_ids). ok is false when
 // no such cluster carries a timestamp. Matching is on the parent technique so a
@@ -332,6 +356,21 @@ func entryClusterWindow(cs tier2.CaseSynthesis, entryTechs []string) (start, end
 		}
 	}
 	return start, end, ok
+}
+
+// killChainRank orders MITRE tactics roughly along the attack lifecycle, used to
+// present attack steps in a logical order when timestamps are unreliable.
+var killChainRank = map[string]int{
+	"initial-access": 1, "execution": 2, "persistence": 3, "privilege-escalation": 4,
+	"defense-evasion": 5, "credential-access": 6, "discovery": 7, "lateral-movement": 8,
+	"collection": 9, "command-and-control": 10, "exfiltration": 11, "impact": 12,
+}
+
+func phaseRank(p string) int {
+	if r, ok := killChainRank[strings.ToLower(strings.TrimSpace(p))]; ok {
+		return r
+	}
+	return 50
 }
 
 // entryTimePhrase renders the entry's recorded time window (in loc), appended to
