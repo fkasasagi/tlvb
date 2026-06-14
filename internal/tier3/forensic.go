@@ -68,10 +68,10 @@ func deriveIntrusionPath(cs tier2.CaseSynthesis, lang string) string {
 	if len(iaTechs) > 0 {
 		if ja {
 			return "初期侵入に関連する MITRE technique " + strings.Join(iaTechs, ", ") +
-				" (initial-access) が検出された。詳細は該当クラスタおよびイベントタイムラインを参照のこと。"
+				" (initial-access) が検出された。該当クラスタの分析と最初期のイベントを以下にそのまま示す。"
 		}
 		return "MITRE technique(s) " + strings.Join(iaTechs, ", ") +
-			" (initial-access) were detected. See the relevant cluster and the event timeline for detail."
+			" (initial-access) were detected. The relevant cluster analysis and the earliest events are inlined below."
 	}
 
 	if firstPhase == "initial-access" && firstNarr != "" {
