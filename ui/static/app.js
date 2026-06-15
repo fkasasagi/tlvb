@@ -4,113 +4,313 @@
 
 "use strict";
 
-// ----- i18n (Wave 32) -------------------------------------------------------
-// Minimal label localisation: t("key") returns the current-locale string,
-// falling back to the key itself if missing (so untranslated UI bits are
-// instantly visible during dev). Locale persists in localStorage so the
-// examiner's choice survives reload.
-//
-// Scope is intentionally narrow: tab names, pipeline buttons, modal headers.
-// Long examiner-facing prose (Recommendations bullets, error messages,
-// tooltips) stays in the source language — Tier 3 report locale handles
-// those separately (Wave 26).
-
+// ----- i18n (source-as-key) ----------------------------------------------
+// The UI source string itself is the translation key. I18N_DICT only holds
+// the OTHER language: the source locale returns the literal unchanged, and a
+// missing translation degrades to the (readable) source string — never a raw
+// key. ja-source strings have an en translation; en-source strings have a ja
+// translation. Locale persists in localStorage and a switch reloads the page,
+// so every screen re-renders in the chosen language.
 const I18N_DICT = {
   ja: {
-    "tab.status":      "Status",
-    "tab.events":      "Events",
-    "tab.findings":    "Findings",
-    "tab.timeline":    "Timeline",
-    "tab.iocs":        "IOC",
-    "tab.mitre":       "MITRE Map",
-    "tab.report":      "Report",
-    "tab.audit":       "Audit",
-    "btn.autopilot":   "🤖 Auto-pilot",
-    "btn.parse":       "Parse",
-    "btn.analyze":     "Analyze All",
-    "btn.synthesize":  "Synthesize",
-    "btn.report":      "Generate Report",
-    "lang.label":      "言語",
-  },
+  "Dashboard": "ダッシュボード",
+  "Rule Library": "ルールライブラリ",
+  "📚 Rule Library": "📚 ルールライブラリ",
+  "Error": "エラー",
+  "Create case": "ケースを作成",
+  "Case ID": "ケース ID",
+  "Name": "名称",
+  "Examiner": "調査者",
+  "Timezone": "タイムゾーン",
+  "Language": "言語",
+  "No cases yet — create one above.": "ケースはまだありません — 上で作成してください。",
+  "⤒ Import .fcz": "⤒ .fcz をインポート",
+  "⤓ Export": "⤓ エクスポート",
+  "Delete case": "ケースを削除",
+  "Cancel": "キャンセル",
+  "Download .fcz": ".fcz をダウンロード",
+  "Delete": "削除",
+  "Include raw extractions/ subtree (can be many GiB)": "raw な extractions/ サブツリーを含める (数 GiB になることがあります)",
+  "Export case ": "ケースをエクスポート: ",
+  "Delete case ": "ケースを削除: ",
+  "Run parser for ": "パーサーを実行: ",
+  "Analyze — Tier 1A (signature SQL) + Tier 1B (optional)": "Analyze — Tier 1A (シグネチャ SQL) + Tier 1B (任意)",
+  "Run Tier 2 (Timeline Analysis)": "Tier 2 を実行 (タイムライン分析)",
+  "Generate report": "レポート生成",
+  "🤖 Auto-pilot — Parse → Analyze → Synthesize → Report": "🤖 オートパイロット — Parse → Analyze → Synthesize → Report",
+  "Raw event payload": "生のイベントペイロード",
+  "Event payload": "イベントペイロード",
+  "Reject extract ": "抽出を却下: ",
+  "Reject parse result ": "パース結果を却下: ",
+  "Input type": "入力タイプ",
+  "Image format": "イメージ形式",
+  "Input mode": "入力モード",
+  "Report language": "レポート言語",
+  "Active search": "アクティブ探索",
+  "Only approved": "承認済のみ",
+  "Tier 1B model": "Tier 1B モデル",
+  "Also run Tier 1B (anomaly_hunter, LLM)": "Tier 1B (anomaly_hunter, LLM) も実行",
+  "Start parse": "パース開始",
+  "Start analyze": "分析開始",
+  "Start synthesize": "統合開始",
+  "Generate": "生成",
+  "Start Auto-pilot": "オートパイロット開始",
+  "＋ Add evidence": "＋ Evidence を追加",
+  "Evidence path (.zip / dir / image)": "Evidence パス (.zip / ディレクトリ / イメージ)",
+  "Evidence ID (optional)": "Evidence ID (任意)",
+  "⚠ LLM access not detected": "⚠ LLM アクセスを検出できません",
+  "Reason (optional)": "理由 (任意)",
+  "Reason": "理由",
+  "Expand all": "すべて展開",
+  "Collapse all": "すべて折り畳む",
+  "Approve selected": "選択を承認",
+  "Reject selected…": "選択を却下…",
+  "Reset selected": "選択をリセット",
+  "(no rows selected)": "(行が未選択)",
+  "All": "すべて",
+  "Tier 1A (rules)": "Tier 1A (ルール)",
+  "Tier 1B (skills)": "Tier 1B (スキル)",
+  "Search": "検索",
+  "Approve": "承認",
+  "Reject": "却下",
+  "No findings match the current search / filter.": "現在の検索 / フィルタに一致する検出はありません。",
+  "Sort:": "並び順:",
+  "State:": "状態:",
+  "Source:": "ソース:",
+  "Open HTML": "HTML を開く",
+  "Findings CSV": "検出 CSV",
+  "Timeline CSV": "タイムライン CSV",
+  "Download CSV": "CSV をダウンロード",
+  "Copy JSON": "JSON をコピー",
+  "Close": "閉じる",
+  "view": "表示",
+  "« Prev": "« 前",
+  "Next »": "次 »",
+  "No timeline entries yet (run Analyze → Synthesize).": "タイムラインエントリはまだありません (Analyze → Synthesize を実行)。",
+  "No IOCs extractable.": "抽出可能な IOC はありません。",
+  "No MITRE mappings.": "MITRE マッピングはありません。",
+  "No HTML report yet — click 'Generate Report' above.": "HTML レポートはまだありません — 上の「レポート生成」をクリックしてください。",
+  "No audit entries.": "監査エントリはありません。",
+  "No events match these filters.": "条件に一致するイベントがありません。",
+  "No parse results yet. Run Parse from the pipeline buttons above.": "パース結果はまだありません。上のパイプラインボタンから Parse を実行してください。",
+  "Artifact": "アーティファクト",
+  "Computer (exact)": "コンピュータ (完全一致)",
+  "Contains": "含む",
+  "Start (UTC)": "開始 (UTC)",
+  "End (UTC)": "終了 (UTC)",
+  "Limit": "上限",
+  "Offset": "オフセット",
+  "Timestamp": "タイムスタンプ",
+  "Event Type": "イベント種別",
+  "Computer": "コンピュータ",
+  "Audit ID": "監査 ID",
+  "Payload": "ペイロード",
+  "Target": "対象",
+  "Status": "ステータス",
+  "Part": "パーティション",
+  "Bytes": "バイト",
+  "Review": "レビュー",
+  "Action": "操作",
+  "Analyze": "分析",
+  "Duration": "所要時間",
+  "Started": "開始時刻",
+  "Rows": "行数",
+  "Events": "イベント",
+  "Event log": "イベントログ",
+  "Case snapshot": "ケーススナップショット",
+  "Tier 0 · Parse": "Tier 0 · パース",
+  "Collection completeness": "収集の網羅性",
+  "Tier 1A · Signature rules": "Tier 1A · シグネチャルール",
+  "Tier 1B · Skill anomalies": "Tier 1B · スキル異常検知",
+  "Tier 2 · Synthesis": "Tier 2 · 統合",
+  "Tier 3 · Report": "Tier 3 · レポート",
+  "Per evidence": "Evidence 別",
+  "Total": "合計",
+  "Severity": "重大度",
+  "Extracts — Review Gate 0 (image)": "抽出 — Review Gate 0 (イメージ)",
+  "Parse Results — Review Gate 0": "パース結果 — Review Gate 0",
+  "Events Browser": "イベントブラウザ",
+  "Skip Review Gate 0 (auto-approve all)": "Review Gate 0 をスキップ (全件自動承認)",
+  "Skip Review Gate 2 (auto-approve all)": "Review Gate 2 をスキップ (全件自動承認)",
+  "Tactic": "タクティク",
+  "Technique": "テクニック",
+  "Source": "ソース",
+  "source": "ソース",
+  "state": "状態",
+  "built": "ビルド済",
+  "pending": "保留",
+  "failed": "失敗",
+  "total": "合計",
+  "(all sources)": "(すべてのソース)",
+  "(all states)": "(すべての状態)",
+  "search id / title / SQL / technique": "ID / タイトル / SQL / テクニックで検索",
+  "all": "すべて",
+  "reviewed": "確認済",
+  "auto-approved": "自動承認",
+  "Tier filter:": "Tier フィルタ:",
+  "(all tiers)": "(すべての tier)",
+  "Engine:": "エンジン:",
+  "Clear": "クリア",
+  "Send": "送信",
+  "Close (Esc)": "閉じる (Esc)",
+  "thinking…": "思考中…",
+  "Kill Chain ": "キルチェーン ",
+  "Activity Density ": "アクティビティ密度 ",
+  "case_id and name are required": "case_id と name は必須です",
+  "Case created: ": "ケースを作成しました: ",
+  "Case recreated (overwritten): ": "ケースを再作成しました(上書き): ",
+  "Case deleted": "ケースを削除しました",
+  "Export download started": "エクスポートのダウンロードを開始しました",
+  "Import failed: ": "インポート失敗: ",
+  "Analyze started": "分析を開始しました",
+  "Synthesis started": "統合を開始しました",
+  "Report generation started": "レポート生成を開始しました",
+  "Approved ": "承認しました ",
+  "Rejected ": "却下しました ",
+  "Bundles the DuckDB rows (case + evidence + parse_results + unified_events) and the workspace tree (findings, reports, audit) into a single .fcz tarball with SHA-256 integrity.": "DuckDB の行 (case + evidence + parse_results + unified_events) とワークスペース (findings, reports, audit) を 1 つの .fcz tarball に SHA-256 整合性付きでまとめます。",
+  "This removes the case from the index and deletes the workspace dir. Original evidence files are NOT touched.": "ケースをインデックスから削除し、ワークスペースディレクトリを削除します。元の証拠ファイルには触れません。",
+  "Tier 2 clusters Tier 1 findings and analyses each cluster's ±N-min timeline with an LLM. Active search adds a hypothesis-driven wide-range SQL pass per cluster (slower, more thorough).": "Tier 2 は Tier 1 の検出をクラスタ化し、各クラスタの ±N 分タイムラインを LLM で分析します。アクティブ探索はクラスタごとに仮説駆動の広域 SQL を追加します (低速・高精度)。",
+  "Use the filters below to query the unified_events table.": "下のフィルタで unified_events テーブルを照会できます。",
+  "context: TLVB documentation": "コンテキスト: TLVB ドキュメント",
+  "Ask about TLVB, or about this case's findings...  (Enter to send, Shift+Enter newline)": "TLVB やこのケースの検出について質問...  (Enter で送信、Shift+Enter で改行)",
+  "model (engine default if blank)": "モデル (空欄ならエンジン既定)",
+  "no parsed events yet": "パース済イベントなし",
+  "no synthesis.json yet": "synthesis.json なし",
+  "no reports generated yet": "レポート未生成",
+  "no findings yet": "検出なし",
+  "All catalogued detection inputs present.": "カタログ化された検知入力はすべて揃っています。",
+  "Last": "最終",
+  "Inputs present": "入力の有無",
+  "Data gaps": "データ欠落",
+  "Clusters": "クラスター",
+  "MITRE techniques": "MITRE テクニック",
+  "Open questions": "未解決の問い",
+  "LLM calls": "LLM 呼び出し",
+  "Generated": "生成時刻",
+  "Active SQL": "アクティブ SQL",
+  "Self-corrected": "自己修正",
+  "Formats": "形式",
+  "loading findings…": "検出を読み込み中…",
+  "No findings yet (run Analyze first).": "検出はまだありません (先に Analyze を実行)。",
+  "loading timeline…": "タイムラインを読み込み中…",
+  "No synthesis yet (run Synthesize first).": "統合結果はまだありません (先に Synthesize を実行)。",
+  "loading IOCs…": "IOC を読み込み中…",
+  "No synthesis yet.": "統合結果はまだありません。",
+  "loading MITRE map…": "MITRE マップを読み込み中…",
+  "loading audit…": "監査ログを読み込み中…",
+  "No audit log.": "監査ログがありません。",
+  "querying…": "問い合わせ中…",
+  "No events yet. Run Parse / Analyze / Synthesize / Report to populate.": "イベントはまだありません。Parse / Analyze / Synthesize / Report を実行してください。",
+  "Neither the `claude` CLI nor the ANTHROPIC_API_KEY env var is available. Tier 1A (cached signature SQL) still runs fine without an LLM — only the optional Tier 1B anomaly_hunter pass needs one. To enable it, install Claude Code CLI (`npm i -g @anthropic-ai/claude-code` + `claude` once to /login), or `export ANTHROPIC_API_KEY=...` and restart the server.": "`claude` CLI も ANTHROPIC_API_KEY 環境変数も見つかりません。Tier 1A (キャッシュ済シグネチャ SQL) は LLM なしでも動作します — LLM が必要なのは任意の Tier 1B anomaly_hunter のみです。有効化するには Claude Code CLI を導入 (`npm i -g @anthropic-ai/claude-code` + 一度 `claude` で /login) するか、`export ANTHROPIC_API_KEY=...` してサーバーを再起動してください。",
+  "Tier 1A always runs: cached signature SQL (Sigma / Hayabusa / STIX / custom / LOLBAS) against this case — no LLM, no cost. Tier 1B (anomaly_hunter) is an optional LLM pass.": "Tier 1A は常に実行されます: キャッシュ済シグネチャ SQL (Sigma / Hayabusa / STIX / custom / LOLBAS) を本ケースに対して実行 — LLM なし・コストなし。Tier 1B (anomaly_hunter) は任意の LLM パスです。",
+  "Both Review Gates (0: parse results, 2: timeline) will be auto-skipped. All findings will reach the final report without per-item human approval. Use the individual buttons above for examiner-supervised runs.": "両方の Review Gate (0: パース結果、2: タイムライン) を自動スキップします。すべての検出が個別承認なしで最終レポートに反映されます。調査者によるレビュー付き実行には上の個別ボタンを使ってください。",
+  "Artifacts grouped by source evidence; artifacts that produced no events from an evidence are listed under it with a 0 count. Approve / Reject applies to an artifact's parser output across the whole case (parse review is keyed per artifact, not per evidence).": "アーティファクトはソース evidence ごとにグループ化されます。ある evidence からイベントを生成しなかったアーティファクトはカウント 0 でその下に表示されます。Approve / Reject はケース全体でのアーティファクトのパーサ出力に適用されます (パースレビューは evidence 単位ではなくアーティファクト単位)。",
+  "Findings": "検出",
+  "Timeline": "タイムライン",
+  "MITRE Map": "MITRE マップ",
+  "Report": "レポート",
+  "Audit": "監査",
+  "🤖 Auto-pilot": "🤖 オートパイロット",
+  "Parse": "パース",
+  "Analyze All": "すべて分析",
+  "Synthesize": "統合",
+  "Generate Report": "レポート生成"
+},
   en: {
-    "tab.status":      "Status",
-    "tab.events":      "Events",
-    "tab.findings":    "Findings",
-    "tab.timeline":    "Timeline",
-    "tab.iocs":        "IOC",
-    "tab.mitre":       "MITRE Map",
-    "tab.report":      "Report",
-    "tab.audit":       "Audit",
-    "btn.autopilot":   "🤖 Auto-pilot",
-    "btn.parse":       "Parse",
-    "btn.analyze":     "Analyze All",
-    "btn.synthesize":  "Synthesize",
-    "btn.report":      "Generate Report",
-    "lang.label":      "Language",
-  },
-  // Wave 35: zh / ko / es. Tab + button labels only; long prose stays in
-  // the source language until DESIGN v0.3 #9 full locale rollout.
-  zh: {
-    "tab.status":      "状态",
-    "tab.events":      "事件",
-    "tab.findings":    "发现",
-    "tab.timeline":    "时间线",
-    "tab.iocs":        "IOC",
-    "tab.mitre":       "MITRE 映射",
-    "tab.report":      "报告",
-    "tab.audit":       "审计",
-    "btn.autopilot":   "🤖 自动驾驶",
-    "btn.parse":       "解析",
-    "btn.analyze":     "全部分析",
-    "btn.synthesize":  "合成",
-    "btn.report":      "生成报告",
-    "lang.label":      "语言",
-  },
-  ko: {
-    "tab.status":      "상태",
-    "tab.events":      "이벤트",
-    "tab.findings":    "발견",
-    "tab.timeline":    "타임라인",
-    "tab.iocs":        "IOC",
-    "tab.mitre":       "MITRE 매핑",
-    "tab.report":      "보고서",
-    "tab.audit":       "감사",
-    "btn.autopilot":   "🤖 자동조종",
-    "btn.parse":       "파싱",
-    "btn.analyze":     "전체 분석",
-    "btn.synthesize":  "통합",
-    "btn.report":      "보고서 생성",
-    "lang.label":      "언어",
-  },
-  es: {
-    "tab.status":      "Estado",
-    "tab.events":      "Eventos",
-    "tab.findings":    "Hallazgos",
-    "tab.timeline":    "Cronología",
-    "tab.iocs":        "IOC",
-    "tab.mitre":       "Mapa MITRE",
-    "tab.report":      "Informe",
-    "tab.audit":       "Auditoría",
-    "btn.autopilot":   "🤖 Piloto automático",
-    "btn.parse":       "Analizar",
-    "btn.analyze":     "Analizar todo",
-    "btn.synthesize":  "Sintetizar",
-    "btn.report":      "Generar informe",
-    "lang.label":      "Idioma",
-  },
+  "ビルドカバレッジ": "Build coverage",
+  "ルール一覧": "Rules",
+  "Tier 1B 学習済みクエリ (skill cache)": "Tier 1B learned queries (skill cache)",
+  "検索": "Search",
+  "クリア": "Clear",
+  "該当ルールなし": "No matching rules",
+  "← 前": "← Prev",
+  "次 →": "Next →",
+  "新規ケース作成": "Create new case",
+  "背景: ": "Background: ",
+  "✏ 編集": "✏ Edit",
+  "+ 追加": "+ Add",
+  "案件の背景情報 (Context)": "Case background (Context)",
+  "保存": "Save",
+  "背景情報を保存しました": "Background saved",
+  "⏳ 処理中（表示はジョブ開始前の値）": "⏳ Processing (counts are pre-job values)",
+  "折り畳む": "Collapse",
+  "展開": "Expand",
+  "要確認": "Review",
+  "確認済": "Reviewed",
+  "未割当": "Unassigned",
+  "承認": "Approve",
+  "却下": "Reject",
+  "リセット": "Reset",
+  "✕ 却下": "✕ Reject",
+  "✓ 承認済": "✓ Approved",
+  "コピー": "Copy",
+  "閉じる": "Close",
+  "JSON をコピー": "Copy JSON",
+  "evidence を見る ▾": "Show evidence ▾",
+  "evidence を閉じる ▴": "Hide evidence ▴",
+  "evidence なし": "no evidence",
+  "⏱ 前後 ±5 分のイベント": "⏱ ±5 min around",
+  "{ } 生 JSON を見る": "{ } View raw JSON",
+  "フルパス": "full path",
+  "表示": "Show",
+  "隠す": "Hide",
+  "Finding を却下": "Reject finding",
+  "却下 — timeline entry": "Reject — timeline entry",
+  "理由": "Reason",
+  "キャンセル": "Cancel",
+  "未レビュー": "Not reviewed",
+  "(論理順 — レポートの侵入経路と同じ)": "(logical order — same as the report's intrusion path)",
+  "(検出順)": "(detection order)",
+  "未分類": "Unclassified",
+  "起動ノイズ(良性)": "Boot noise (benign)",
+  "(記録時刻軸 · 重大度色)": "(recorded-time axis · severity color)",
+  "— フェーズ別 · 行クリックで evidence 展開": "— by phase · click a row to expand evidence",
+  " — 起動シーケンスノイズ (良性)": " — boot-sequence noise (benign)",
+  "緊急": "Critical",
+  "高": "High",
+  "中": "Medium",
+  "低": "Low",
+  "情報": "Info",
+  "✅ 確定 IOC": "✅ Confirmed IOC",
+  "確定 IOC は抽出されませんでした。": "No confirmed IOCs were extracted.",
+  "📋 データ供給源 (IOC ではない)": "📋 Data sources (not IOCs)",
+  "検知に使われたログ供給源。脅威指標ではない。": "Log sources used for detection. Not threat indicators.",
+  "📋 検知プロセス / provenance": "📋 Detection process / provenance",
+  "検知メタデータ (Defender フィールドラベル・検知プロセス)。脅威指標ではない。": "Detection metadata (Defender field labels / detection process). Not threat indicators.",
+  "🔇 除外 (ノイズ)": "🔇 Excluded (noise)",
+  "パーサノイズ・sysprep ゴースト等。既定で折り畳み。": "Parser noise / sysprep ghosts, etc. Collapsed by default.",
+  "Review Gate 0 をスキップ": "Skip Review Gate 0",
+  "少なくとも 1 つの evidence が必要です": "At least one evidence is required",
+  "少なくとも 1 つの evidence_path が必要です": "At least one evidence_path is required",
+  "少なくとも 1 つの evidence path が必要です": "At least one evidence path is required",
+  "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。": "Case background (what's known: how it surfaced / the host's role / normal-operation baseline, etc.).",
+  "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。未検証コンテキストとして Tier 1B/2/3 の分析に渡されます（証拠ではありません）。": "Case background (what's known: how it surfaced / the host's role / normal-operation baseline, etc.). Passed to Tier 1B/2/3 analysis as unverified context (not evidence).",
+  "Background (任意)": "Background (optional)",
+  "（未設定）": "(not set)",
+  "Image を選ぶと parser 開始時に画像をマウントし、$MFT/$J/registry/EVTX/Prefetch/Tasks/SRUM + per-user hive を Sleuth Kit で抽出してから通常パイプラインを走らせます (extract.log と Extracts セクションで確認可能)。CDIR / Washizukami はディレクトリ構造のヒントを保存しますが、既存の検出器が同じ glob で拾うため動作は Auto と等価です。": "Selecting Image mounts the disk image at parse time and extracts $MFT/$J/registry/EVTX/Prefetch/Tasks/SRUM + per-user hives with Sleuth Kit before running the normal pipeline (see extract.log and the Extracts section). CDIR / Washizukami record directory-structure hints, but the existing detectors pick them up via the same globs, so behaviour is equivalent to Auto.",
+  "Try: 「TLVB の使い方を教えて」/ 「Tier 1A signature SQL Agent は何をしている？」": "Try: \"How do I use TLVB?\" / \"What does the Tier 1A signature SQL Agent do?\"",
+  "Try: 「このケースの最も重要な findings は？」/ 「Kill Chain を解説して」": "Try: \"What are this case's most important findings?\" / \"Explain the Kill Chain.\"",
+  "1 ケースに対して **複数の Evidence を一度に登録 + パース** できます。各 evidence は順次 orchestrator にかけられ、1 つが失敗しても他は続行します(graceful degradation)。全 evidence の完了後に Tier 1 (Analyze) を回せます。": "You can register + parse multiple evidences for one case at once. Each evidence is run through the orchestrator in turn; if one fails the others continue (graceful degradation). Once all evidences finish you can run Tier 1 (Analyze).",
+  "★ ON: 全 parse 結果を auto-approve 扱いにする。Events タブで個別レビューせずに即 Analyze に進みたいとき。": "★ ON: treat all parse results as auto-approved. For when you want to jump straight to Analyze without per-item review on the Events tab.",
+  "★ ON: 全 parse 結果を auto-approve 扱い → Analyze をブロックしない。OFF (デフォルト): Events タブで approve していない parse 結果があると Analyze は 409 で停止": "★ ON: treat all parse results as auto-approved → Analyze is not blocked. OFF (default): if any parse result is unapproved on the Events tab, Analyze stops with 409.",
+  "Tier 1B / 2 / 3 の分析に未検証コンテキストとして渡されます（証拠ではありません）。証拠と矛盾する場合は証拠が優先されます。Tier 1A（署名 SQL）には影響しません。": "Passed to Tier 1B / 2 / 3 analysis as unverified context (not evidence). If it conflicts with evidence, evidence wins. Tier 1A (signature SQL) is unaffected.",
+  "⚠ Analyze All / Analyze single tactic は、全アーティファクトを Approve するか「Skip Review Gate 0」を有効化するまでブロックされます。": "⚠ Analyze All / Analyze single tactic is blocked until you Approve every artifact or enable “Skip Review Gate 0”."
+},
 };
 
 function currentLocale() {
-  return localStorage.getItem("tlvb_locale") || "ja";
+  const l = localStorage.getItem("tlvb_locale") || "ja";
+  return (l === "ja" || l === "en") ? l : "ja";
 }
 function setLocale(lang) {
   localStorage.setItem("tlvb_locale", lang);
   location.reload();  // simplest re-render strategy
 }
-function t(key) {
-  const dict = I18N_DICT[currentLocale()] || I18N_DICT.ja;
-  return dict[key] || key;
+function t(s) {
+  const dict = I18N_DICT[currentLocale()];
+  return (dict && dict[s]) || s;
 }
+
 
 
 // ----- tiny DOM helpers ------------------------------------------------------
@@ -351,7 +551,7 @@ function showError(e) {
   console.error(e);
   $("#app").innerHTML = "";
   $("#app").appendChild(h("div", { class: "card" }, [
-    h("h2", {}, "Error"),
+    h("h2", {}, t("Error")),
     h("pre", { class: "muted" }, e.message || String(e)),
   ]));
   toast(e.message || String(e), "error");
@@ -403,7 +603,7 @@ function setMeta(text) { $("#topMeta").textContent = text || ""; }
 // Dashboard
 // ============================================================================
 route(/^\/$/, async () => {
-  setCrumbs([{ label: "Dashboard" }]);
+  setCrumbs([{ label: t("Dashboard") }]);
   setMeta("");
   let cases;
   try {
@@ -425,21 +625,21 @@ route(/^\/$/, async () => {
   // Global tools row — links to non-case-scoped views (Rule Library).
   app.appendChild(h("div", { class: "row", style: "justify-content: flex-end; margin-bottom: 8px;" }, [
     h("a", { class: "ghost", href: "#/rules", style: "padding: 6px 12px; border-radius: 3px;" },
-      "📚 Rule Library"),
+      t("📚 Rule Library")),
   ]));
 
   // New-case form. Issue #19/#25: Timezone is a pulldown of IANA TZDB
   // values (defaults to the browser-detected zone), Language is a
   // pulldown of supported report languages (ja/en).
   const form = h("div", { class: "card" }, [
-    h("h2", {}, "新規ケース作成"),
-    formRow("case_id", "Case ID", "INC-2026-XXXX"),
-    formRow("name", "Name", "Suspicious activity on host01"),
-    formRow("examiner", "Examiner", "examiner-web"),
-    formSelectRow("timezone", "Timezone", supportedTimezones(), detectDefaultTZ()),
-    formSelectRow("language", "Language", SUPPORTED_LANGUAGES, "ja"),
-    formTextareaRow("background", "Background (任意)",
-      "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。未検証コンテキストとして Tier 1B/2/3 の分析に渡されます（証拠ではありません）。"),
+    h("h2", {}, t("新規ケース作成")),
+    formRow("case_id", t("Case ID"), "INC-2026-XXXX"),
+    formRow("name", t("Name"), "Suspicious activity on host01"),
+    formRow("examiner", t("Examiner"), "examiner-web"),
+    formSelectRow("timezone", t("Timezone"), supportedTimezones(), detectDefaultTZ()),
+    formSelectRow("language", t("Language"), SUPPORTED_LANGUAGES, "ja"),
+    formTextareaRow("background", t("Background (任意)"),
+      t("案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。未検証コンテキストとして Tier 1B/2/3 の分析に渡されます（証拠ではありません）。")),
     h("div", { class: "row" }, [
       h("button", {
         class: "primary",
@@ -453,12 +653,12 @@ route(/^\/$/, async () => {
             background: $("#f_background").value.trim(),
           };
           if (!body.case_id || !body.name) {
-            toast("case_id and name are required", "error");
+            toast(t("case_id and name are required"), "error");
             return;
           }
           try {
             await api("POST", "/api/cases", body);
-            toast("Case created: " + body.case_id, "success");
+            toast(t("Case created: ") + body.case_id, "success");
             dispatch();
           } catch (e) {
             // 409 + "already exists" — the case_id is still present (a plain
@@ -471,7 +671,7 @@ route(/^\/$/, async () => {
               )) {
                 try {
                   await api("POST", "/api/cases", { ...body, overwrite: true });
-                  toast("Case recreated (overwritten): " + body.case_id, "success");
+                  toast(t("Case recreated (overwritten): ") + body.case_id, "success");
                   dispatch();
                 } catch (e2) { toast(e2.message, "error"); }
               }
@@ -480,7 +680,7 @@ route(/^\/$/, async () => {
             toast(e.message, "error");
           }
         },
-      }, "Create case"),
+      }, t("Create case")),
     ]),
   ]);
   app.appendChild(form);
@@ -495,7 +695,7 @@ route(/^\/$/, async () => {
         style: "display: inline-flex; gap: 6px; align-items: center; cursor: pointer; padding: 6px 12px; border-radius: 3px;",
         title: "Upload a .fcz case archive",
       }, [
-        h("span", {}, "⤒ Import .fcz"),
+        h("span", {}, t("⤒ Import .fcz")),
         h("input", {
           type: "file", accept: ".fcz,.tar.gz,application/gzip",
           style: "display: none;",
@@ -516,7 +716,7 @@ route(/^\/$/, async () => {
               if (!res.ok) throw new Error(body.error || res.statusText);
               toast(`Imported ${body.case_id} (verified ${body.sha256_verified} files)`, "success");
               dispatch();
-            } catch (e) { toast("Import failed: " + e.message, "error"); }
+            } catch (e) { toast(t("Import failed: ") + e.message, "error"); }
             ev.target.value = "";
           },
         }),
@@ -525,7 +725,7 @@ route(/^\/$/, async () => {
     h("div", { style: "height: 8px;" }),
   ]);
   if (cases.length === 0) {
-    list.appendChild(h("div", { class: "empty" }, "No cases yet — create one above."));
+    list.appendChild(h("div", { class: "empty" }, t("No cases yet — create one above.")));
   } else {
     const grid = h("div", { class: "cases-grid" });
     cases.forEach((c) => grid.appendChild(caseCard(c)));
@@ -560,40 +760,39 @@ function caseContextRow(caseID, background) {
     const ta = h("textarea", {
       id: "ctx-edit", rows: "8",
       style: "width: 100%; box-sizing: border-box; resize: vertical; font: inherit;",
-      placeholder: "案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。",
+      placeholder: t("案件の背景（わかっていること：発覚の経緯 / ホストの役割 / 通常運用のベースライン等）。"),
     });
     ta.value = background;
     const close = modal([
-      h("h3", {}, "案件の背景情報 (Context)"),
+      h("h3", {}, t("案件の背景情報 (Context)")),
       h("p", { class: "muted" },
-        "Tier 1B / 2 / 3 の分析に未検証コンテキストとして渡されます（証拠ではありません）。" +
-        "証拠と矛盾する場合は証拠が優先されます。Tier 1A（署名 SQL）には影響しません。"),
+t("Tier 1B / 2 / 3 の分析に未検証コンテキストとして渡されます（証拠ではありません）。証拠と矛盾する場合は証拠が優先されます。Tier 1A（署名 SQL）には影響しません。")),
       ta,
       h("div", { class: "actions" }, [
-        h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+        h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
         h("button", {
           class: "primary",
           onclick: async () => {
             try {
               await api("PUT", `/api/cases/${encodeURIComponent(caseID)}/background`,
                 { background: ta.value.trim() });
-              toast("背景情報を保存しました", "success");
+              toast(t("背景情報を保存しました"), "success");
               close();
               dispatch();
             } catch (e) { toast(e.message, "error"); }
           },
-        }, "保存"),
+        }, t("保存")),
       ]),
     ]);
   };
   const bg = (background || "").trim();
-  const summary = bg ? (bg.length > 140 ? bg.slice(0, 140) + "…" : bg) : "（未設定）";
+  const summary = bg ? (bg.length > 140 ? bg.slice(0, 140) + "…" : bg) : t("（未設定）");
   return h("div", { class: "muted", style: "margin-top: 4px;" }, [
-    h("span", {}, "背景: " + summary + " "),
+    h("span", {}, t("背景: ") + summary + " "),
     h("a", {
       href: "#",
       onclick: (e) => { e.preventDefault(); openEditor(); },
-    }, bg ? "✏ 編集" : "+ 追加"),
+    }, bg ? t("✏ 編集") : t("+ 追加")),
   ]);
 }
 
@@ -604,7 +803,7 @@ function caseContextRow(caseID, background) {
 // (source / state / q / offset) so navigation re-renders consistently.
 // ============================================================================
 route(/^\/rules$/, async ({ params }) => {
-  setCrumbs([{ label: "Dashboard", href: "/" }, { label: "Rule Library" }]);
+  setCrumbs([{ label: t("Dashboard"), href: "/" }, { label: t("Rule Library") }]);
   setMeta("");
   const app = $("#app");
   app.innerHTML = "";
@@ -628,7 +827,7 @@ route(/^\/rules$/, async ({ params }) => {
   };
 
   // ---- build-coverage summary ----
-  const sumCard = h("div", { class: "card" }, [h("h2", {}, "ビルドカバレッジ")]);
+  const sumCard = h("div", { class: "card" }, [h("h2", {}, t("ビルドカバレッジ"))]);
   app.appendChild(sumCard);
   let summary = { available: false, rules: { by_state: {}, by_source: [] }, skills: {} };
   try { summary = await api("GET", "/api/rules/summary"); } catch (e) { /* shown below */ }
@@ -646,7 +845,7 @@ route(/^\/rules$/, async ({ params }) => {
       h("span", { class: "badge tactic" }, `total ${r.total || 0}`),
     ]));
     const tbl = h("table", { class: "rules-table" }, [
-      h("tr", {}, ["source", "built", "pending", "failed", "total"].map((x) => h("th", {}, x))),
+      h("tr", {}, ["source", "built", "pending", "failed", "total"].map((x) => h("th", {}, t(x)))),
       ...(r.by_source || []).map((sc) => h("tr", {}, [
         h("td", {}, sc.source),
         h("td", {}, String(sc.built)),
@@ -666,28 +865,28 @@ route(/^\/rules$/, async ({ params }) => {
   // ---- filter controls ----
   const sources = ["", ...((summary.rules && summary.rules.by_source) || []).map((s) => s.source)];
   const states = ["", "built", "pending", "failed"];
-  const sourceSel = selectEl(sources, source, (v) => goRules({ source: v }), (x) => x || "(all sources)");
-  const stateSel = selectEl(states, state, (v) => goRules({ state: v }), (x) => x || "(all states)");
+  const sourceSel = selectEl(sources, source, (v) => goRules({ source: v }), (x) => x || t("(all sources)"));
+  const stateSel = selectEl(states, state, (v) => goRules({ state: v }), (x) => x || t("(all states)"));
   const searchInput = h("input", {
-    placeholder: "search id / title / SQL / technique", value: q,
+    placeholder: t("search id / title / SQL / technique"), value: q,
     style: "flex: 1; min-width: 200px;",
     onkeydown: (e) => { if (e.key === "Enter") goRules({ q: e.target.value.trim() }); },
   });
   const filterCard = h("div", { class: "card" }, [
     h("div", { class: "row", style: "gap: 8px; align-items: center; flex-wrap: wrap;" }, [
-      h("label", { class: "muted" }, "source"), sourceSel,
-      h("label", { class: "muted" }, "state"), stateSel,
+      h("label", { class: "muted" }, t("source")), sourceSel,
+      h("label", { class: "muted" }, t("state")), stateSel,
       searchInput,
-      h("button", { onclick: () => goRules({ q: searchInput.value.trim() }) }, "検索"),
+      h("button", { onclick: () => goRules({ q: searchInput.value.trim() }) }, t("検索")),
       (source || state || q)
-        ? h("button", { class: "ghost", onclick: () => navigate("/rules") }, "クリア")
+        ? h("button", { class: "ghost", onclick: () => navigate("/rules") }, t("クリア"))
         : null,
     ]),
   ]);
   app.appendChild(filterCard);
 
   // ---- rule list ----
-  const listCard = h("div", { class: "card" }, [h("h2", {}, "ルール一覧")]);
+  const listCard = h("div", { class: "card" }, [h("h2", {}, t("ルール一覧"))]);
   app.appendChild(listCard);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (source) qs.set("source", source);
@@ -703,23 +902,23 @@ route(/^\/rules$/, async ({ params }) => {
     `${shownFrom}–${shownTo} / ${total}`));
 
   if (rows.length === 0) {
-    listCard.appendChild(h("div", { class: "empty" }, "該当ルールなし"));
+    listCard.appendChild(h("div", { class: "empty" }, t("該当ルールなし")));
   } else {
     rows.forEach((rr) => listCard.appendChild(ruleDetailsEl(rr)));
     // pagination
     const pager = h("div", { class: "row", style: "gap: 8px; margin-top: 10px;" }, [
       offset > 0
-        ? h("button", { class: "ghost", onclick: () => goRules({ offset: Math.max(0, offset - limit) }) }, "← 前")
+        ? h("button", { class: "ghost", onclick: () => goRules({ offset: Math.max(0, offset - limit) }) }, t("← 前"))
         : null,
       shownTo < total
-        ? h("button", { class: "ghost", onclick: () => goRules({ offset: offset + limit }) }, "次 →")
+        ? h("button", { class: "ghost", onclick: () => goRules({ offset: offset + limit }) }, t("次 →"))
         : null,
     ]);
     listCard.appendChild(pager);
   }
 
   // ---- Tier 1B skill cache (learned lenses) ----
-  const skillCard = h("div", { class: "card" }, [h("h2", {}, "Tier 1B 学習済みクエリ (skill cache)")]);
+  const skillCard = h("div", { class: "card" }, [h("h2", {}, t("Tier 1B 学習済みクエリ (skill cache)"))]);
   app.appendChild(skillCard);
   let skillResp = { rows: [] };
   try { skillResp = await api("GET", "/api/rules/skills"); } catch (e) { /* ignore */ }
@@ -860,7 +1059,7 @@ function caseCard(c) {
 route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   const caseID = decodeURIComponent(args[0]);
   const tab = params.tab || "findings";
-  setCrumbs([{ label: "Dashboard", href: "/" }, { label: caseID }]);
+  setCrumbs([{ label: t("Dashboard"), href: "/" }, { label: caseID }]);
 
   let detail;
   let staleFromCache = false;
@@ -910,7 +1109,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
         staleFromCache ? h("span", {
           class: "badge warn",
           title: "別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。",
-        }, "⏳ 処理中（表示はジョブ開始前の値）") : null,
+        }, t("⏳ 処理中（表示はジョブ開始前の値）")) : null,
         h("div", { class: "muted" },
           `Examiner: ${c.examiner || "—"} · TZ: ${c.timezone || "UTC"} · Status: ${c.status || "active"} · Created: ${fmtTS(c.created_at)}`),
         caseContextRow(caseID, c.background || ""),
@@ -922,14 +1121,14 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
           title: "Download a .fcz containing case rows + workspace",
           onclick: async () => {
             const close = modal([
-              h("h3", {}, "Export case " + caseID),
-              h("p", { class: "muted" }, "Bundles the DuckDB rows (case + evidence + parse_results + unified_events) and the workspace tree (findings, reports, audit) into a single .fcz tarball with SHA-256 integrity."),
+              h("h3", {}, t("Export case ") + caseID),
+              h("p", { class: "muted" }, t("Bundles the DuckDB rows (case + evidence + parse_results + unified_events) and the workspace tree (findings, reports, audit) into a single .fcz tarball with SHA-256 integrity.")),
               h("label", { style: "display: flex; gap: 8px; align-items: center; margin: 8px 0;" }, [
                 h("input", { type: "checkbox", id: "exp-include-ev" }),
-                h("span", {}, "Include raw extractions/ subtree (can be many GiB)"),
+                h("span", {}, t("Include raw extractions/ subtree (can be many GiB)")),
               ]),
               h("div", { class: "actions" }, [
-                h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+                h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
                 h("button", {
                   onclick: () => {
                     const inc = document.getElementById("exp-include-ev").checked ? "true" : "false";
@@ -941,30 +1140,30 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
                     a.click();
                     a.remove();
                     close();
-                    toast("Export download started", "success");
+                    toast(t("Export download started"), "success");
                   },
-                }, "Download .fcz"),
+                }, t("Download .fcz")),
               ]),
             ]);
           },
-        }, "⤓ Export"),
+        }, t("⤓ Export")),
         h("button", {
           class: "danger",
           onclick: async () => {
             const close = modal([
-              h("h3", {}, "Delete case " + caseID + "?"),
-              h("p", { class: "muted" }, "This removes the case from the index and deletes the workspace dir. Original evidence files are NOT touched."),
+              h("h3", {}, t("Delete case ") + caseID + "?"),
+              h("p", { class: "muted" }, t("This removes the case from the index and deletes the workspace dir. Original evidence files are NOT touched.")),
               h("div", { class: "actions" }, [
-                h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+                h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
                 h("button", { class: "danger", onclick: async () => {
                   try { await api("DELETE", `/api/cases/${encodeURIComponent(caseID)}`);
-                    close(); toast("Case deleted", "success"); navigate("/");
+                    close(); toast(t("Case deleted"), "success"); navigate("/");
                   } catch (e) { toast(e.message, "error"); }
-                }}, "Delete"),
+                }}, t("Delete")),
               ]),
             ]);
           },
-        }, "Delete case"),
+        }, t("Delete case")),
       ]),
     ]),
   ]);
@@ -977,14 +1176,14 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
   // ---- tabs (Wave 32: labels via t())
   const tabBar = h("div", { class: "tabs" });
   const tabs = [
-    ["status",   t("tab.status")],
-    ["events",   t("tab.events")],
-    ["findings", t("tab.findings")],
-    ["timeline", t("tab.timeline")],
-    ["iocs",     t("tab.iocs")],
-    ["mitre",    t("tab.mitre")],
-    ["report",   t("tab.report")],
-    ["audit",    t("tab.audit")],
+    ["status",   t("Status")],
+    ["events",   t("Events")],
+    ["findings", t("Findings")],
+    ["timeline", t("Timeline")],
+    ["iocs",     t("IOC")],
+    ["mitre",    t("MITRE Map")],
+    ["report",   t("Report")],
+    ["audit",    t("Audit")],
   ];
   tabs.forEach(([id, label]) => {
     tabBar.appendChild(h("div", {
@@ -1036,14 +1235,14 @@ function renderPipeline(caseID, detail) {
     title: "Run Parse → Analyze → Synthesize → Report end-to-end with both Review Gates auto-skipped. " +
            "All findings will be auto-approved. Use the individual buttons for examiner-supervised runs.",
     onclick: () => startAutopilot(caseID),
-  }, t("btn.autopilot"));
+  }, t("🤖 Auto-pilot"));
   wrap.appendChild(autopilotBtn);
 
   const steps = [
-    { kind: "parse",      label: t("btn.parse"),       handler: () => startParse(caseID) },
-    { kind: "analyze",    label: t("btn.analyze"),     handler: () => startAnalyze(caseID) },
-    { kind: "synthesize", label: t("btn.synthesize"),  handler: () => startSynthesize(caseID) },
-    { kind: "report",     label: t("btn.report"),      handler: () => startReport(caseID) },
+    { kind: "parse",      label: t("Parse"),       handler: () => startParse(caseID) },
+    { kind: "analyze",    label: t("Analyze All"),     handler: () => startAnalyze(caseID) },
+    { kind: "synthesize", label: t("Synthesize"),  handler: () => startSynthesize(caseID) },
+    { kind: "report",     label: t("Generate Report"),      handler: () => startReport(caseID) },
   ];
   // Issue #1: each step is wrapped in a .pipeline-step group so flex-wrap
   // breaks at step boundaries (button + progress + arrow stay together).
@@ -1278,7 +1477,7 @@ async function startParse(caseID) {
         title: "remove this evidence",
         onclick: () => {
           if (rows.children.length > 1) row.remove();
-          else toast("少なくとも 1 つの evidence が必要です", "error");
+          else toast(t("少なくとも 1 つの evidence が必要です"), "error");
         },
       }, "−"),
     ]);
@@ -1318,42 +1517,39 @@ async function startParse(caseID) {
   ]);
 
   modal([
-    h("h3", {}, "Run parser for " + caseID),
+    h("h3", {}, t("Run parser for ") + caseID),
     h("p", { class: "muted", style: "margin-top: 0;" },
-      "1 ケースに対して **複数の Evidence を一度に登録 + パース** できます。" +
-      "各 evidence は順次 orchestrator にかけられ、1 つが失敗しても他は続行します(graceful degradation)。" +
-      "全 evidence の完了後に Tier 1 (Analyze) を回せます。"),
+t("1 ケースに対して **複数の Evidence を一度に登録 + パース** できます。各 evidence は順次 orchestrator にかけられ、1 つが失敗しても他は続行します(graceful degradation)。全 evidence の完了後に Tier 1 (Analyze) を回せます。")),
     // Issue #23: input-type + image-format selectors
-    h("div", { class: "form-row" }, [h("label", {}, "Input type"), inputModeSelect]),
-    h("div", { class: "form-row" }, [h("label", {}, "Image format"), imageFormatSelect]),
+    h("div", { class: "form-row" }, [h("label", {}, t("Input type")), inputModeSelect]),
+    h("div", { class: "form-row" }, [h("label", {}, t("Image format")), imageFormatSelect]),
     h("p", { class: "muted", style: "font-size: 11px; margin-top: -4px;" },
-      "Image を選ぶと parser 開始時に画像をマウントし、$MFT/$J/registry/EVTX/Prefetch/Tasks/SRUM + per-user hive を Sleuth Kit で抽出してから通常パイプラインを走らせます (extract.log と Extracts セクションで確認可能)。CDIR / Washizukami はディレクトリ構造のヒントを保存しますが、既存の検出器が同じ glob で拾うため動作は Auto と等価です。"),
+      t("Image を選ぶと parser 開始時に画像をマウントし、$MFT/$J/registry/EVTX/Prefetch/Tasks/SRUM + per-user hive を Sleuth Kit で抽出してから通常パイプラインを走らせます (extract.log と Extracts セクションで確認可能)。CDIR / Washizukami はディレクトリ構造のヒントを保存しますが、既存の検出器が同じ glob で拾うため動作は Auto と等価です。")),
     h("div", { class: "form-row", style: "gap: 6px;" }, [
-      h("label", { style: "flex: 3;" }, "Evidence path (.zip / dir / image)"),
-      h("label", { style: "flex: 1; max-width: 160px;" }, "Evidence ID (optional)"),
+      h("label", { style: "flex: 3;" }, t("Evidence path (.zip / dir / image)")),
+      h("label", { style: "flex: 1; max-width: 160px;" }, t("Evidence ID (optional)")),
       h("span", { style: "width: 32px;" }, ""),
     ]),
     rows,
     h("div", { style: "margin-top: 4px;" }, [
-      h("button", { class: "ghost", onclick: () => addRow() }, "＋ Add evidence"),
+      h("button", { class: "ghost", onclick: () => addRow() }, t("＋ Add evidence")),
     ]),
     // Issue #12: optional skip-Gate-0 toggle so the examiner can opt
     // out of parse-result review at the same time as kicking off Parse.
     // Setting auto_skip BEFORE Parse means newly-produced parse_results
     // won't block Analyze either.
     h("div", { class: "form-row", style: "margin-top: 12px;" }, [
-      h("label", {}, "Review Gate 0 をスキップ"),
+      h("label", {}, t("Review Gate 0 をスキップ")),
       h("input", {
         type: "checkbox", id: "p_skip_gate0",
         title: "ON にすると Parse 完了後のレビューを飛ばし、Analyze がブロックされなくなる (auto_skip)",
       }),
     ]),
     h("p", { class: "muted", style: "font-size: 11px; margin-top: 0;" },
-      "★ ON: 全 parse 結果を auto-approve 扱いにする。" +
-      "Events タブで個別レビューせずに即 Analyze に進みたいとき。"),
+t("★ ON: 全 parse 結果を auto-approve 扱いにする。Events タブで個別レビューせずに即 Analyze に進みたいとき。")),
     h("div", { class: "actions" }, [
       (() => {
-        const cancelBtn = h("button", { class: "ghost" }, "Cancel");
+        const cancelBtn = h("button", { class: "ghost" }, t("Cancel"));
         cancelBtn.onclick = () => closeModal();
         return cancelBtn;
       })(),
@@ -1365,7 +1561,7 @@ async function startParse(caseID) {
             evidence_id:   row.querySelector(".p_evid").value.trim(),
           })).filter((e) => e.evidence_path);
           if (evidences.length === 0) {
-            toast("少なくとも 1 つの evidence_path が必要です", "error");
+            toast(t("少なくとも 1 つの evidence_path が必要です"), "error");
             return;
           }
           // Issue #23: input-type + image-format hints. "auto" sends nothing
@@ -1387,7 +1583,7 @@ async function startParse(caseID) {
             toast(`Parse started (${evidences.length} evidence${evidences.length > 1 ? "s" : ""})`, "success");
           } catch (e) { toast(e.message, "error"); }
         },
-      }, "Start parse"),
+      }, t("Start parse")),
     ]),
   ]);
 }
@@ -1407,14 +1603,9 @@ async function startAnalyze(caseID) {
   const warn = !llm.ok ? h("div", {
     class: "card", style: "background:#3a1e1e; border-color:#e74c3c; padding:8px 12px; margin: 0 0 8px 0;",
   }, [
-    h("strong", { style: "color:#e74c3c;" }, "⚠ LLM access not detected"),
+    h("strong", { style: "color:#e74c3c;" }, t("⚠ LLM access not detected")),
     h("p", { class: "muted", style: "margin: 4px 0 0 0; font-size: 11px;" },
-      "Neither the `claude` CLI nor the ANTHROPIC_API_KEY env var is " +
-      "available. Tier 1A (cached signature SQL) still runs fine without an " +
-      "LLM — only the optional Tier 1B anomaly_hunter pass needs one. " +
-      "To enable it, install Claude Code CLI (`npm i -g @anthropic-ai/claude-code` + " +
-      "`claude` once to /login), or `export ANTHROPIC_API_KEY=...` and " +
-      "restart the server."),
+t("Neither the `claude` CLI nor the ANTHROPIC_API_KEY env var is available. Tier 1A (cached signature SQL) still runs fine without an LLM — only the optional Tier 1B anomaly_hunter pass needs one. To enable it, install Claude Code CLI (`npm i -g @anthropic-ai/claude-code` + `claude` once to /login), or `export ANTHROPIC_API_KEY=...` and restart the server.")),
   ]) : null;
   const llmInfo = llm.ok ? h("p", { class: "muted", style: "font-size: 11px; margin-top: 0;" },
     "✓ LLM access OK — " +
@@ -1423,30 +1614,28 @@ async function startAnalyze(caseID) {
     (llm.api_key_set ? "ANTHROPIC_API_KEY set" : "")) : null;
 
   const close = modal([
-    h("h3", {}, "Analyze — Tier 1A (signature SQL) + Tier 1B (optional)"),
+    h("h3", {}, t("Analyze — Tier 1A (signature SQL) + Tier 1B (optional)")),
     warn,
     llmInfo,
     h("p", { class: "muted" },
-      "Tier 1A always runs: cached signature SQL (Sigma / Hayabusa / STIX / custom / LOLBAS) " +
-      "against this case — no LLM, no cost. Tier 1B (anomaly_hunter) is an optional LLM pass."),
-    h("div", { class: "form-row" }, [h("label", {}, "Also run Tier 1B (anomaly_hunter, LLM)"),
+t("Tier 1A always runs: cached signature SQL (Sigma / Hayabusa / STIX / custom / LOLBAS) against this case — no LLM, no cost. Tier 1B (anomaly_hunter) is an optional LLM pass.")),
+    h("div", { class: "form-row" }, [h("label", {}, t("Also run Tier 1B (anomaly_hunter, LLM)")),
       h("input", { id: "a_anomaly", type: "checkbox" })]),
-    h("div", { class: "form-row" }, [h("label", {}, "Tier 1B model"),
+    h("div", { class: "form-row" }, [h("label", {}, t("Tier 1B model")),
       h("input", { id: "a_model", placeholder: "(claude CLI default)" })]),
     // Issue #11: surface the already-existing Gate 0 skip-all so the
     // examiner can opt out of parse-result review from this modal.
     h("div", { class: "form-row" }, [
-      h("label", {}, "Review Gate 0 をスキップ"),
+      h("label", {}, t("Review Gate 0 をスキップ")),
       h("input", {
         type: "checkbox", id: "a_skip_gate0",
         title: "ON にすると Parse Results の人間レビューを飛ばして Analyze を開始 (auto_skip)",
       }),
     ]),
     h("p", { class: "muted", style: "font-size: 11px; margin-top: 0;" },
-      "★ ON: 全 parse 結果を auto-approve 扱い → Analyze をブロックしない。" +
-      "OFF (デフォルト): Events タブで approve していない parse 結果があると Analyze は 409 で停止"),
+t("★ ON: 全 parse 結果を auto-approve 扱い → Analyze をブロックしない。OFF (デフォルト): Events タブで approve していない parse 結果があると Analyze は 409 で停止")),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
       h("button", { class: "primary", onclick: async () => {
         try {
           // If skip-Gate-0 is checked, flip auto_skip BEFORE kicking off
@@ -1460,45 +1649,45 @@ async function startAnalyze(caseID) {
             model:  $("#a_model").value.trim(),
             include_anomaly: $("#a_anomaly").checked,
           });
-          close(); toast("Analyze started", "success");
+          close(); toast(t("Analyze started"), "success");
         } catch (e) { toast(e.message, "error"); }
-      }}, "Start analyze"),
+      }}, t("Start analyze")),
     ]),
   ]);
 }
 
 async function startSynthesize(caseID) {
   const close = modal([
-    h("h3", {}, "Run Tier 2 (Timeline Analysis)"),
-    h("div", { class: "form-row" }, [h("label", {}, "Active search"),
+    h("h3", {}, t("Run Tier 2 (Timeline Analysis)")),
+    h("div", { class: "form-row" }, [h("label", {}, t("Active search")),
       h("input", { id: "s_active", type: "checkbox" })]),
-    h("p", { class: "muted" }, "Tier 2 clusters Tier 1 findings and analyses each cluster's ±N-min timeline with an LLM. Active search adds a hypothesis-driven wide-range SQL pass per cluster (slower, more thorough)."),
+    h("p", { class: "muted" }, t("Tier 2 clusters Tier 1 findings and analyses each cluster's ±N-min timeline with an LLM. Active search adds a hypothesis-driven wide-range SQL pass per cluster (slower, more thorough).")),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
       h("button", { class: "primary", onclick: async () => {
         try {
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/synthesize`, {
             active_search: $("#s_active").checked,
           });
-          close(); toast("Synthesis started", "success");
+          close(); toast(t("Synthesis started"), "success");
         } catch (e) { toast(e.message, "error"); }
-      }}, "Start synthesize"),
+      }}, t("Start synthesize")),
     ]),
   ]);
 }
 
 async function startReport(caseID) {
   const close = modal([
-    h("h3", {}, "Generate report"),
-    h("div", { class: "form-row" }, [h("label", {}, "Language"),
+    h("h3", {}, t("Generate report")),
+    h("div", { class: "form-row" }, [h("label", {}, t("Language")),
       h("select", { id: "r_lang" }, [
         h("option", { value: "ja" }, "日本語"),
         h("option", { value: "en" }, "English"),
       ])]),
-    h("div", { class: "form-row" }, [h("label", {}, "Only approved"),
+    h("div", { class: "form-row" }, [h("label", {}, t("Only approved")),
       h("input", { id: "r_approved", type: "checkbox" })]),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
       h("button", { class: "primary", onclick: async () => {
         try {
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/report`, {
@@ -1506,9 +1695,9 @@ async function startReport(caseID) {
             only_approved: $("#r_approved").checked,
             timezone: currentViewTZ(), // render report times in the Web UI display TZ
           });
-          close(); toast("Report generation started", "success");
+          close(); toast(t("Report generation started"), "success");
         } catch (e) { toast(e.message, "error"); }
-      }}, "Generate"),
+      }}, t("Generate")),
     ]),
   ]);
 }
@@ -1555,7 +1744,7 @@ async function startAutopilot(caseID) {
         title: "remove this evidence",
         onclick: () => {
           if (rows.children.length > 1) row.remove();
-          else toast("少なくとも 1 つの evidence が必要です", "error");
+          else toast(t("少なくとも 1 つの evidence が必要です"), "error");
         },
       }, "−"),
     ]);
@@ -1583,44 +1772,42 @@ async function startAutopilot(caseID) {
   ]);
 
   const close = modal([
-    h("h3", {}, "🤖 Auto-pilot — Parse → Analyze → Synthesize → Report"),
+    h("h3", {}, t("🤖 Auto-pilot — Parse → Analyze → Synthesize → Report")),
     h("p", { class: "muted", style: "font-size: 12px;" },
-      "Both Review Gates (0: parse results, 2: timeline) will be auto-skipped. " +
-      "All findings will reach the final report without per-item human approval. " +
-      "Use the individual buttons above for examiner-supervised runs."),
+t("Both Review Gates (0: parse results, 2: timeline) will be auto-skipped. All findings will reach the final report without per-item human approval. Use the individual buttons above for examiner-supervised runs.")),
     h("div", { class: "form-row", style: "gap: 6px;" }, [
-      h("label", { style: "flex: 3;" }, "Evidence path (.zip / dir / image)"),
-      h("label", { style: "flex: 1; max-width: 160px;" }, "Evidence ID (optional)"),
+      h("label", { style: "flex: 3;" }, t("Evidence path (.zip / dir / image)")),
+      h("label", { style: "flex: 1; max-width: 160px;" }, t("Evidence ID (optional)")),
       h("span", { style: "width: 32px;" }, ""),
     ]),
     rows,
     h("div", { style: "margin-top: 4px;" }, [
-      h("button", { class: "ghost", onclick: () => addRow() }, "＋ Add evidence"),
+      h("button", { class: "ghost", onclick: () => addRow() }, t("＋ Add evidence")),
     ]),
     h("div", { class: "form-row" }, [
-      h("label", {}, "Input mode"),
+      h("label", {}, t("Input mode")),
       inputModeSelect,
     ]),
     h("div", { class: "form-row" }, [
-      h("label", {}, "Image format"),
+      h("label", {}, t("Image format")),
       imageFormatSelect,
     ]),
     h("div", { class: "form-row" }, [
-      h("label", {}, "Report language"),
+      h("label", {}, t("Report language")),
       h("select", { id: "ap_lang" }, [
         h("option", { value: "ja" }, "日本語"),
         h("option", { value: "en" }, "English"),
       ]),
     ]),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
       h("button", { class: "primary", onclick: async () => {
         const evidences = Array.from(rows.querySelectorAll(".ap_row")).map((row) => ({
           evidence_path: row.querySelector(".ap_path").value.trim(),
           evidence_id:   row.querySelector(".ap_evid").value.trim(),
         })).filter((e) => e.evidence_path);
         if (evidences.length === 0) {
-          toast("少なくとも 1 つの evidence path が必要です", "error");
+          toast(t("少なくとも 1 つの evidence path が必要です"), "error");
           return;
         }
         const inputMode = $("#ap_input_mode").value || "auto";
@@ -1643,7 +1830,7 @@ async function startAutopilot(caseID) {
         } catch (e) {
           toast("Auto-pilot start failed: " + e.message, "error");
         }
-      }}, "Start Auto-pilot"),
+      }}, t("Start Auto-pilot")),
     ]),
   ]);
 }
@@ -1714,12 +1901,12 @@ async function waitForJob(caseID, kind) {
 const FND_CLUSTER_CAP = 8; // finding rows shown per cluster before the "…ほか" row
 
 async function renderFindings(pane, caseID) {
-  pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading findings…</div>`;
+  pane.innerHTML = `<div class="empty"><span class="spinner"></span>${t("loading findings…")}</div>`;
   let findings;
   try { findings = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/findings`); }
-  catch (e) { pane.innerHTML = `<div class="empty">No findings yet (run Analyze first).</div>`; return; }
+  catch (e) { pane.innerHTML = `<div class="empty">${t("No findings yet (run Analyze first).")}</div>`; return; }
   if (!findings || findings.length === 0) {
-    pane.innerHTML = `<div class="empty">No findings yet (run Analyze first).</div>`; return;
+    pane.innerHTML = `<div class="empty">${t("No findings yet (run Analyze first).")}</div>`; return;
   }
 
   // Group by primary MITRE tactic; "uncategorized" for findings with no tactic.
@@ -1758,7 +1945,7 @@ async function renderFindings(pane, caseID) {
 
   // Shown when the search/filter hides every finding.
   pane.appendChild(h("div", { class: "findings-nomatch hidden", id: "fnd-nomatch" },
-    "No findings match the current search / filter."));
+    t("No findings match the current search / filter.")));
 
   // On the first render (no carried-over expand state) auto-open tactic groups
   // that contain a critical/high finding so the important clusters are visible
@@ -1818,7 +2005,7 @@ function buildClusterGroup(pane, caseID, g, expanded) {
     },
   });
 
-  const toggleBtn = h("button", { class: "fbtn ftoggle-btn" }, expanded ? "折り畳む" : "展開");
+  const toggleBtn = h("button", { class: "fbtn ftoggle-btn" }, expanded ? t("折り畳む") : t("展開"));
   const header = h("div", { class: "cluster-row" }, [
     groupCheck,
     unc
@@ -1874,8 +2061,8 @@ function clusterSevClass(findings, tactic) {
   return "fc-low";
 }
 
-// refreshClusterHeader recomputes the cluster's status badge ("要確認" while
-// any finding is pending, "確認済" once everything is reviewed, "未割当" for
+// refreshClusterHeader recomputes the cluster's status badge (t("要確認") while
+// any finding is pending, t("確認済") once everything is reviewed, t("未割当") for
 // the uncategorized bucket) — called after each approve/reject/reset.
 function refreshClusterHeader(pane, tactic, groupEl) {
   const state = pane._findings;
@@ -1890,11 +2077,11 @@ function refreshClusterHeader(pane, tactic, groupEl) {
   }
   if (pending > 0) {
     badge.className = "fstatus pending";
-    badge.textContent = tactic === "uncategorized" ? "未割当" : "要確認";
+    badge.textContent = tactic === "uncategorized" ? t("未割当") : t("要確認");
     badge.title = pending + " 件が未レビュー";
   } else {
     badge.className = "fstatus done";
-    badge.textContent = "確認済";
+    badge.textContent = t("確認済");
     badge.title = "全件レビュー済";
   }
 }
@@ -1990,15 +2177,15 @@ function refreshFindingsToolbar(pane) {
       value: state.query || "",
       oninput: (ev) => { state.query = ev.target.value.trim(); applyVisibilityFilter(pane); },
     }),
-    h("span", { class: "flabel", style: "min-width: 0;" }, "Sort:"),
+    h("span", { class: "flabel", style: "min-width: 0;" }, t("Sort:")),
     sortSelect,
-    h("button", { class: "fbtn", title: "全クラスターを展開", onclick: () => expandAllGroups(pane, true) }, "Expand all"),
-    h("button", { class: "fbtn", title: "全クラスターを折り畳む", onclick: () => expandAllGroups(pane, false) }, "Collapse all"),
+    h("button", { class: "fbtn", title: "全クラスターを展開", onclick: () => expandAllGroups(pane, true) }, t("Expand all")),
+    h("button", { class: "fbtn", title: "全クラスターを折り畳む", onclick: () => expandAllGroups(pane, false) }, t("Collapse all")),
   ]));
 
   // Row 1: review-state filter + roll-up counts.
   toolbar.appendChild(h("div", { class: "frow" }, [
-    h("span", { class: "flabel" }, "State:"),
+    h("span", { class: "flabel" }, t("State:")),
     ...["all", "pending", "reviewed", "auto-approved"].map((mode) =>
       h("button", {
         class: "fbtn" + (state.filter === mode ? " primary" : ""),
@@ -2007,7 +2194,7 @@ function refreshFindingsToolbar(pane) {
           applyVisibilityFilter(pane);
           refreshFindingsToolbar(pane);
         },
-      }, mode)),
+      }, t(mode))),
     h("span", { class: "spacer" }),
     h("span", { class: "fcounts" }, [
       `Total ${total} · pending ${pending} · reviewed ${approved} · auto ${autoApproved} · rejected ${rejected} · showing `,
@@ -2017,8 +2204,8 @@ function refreshFindingsToolbar(pane) {
 
   // Row 2: source filter (Tier 1A vs 1B) + approve-all-visible.
   toolbar.appendChild(h("div", { class: "frow" }, [
-    h("span", { class: "flabel" }, "Source:"),
-    ...[["all", "All"], ["tier1a", "Tier 1A (rules)"], ["tier1b", "Tier 1B (skills)"]].map(([mode, label]) =>
+    h("span", { class: "flabel" }, t("Source:")),
+    ...[["all", t("All")], ["tier1a", t("Tier 1A (rules)")], ["tier1b", t("Tier 1B (skills)")]].map(([mode, label]) =>
       h("button", {
         class: "fbtn" + (state.sourceFilter === mode ? " primary" : ""),
         onclick: () => {
@@ -2063,23 +2250,23 @@ function refreshFindingsToolbar(pane) {
   master.indeterminate = selectedCount > 0 && selectedCount < visibleCount;
   toolbar.appendChild(h("div", { class: "selection-bar" }, [
     master,
-    h("span", {}, selectedCount > 0 ? `${selectedCount} selected` : "(no rows selected)"),
+    h("span", {}, selectedCount > 0 ? `${selectedCount} selected` : t("(no rows selected)")),
     h("span", { class: "dot" }, "·"),
     h("button", {
       class: "fbtn",
       disabled: selectedCount === 0 ? "disabled" : null,
       onclick: () => bulkAction(pane, "approve"),
-    }, "Approve selected"),
+    }, t("Approve selected")),
     h("button", {
       class: "fbtn danger",
       disabled: selectedCount === 0 ? "disabled" : null,
       onclick: () => rejectWithModal(pane, [...state.selected]),
-    }, "Reject selected…"),
+    }, t("Reject selected…")),
     h("button", {
       class: "fbtn",
       disabled: selectedCount === 0 ? "disabled" : null,
       onclick: () => bulkAction(pane, "reset"),
-    }, "Reset selected"),
+    }, t("Reset selected")),
   ]));
 }
 
@@ -2143,7 +2330,7 @@ function setGroupExpanded(pane, group, expanded) {
   const toggle = group.querySelector(".tactic-toggle");
   if (toggle && !toggle.classList.contains("warn-ico")) toggle.textContent = expanded ? "▾" : "▸";
   const btn = group.querySelector(".ftoggle-btn");
-  if (btn) btn.textContent = expanded ? "折り畳む" : "展開";
+  if (btn) btn.textContent = expanded ? t("折り畳む") : t("展開");
   const tactic = group.getAttribute("data-tactic");
   if (tactic && pane._findings && pane._findings.expanded) {
     if (expanded) pane._findings.expanded.add(tactic);
@@ -2163,20 +2350,20 @@ async function bulkAction(pane, action) {
 }
 
 // rejectWithModal asks for an optional reason, then rejects the given ids.
-// Shared by the single-row 却下 button and the bulk "Reject selected…" action.
+// Shared by the single-row 却下 button and the bulk t("Reject selected…") action.
 function rejectWithModal(pane, ids) {
   if (!ids || ids.length === 0) return;
   const close = modal([
-    h("h3", {}, ids.length === 1 ? "Finding を却下" : `${ids.length} 件の finding を却下`),
-    h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
+    h("h3", {}, ids.length === 1 ? t("Finding を却下") : `${ids.length} 件の finding を却下`),
+    h("div", { class: "form-row" }, [h("label", {}, t("Reason (optional)")),
       h("input", { id: "rej_reason", placeholder: "why is this not a true positive? (optional)" })]),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+      h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
       h("button", { class: "danger", onclick: async () => {
         const reason = $("#rej_reason").value.trim();
         close();
         await runBulk(pane, ids, "reject", reason);
-      }}, "Reject"),
+      }}, t("Reject")),
     ]),
   ]);
 }
@@ -2259,27 +2446,27 @@ function rebuildActionButtons(pane, f, actions) {
     actions.appendChild(h("button", {
       class: "fbtn",
       onclick: () => runBulk(pane, [f.finding_id], "approve", ""),
-    }, "承認"));
+    }, t("承認")));
     actions.appendChild(h("button", {
       class: "fbtn danger",
       onclick: () => rejectWithModal(pane, [f.finding_id]),
-    }, "却下"));
+    }, t("却下")));
   } else if (f.rejected) {
     actions.appendChild(h("span", { class: "fnd-state bad", title: f.reject_reason ? "reason: " + f.reject_reason : "" },
-      "✕ 却下" + (f.reject_reason ? " · " + f.reject_reason : "")));
+      t("✕ 却下") + (f.reject_reason ? " · " + f.reject_reason : "")));
     actions.appendChild(h("button", {
       class: "fbtn",
       onclick: () => runBulk(pane, [f.finding_id], "approve", ""),
-    }, "承認"));
+    }, t("承認")));
     actions.appendChild(h("button", {
       class: "fbtn",
       title: "判断を取り消して severity 既定値に戻す",
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
-    }, "リセット"));
+    }, t("リセット")));
   } else {
     const label = f.auto_approved
       ? "✓ auto 承認 (severity 既定)"
-      : "✓ 承認済" + (f.reviewed_at ? " · " + fmtTS(f.reviewed_at) : "");
+      : t("✓ 承認済") + (f.reviewed_at ? " · " + fmtTS(f.reviewed_at) : "");
     actions.appendChild(h("span", {
       class: "fnd-state ok",
       title: "reviewed by " + (f.auto_approved ? (f.approved_by || "auto:severity-rule") : (f.reviewed_by || "?")),
@@ -2287,12 +2474,12 @@ function rebuildActionButtons(pane, f, actions) {
     actions.appendChild(h("button", {
       class: "fbtn danger",
       onclick: () => rejectWithModal(pane, [f.finding_id]),
-    }, "却下"));
+    }, t("却下")));
     actions.appendChild(h("button", {
       class: "fbtn",
       title: "判断を取り消して severity 既定値に戻す",
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
-    }, "リセット"));
+    }, t("リセット")));
   }
 }
 
@@ -2375,13 +2562,13 @@ function findingRow(caseID, f, pane) {
 
   // ---- sub-line: source / confidence / matches / evidence toggle / actions
   const evToggle = previews.length > 0
-    ? h("a", { class: "ev-toggle" }, "evidence を見る ▾")
-    : h("span", { class: "muted" }, "evidence なし");
+    ? h("a", { class: "ev-toggle" }, t("evidence を見る ▾"))
+    : h("span", { class: "muted" }, t("evidence なし"));
   if (previews.length > 0) {
     evToggle.onclick = () => {
       const willOpen = evBlock.classList.contains("hidden");
       evBlock.classList.toggle("hidden");
-      evToggle.textContent = willOpen ? "evidence を閉じる ▴" : "evidence を見る ▾";
+      evToggle.textContent = willOpen ? t("evidence を閉じる ▴") : t("evidence を見る ▾");
       if (willOpen) loadEvidence();
     };
   }
@@ -2429,7 +2616,7 @@ function findingDetailsModal(f) {
   const kv = (k, v, copyable) => h("div", { class: "form-row" }, [
     h("label", {}, k),
     h("span", { class: "mono", style: "font-size: 11px; word-break: break-all; flex: 1;" }, v || "—"),
-    ...(copyable && v ? [h("button", { class: "fbtn", onclick: () => copyText(v, k) }, "コピー")] : []),
+    ...(copyable && v ? [h("button", { class: "fbtn", onclick: () => copyText(v, k) }, t("コピー"))] : []),
   ]);
   const close = modal([
     h("h3", {}, f.title || f.rule_id || "(untitled)"),
@@ -2443,8 +2630,8 @@ function findingDetailsModal(f) {
     ...(f.reject_reason ? [kv("reject reason", f.reject_reason)] : []),
     ...(f.description ? [h("div", { class: "muted", style: "font-size: 11px; white-space: pre-wrap; margin-top: 8px; max-height: 200px; overflow-y: auto;" }, f.description)] : []),
     h("div", { class: "actions" }, [
-      h("button", { class: "ghost", onclick: () => copyText(JSON.stringify(f, null, 2), "finding JSON") }, "JSON をコピー"),
-      h("button", { onclick: () => close() }, "閉じる"),
+      h("button", { class: "ghost", onclick: () => copyText(JSON.stringify(f, null, 2), "finding JSON") }, t("JSON をコピー")),
+      h("button", { onclick: () => close() }, t("閉じる")),
     ]),
   ]);
 }
@@ -2561,7 +2748,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
   const ident = take(["executable", "ApplicationName", "FullPath", "FileName",
     "cs-uri-stem", "module_name", "image", "TaskName", "url", "title", "path"]);
   // Timestamp/host fields already shown via the typed row columns.
-  for (const k of ["TimeCreated", "Timestamp", "Computer", "computer", "date", "time"]) consumed.add(k);
+  for (const k of ["TimeCreated", t("Timestamp"), t("Computer"), "computer", "date", "time"]) consumed.add(k);
 
   // ---- head ----------------------------------------------------------------
   let headTitle;
@@ -2611,7 +2798,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
   if (srcFile) {
     addRow("source", [
       h("span", { class: "mono muted", style: "font-size: 11px;", title: String(srcFile) }, evdShortPath(srcFile)),
-      " ", copyIcon(String(srcFile), "フルパス"),
+      " ", copyIcon(String(srcFile), t("フルパス")),
     ]);
   }
 
@@ -2648,7 +2835,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
         if (ev.evidence_id) q.set("evidence", ev.evidence_id);
         navigate(`/cases/${encodeURIComponent(caseID)}?tab=events&${q.toString()}`);
       },
-    }, "⏱ 前後 ±5 分のイベント"));
+    }, t("⏱ 前後 ±5 分のイベント")));
   }
   if (eventId) {
     // payload_json is stored minified ({"EventId":"105",…}) so an exact
@@ -2670,25 +2857,25 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
       let pretty = ev.payload_json || "";
       try { pretty = JSON.stringify(JSON.parse(ev.payload_json), null, 2); } catch (_) {}
       const close = modal([
-        h("h3", {}, "Raw event payload"),
+        h("h3", {}, t("Raw event payload")),
         h("div", { class: "muted mono", style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, ev.audit_id),
         h("pre", { class: "payload-pre", style: "max-width: 100%; min-width: 0;" }, pretty),
         h("div", { class: "actions" }, [
-          h("button", { class: "ghost", onclick: () => copyText(pretty, "payload JSON") }, "コピー"),
-          h("button", { onclick: () => close() }, "閉じる"),
+          h("button", { class: "ghost", onclick: () => copyText(pretty, "payload JSON") }, t("コピー")),
+          h("button", { onclick: () => close() }, t("閉じる")),
         ]),
       ]);
     },
-  }, "{ } 生 JSON を見る"));
+  }, t("{ } 生 JSON を見る")));
   actionsRow.appendChild(h("span", { class: "spacer" }));
   if (empties.length > 0) {
-    const emptyToggle = h("a", {}, "表示");
+    const emptyToggle = h("a", {}, t("表示"));
     const note = h("span", { class: "muted", style: "font-size: 11px;" },
       [`空欄フィールド ${empties.length} 件 非表示 `, emptyToggle]);
     let shown = false;
     emptyToggle.onclick = () => {
       shown = !shown;
-      emptyToggle.textContent = shown ? "隠す" : "表示";
+      emptyToggle.textContent = shown ? t("隠す") : t("表示");
       grid.querySelectorAll(".evd-empty").forEach((el) => el.remove());
       if (shown) {
         for (const k of empties) {
@@ -2715,10 +2902,10 @@ function cssEscape(s) {
 // Timeline tab
 // ============================================================================
 async function renderTimeline(pane, caseID) {
-  pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading timeline…</div>`;
+  pane.innerHTML = `<div class="empty"><span class="spinner"></span>${t("loading timeline…")}</div>`;
   let data;
   try { data = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/timeline`); }
-  catch (e) { pane.innerHTML = `<div class="empty">No synthesis yet (run Synthesize first).</div>`; return; }
+  catch (e) { pane.innerHTML = `<div class="empty">${t("No synthesis yet (run Synthesize first).")}</div>`; return; }
 
   // Review Gate 2 state (per-entry approve/reject). Fetch lazily — if the
   // endpoint fails (older server) the table renders without controls.
@@ -2757,7 +2944,7 @@ async function renderTimeline(pane, caseID) {
   // table — review T-1/T-4/T-6). Each row expands into the same rich evidence
   // card the findings tab uses ("evidence を見る").
   if (rows.length === 0) {
-    pane.appendChild(h("div", { class: "empty" }, "No timeline entries yet (run Analyze → Synthesize)."));
+    pane.appendChild(h("div", { class: "empty" }, t("No timeline entries yet (run Analyze → Synthesize).")));
     return;
   }
   pane.appendChild(tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane));
@@ -2787,8 +2974,8 @@ function tlReliabilityBanner(unreliable, notes) {
 function tlKillChain(steps, unreliable) {
   const box = h("div", { class: "tl-section" });
   box.appendChild(h("h3", {}, [
-    "Kill Chain ",
-    h("span", { class: "tl-h3-note" }, unreliable ? "(論理順 — レポートの侵入経路と同じ)" : "(検出順)"),
+    t("Kill Chain "),
+    h("span", { class: "tl-h3-note" }, unreliable ? t("(論理順 — レポートの侵入経路と同じ)") : t("(検出順)")),
   ]));
   const kc = h("div", { class: "killchain" });
   if (steps.length > 0) {
@@ -2843,8 +3030,8 @@ function tlSwimlane(rows, clusters, steps) {
   });
   const noiseRows = withTs.filter((r) => r.noise);
   const unmapped = withTs.filter((r) => !r.cluster_id);
-  if (unmapped.length) lanes.push({ label: "未分類", noise: false, rows: unmapped });
-  if (noiseRows.length) lanes.push({ label: "起動ノイズ(良性)", noise: true, rows: noiseRows });
+  if (unmapped.length) lanes.push({ label: t("未分類"), noise: false, rows: unmapped });
+  if (noiseRows.length) lanes.push({ label: t("起動ノイズ(良性)"), noise: true, rows: noiseRows });
 
   // largest consecutive gap on the time axis.
   const sorted = [...times].sort((a, b) => a - b);
@@ -2856,7 +3043,7 @@ function tlSwimlane(rows, clusters, steps) {
   const showGap = gapLen / span > 0.12;
 
   const box = h("div", { class: "tl-section" });
-  box.appendChild(h("h3", {}, ["Activity Density ", h("span", { class: "tl-h3-note" }, "(記録時刻軸 · 重大度色)")]));
+  box.appendChild(h("h3", {}, [t("Activity Density "), h("span", { class: "tl-h3-note" }, t("(記録時刻軸 · 重大度色)"))]));
   const swim = h("div", { class: "swimlane" });
 
   if (showGap) {
@@ -2907,7 +3094,7 @@ function tlSwimlane(rows, clusters, steps) {
 
   // legend
   const legend = h("div", { class: "swim-legend" });
-  [["critical", "緊急"], ["high", "高"], ["medium", "中"], ["low", "低"], ["info", "情報"]].forEach(([k, lbl]) => {
+  [["critical", t("緊急")], ["high", t("高")], ["medium", t("中")], ["low", t("低")], ["info", t("情報")]].forEach(([k, lbl]) => {
     legend.appendChild(h("span", {}, [
       h("span", { class: "swim-d", style: `background:${SEV_DOT[k]};` }), lbl,
     ]));
@@ -2945,7 +3132,7 @@ function tlGate2Banner(caseID, review, rows, pane) {
           } catch (e) { toast(e.message, "error"); }
         },
       }),
-      "Skip Review Gate 2 (auto-approve all)",
+      t("Skip Review Gate 2 (auto-approve all)"),
     ]),
   ]);
 }
@@ -2958,7 +3145,7 @@ function tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane) 
   const box = h("div", { class: "tl-section" });
   box.appendChild(h("h3", {}, [
     `Timeline (${rows.length} events) `,
-    h("span", { class: "tl-h3-note" }, "— フェーズ別 · 行クリックで evidence 展開"),
+    h("span", { class: "tl-h3-note" }, t("— フェーズ別 · 行クリックで evidence 展開")),
   ]));
 
   const stepByCluster = {};
@@ -2992,7 +3179,7 @@ function tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane) 
   const unmapped = byCluster.get(0) || [];
   if (unmapped.length && clusters.length) {
     box.appendChild(tlPhaseBlock(caseID, {
-      num: "•", title: "未分類", cls: "", rows: unmapped, review, unreliable, pane,
+      num: "•", title: t("未分類"), cls: "", rows: unmapped, review, unreliable, pane,
     }));
   } else if (unmapped.length && !clusters.length) {
     // no synthesis clusters at all → single flat group, no phase chrome.
@@ -3006,7 +3193,7 @@ function tlPhaseGroups(caseID, rows, clusters, steps, review, unreliable, pane) 
     const list = byCluster.get(c.id) || [];
     if (!list.length) return;
     box.appendChild(tlPhaseBlock(caseID, {
-      num: "⚠", title: (c.phase_label || c.attack_phase || "noise") + " — 起動シーケンスノイズ (良性)",
+      num: "⚠", title: (c.phase_label || c.attack_phase || "noise") + t(" — 起動シーケンスノイズ (良性)"),
       cls: "noise", rows: list, review, unreliable, pane, collapsed: true,
     }));
   });
@@ -3101,11 +3288,11 @@ function tlAppendRow(body, caseID, t, review, unreliable, pane) {
 function tlDetailPanel(caseID, t, aid, rev, stateClass, pane) {
   const panel = h("div", { class: "tl-detail-panel" });
   panel.appendChild(h("div", { class: "tl-detail-meta" }, [
-    kv("Tactic", t.tactic || "—"),
-    kv("Technique", t.technique || "—"),
-    kv("Computer", t.computer || "—"),
-    kv("Artifact", t.artifact || "—"),
-    kv("Source", (t.source || "—") + (t.rule_id ? " · " + t.rule_id : "")),
+    kv(t("Tactic"), t.tactic || "—"),
+    kv(t("Technique"), t.technique || "—"),
+    kv(t("Computer"), t.computer || "—"),
+    kv(t("Artifact"), t.artifact || "—"),
+    kv(t("Source"), (t.source || "—") + (t.rule_id ? " · " + t.rule_id : "")),
   ]));
 
   panel.appendChild(h("div", { class: "tl-detail-label" }, "Evidence"));
@@ -3144,7 +3331,7 @@ function tlDetailPanel(caseID, t, aid, rev, stateClass, pane) {
 function tlRowReview(caseID, t, aid, rev, pane) {
   const wrap = h("div", { class: "tl-row-review" });
   if (!aid) { wrap.appendChild(h("span", { class: "muted" }, "(no audit_id — not reviewable)")); return wrap; }
-  const stateText = { approved: "✓ 承認済", rejected: "✕ 却下", skipped: "✓ auto", pending: "未レビュー" }[rev.state] || "未レビュー";
+  const stateText = { approved: t("✓ 承認済"), rejected: t("✕ 却下"), skipped: "✓ auto", pending: t("未レビュー") }[rev.state] || t("未レビュー");
   const stateClass = { approved: "approved", rejected: "rejected", skipped: "approved", pending: "pending" }[rev.state] || "pending";
   wrap.appendChild(h("span", { class: "badge " + stateClass }, stateText));
   const post = async (verb, okMsg) => {
@@ -3154,19 +3341,19 @@ function tlRowReview(caseID, t, aid, rev, pane) {
       await renderTimeline(pane, caseID);
     } catch (e) { toast(e.message, "error"); }
   };
-  const approve = () => h("button", { class: "fbtn", onclick: (e) => { e.stopPropagation(); post("approve", "承認"); } }, "承認");
-  const reset = () => h("button", { class: "fbtn", title: "判断を取り消して未レビューに戻す", onclick: (e) => { e.stopPropagation(); post("reset", "リセット"); } }, "リセット");
+  const approve = () => h("button", { class: "fbtn", onclick: (e) => { e.stopPropagation(); post("approve", t("承認")); } }, t("承認"));
+  const reset = () => h("button", { class: "fbtn", title: "判断を取り消して未レビューに戻す", onclick: (e) => { e.stopPropagation(); post("reset", t("リセット")); } }, t("リセット"));
   const reject = () => h("button", {
     class: "fbtn danger",
     onclick: (e) => {
       e.stopPropagation();
       const close = modal([
-        h("h3", {}, "却下 — timeline entry"),
+        h("h3", {}, t("却下 — timeline entry")),
         h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
-        h("div", { class: "form-row" }, [h("label", {}, "理由"),
+        h("div", { class: "form-row" }, [h("label", {}, t("理由")),
           h("input", { id: "tl_reason", value: rev.reason || "", placeholder: "why is this entry not relevant?" })]),
         h("div", { class: "actions" }, [
-          h("button", { class: "ghost", onclick: () => close() }, "キャンセル"),
+          h("button", { class: "ghost", onclick: () => close() }, t("キャンセル")),
           h("button", { class: "danger", onclick: async () => {
             try {
               await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/reject`,
@@ -3174,11 +3361,11 @@ function tlRowReview(caseID, t, aid, rev, pane) {
               close(); toast("却下 " + aid.slice(0, 8), "success");
               await renderTimeline(pane, caseID);
             } catch (e) { toast(e.message, "error"); }
-          } }, "却下"),
+          } }, t("却下")),
         ]),
       ]);
     },
-  }, "却下");
+  }, t("却下"));
   if (rev.state === "approved") { wrap.appendChild(reject()); wrap.appendChild(reset()); }
   else if (rev.state === "rejected") { wrap.appendChild(approve()); wrap.appendChild(reset()); }
   else { wrap.appendChild(approve()); wrap.appendChild(reject()); }
@@ -3198,19 +3385,19 @@ function tlSeverity(raw) {
 // IOC tab
 // ============================================================================
 async function renderIOCs(pane, caseID) {
-  pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading IOCs…</div>`;
+  pane.innerHTML = `<div class="empty"><span class="spinner"></span>${t("loading IOCs…")}</div>`;
   let iocs;
   try { iocs = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/iocs`); }
-  catch (e) { pane.innerHTML = `<div class="empty">No synthesis yet.</div>`; return; }
+  catch (e) { pane.innerHTML = `<div class="empty">${t("No synthesis yet.")}</div>`; return; }
 
   pane.innerHTML = "";
   pane.appendChild(h("div", { class: "row", style: "margin-bottom: 12px;" }, [
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/ioc`, download: "ioc.csv" },
-       h("button", {}, "Download CSV")),
+       h("button", {}, t("Download CSV"))),
   ]));
 
   if (!iocs || iocs.length === 0) {
-    pane.appendChild(h("div", { class: "empty" }, "No IOCs extractable."));
+    pane.appendChild(h("div", { class: "empty" }, t("No IOCs extractable.")));
     return;
   }
 
@@ -3227,11 +3414,11 @@ async function renderIOCs(pane, caseID) {
   // ✅ confirmed IOCs — grouped by type, full table.
   const confirmed = buckets.ioc;
   pane.appendChild(h("div", { class: "ioc-sechead ok" }, [
-    h("span", {}, "✅ 確定 IOC"),
+    h("span", {}, t("✅ 確定 IOC")),
     h("span", { class: "ioc-sechead-n" }, `(${confirmed.length})`),
   ]));
   if (confirmed.length === 0) {
-    pane.appendChild(h("div", { class: "muted", style: "margin: 0 0 12px;" }, "確定 IOC は抽出されませんでした。"));
+    pane.appendChild(h("div", { class: "muted", style: "margin: 0 0 12px;" }, t("確定 IOC は抽出されませんでした。")));
   } else {
     const groups = new Map();
     confirmed.forEach((i) => {
@@ -3257,12 +3444,12 @@ async function renderIOCs(pane, caseID) {
 
   // 📋 / 🔇 secondary buckets — compact, de-emphasised. Each is "not a threat
   // IOC": a data feed, detection metadata, or excluded noise.
-  iocCompactBucket(pane, "📋 データ供給源 (IOC ではない)", "meta", buckets.source,
-    "検知に使われたログ供給源。脅威指標ではない。");
-  iocCompactBucket(pane, "📋 検知プロセス / provenance", "meta", buckets.provenance,
-    "検知メタデータ (Defender フィールドラベル・検知プロセス)。脅威指標ではない。");
-  iocCompactBucket(pane, "🔇 除外 (ノイズ)", "excl", buckets.excluded,
-    "パーサノイズ・sysprep ゴースト等。既定で折り畳み。", true);
+  iocCompactBucket(pane, t("📋 データ供給源 (IOC ではない)"), "meta", buckets.source,
+    t("検知に使われたログ供給源。脅威指標ではない。"));
+  iocCompactBucket(pane, t("📋 検知プロセス / provenance"), "meta", buckets.provenance,
+    t("検知メタデータ (Defender フィールドラベル・検知プロセス)。脅威指標ではない。"));
+  iocCompactBucket(pane, t("🔇 除外 (ノイズ)"), "excl", buckets.excluded,
+    t("パーサノイズ・sysprep ゴースト等。既定で折り畳み。"), true);
 }
 
 // iocCompactBucket renders a non-IOC bucket as a compact, de-emphasised list.
@@ -3301,14 +3488,14 @@ function iocCompactBucket(pane, label, kind, list, note, collapsed) {
 // MITRE tab
 // ============================================================================
 async function renderMITRE(pane, caseID) {
-  pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading MITRE map…</div>`;
+  pane.innerHTML = `<div class="empty"><span class="spinner"></span>${t("loading MITRE map…")}</div>`;
   let mapping;
   try { mapping = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/mitre`); }
-  catch (e) { pane.innerHTML = `<div class="empty">No synthesis yet.</div>`; return; }
+  catch (e) { pane.innerHTML = `<div class="empty">${t("No synthesis yet.")}</div>`; return; }
 
   pane.innerHTML = "";
   if (!mapping || mapping.length === 0) {
-    pane.appendChild(h("div", { class: "empty" }, "No MITRE mappings."));
+    pane.appendChild(h("div", { class: "empty" }, t("No MITRE mappings.")));
     return;
   }
   // Group by tactic
@@ -3347,11 +3534,11 @@ async function renderReport(pane, caseID) {
   pane.innerHTML = "";
   pane.appendChild(h("div", { class: "row", style: "margin-bottom: 12px; align-items: center;" }, [
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/html`, target: "_blank" },
-       h("button", {}, "Open HTML")),
+       h("button", {}, t("Open HTML"))),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/findings`, download: "findings.csv" },
-       h("button", {}, "Findings CSV")),
+       h("button", {}, t("Findings CSV"))),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/timeline`, download: "timeline.csv" },
-       h("button", {}, "Timeline CSV")),
+       h("button", {}, t("Timeline CSV"))),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/csv/ioc`, download: "ioc.csv" },
        h("button", {}, "IOC CSV")),
     h("a", { href: `/api/cases/${encodeURIComponent(caseID)}/report/json`, download: "report.json" },
@@ -3362,7 +3549,7 @@ async function renderReport(pane, caseID) {
   try {
     const r = await fetch(`/api/cases/${encodeURIComponent(caseID)}/report/html`);
     if (!r.ok) {
-      pane.appendChild(h("div", { class: "empty" }, "No HTML report yet — click 'Generate Report' above."));
+      pane.appendChild(h("div", { class: "empty" }, t("No HTML report yet — click 'Generate Report' above.")));
       return;
     }
     const html = await r.text();
@@ -3378,16 +3565,16 @@ async function renderReport(pane, caseID) {
 // Audit tab
 // ============================================================================
 async function renderAudit(pane, caseID) {
-  pane.innerHTML = `<div class="empty"><span class="spinner"></span>loading audit…</div>`;
+  pane.innerHTML = `<div class="empty"><span class="spinner"></span>${t("loading audit…")}</div>`;
   let entries;
   try { entries = await api("GET", `/api/cases/${encodeURIComponent(caseID)}/audit`); }
-  catch (e) { pane.innerHTML = `<div class="empty">No audit log.</div>`; return; }
+  catch (e) { pane.innerHTML = `<div class="empty">${t("No audit log.")}</div>`; return; }
 
   pane.innerHTML = "";
   // Tier filter
   const tiers = ["", "tier0", "tier1", "tier2", "tier3"];
   const filter = h("select", { id: "audit_tier", style: "max-width: 200px;" },
-    tiers.map((t) => h("option", { value: t }, t || "(all tiers)"))
+    tiers.map((t) => h("option", { value: t }, t || t("(all tiers)")))
   );
   filter.onchange = async () => {
     const v = filter.value;
@@ -3397,7 +3584,7 @@ async function renderAudit(pane, caseID) {
     redrawAudit(list, data);
   };
   pane.appendChild(h("div", { class: "row", style: "margin-bottom: 12px; align-items: center;" }, [
-    h("span", { class: "muted" }, "Tier filter:"), filter,
+    h("span", { class: "muted" }, t("Tier filter:")), filter,
   ]));
 
   const list = h("div", { class: "audit-list" });
@@ -3493,7 +3680,7 @@ function auditExplainDetail(e) {
 function redrawAudit(list, entries) {
   list.innerHTML = "";
   if (!entries || entries.length === 0) {
-    list.appendChild(h("div", { class: "empty" }, "No audit entries."));
+    list.appendChild(h("div", { class: "empty" }, t("No audit entries.")));
     return;
   }
   entries.forEach((e) => {
@@ -3739,7 +3926,7 @@ async function renderStatus(pane, caseID) {
   // Event log section.
   const logSection = h("div", { class: "card", style: "margin-top: 16px;" }, [
     h("div", { class: "card-header" }, [
-      h("strong", {}, "Event log"),
+      h("strong", {}, t("Event log")),
       h("span", { class: "muted", style: "margin-left: 8px; font-size: 12px;" },
         "(in-memory, current page-load)"),
     ]),
@@ -3859,7 +4046,7 @@ async function paintCaseSnapshot(host, caseID) {
 
   const card = h("div", { class: "card snapshot-card" });
   card.appendChild(h("div", { class: "card-header" }, [
-    h("strong", {}, "Case snapshot"),
+    h("strong", {}, t("Case snapshot")),
     h("span", { class: "muted", style: "margin-left: 8px; font-size: 12px;" },
       "(current artifact state, not job state)"),
   ]));
@@ -3877,11 +4064,11 @@ async function paintCaseSnapshot(host, caseID) {
       .join(" · ");
     const more = (p.artifacts || []).length > 6
       ? ` · +${p.artifacts.length - 6} more` : "";
-    const parseTile = snapshotTile("Tier 0 · Parse",
+    const parseTile = snapshotTile(t("Tier 0 · Parse"),
       [
         kv("Evidence", p.evidence_count),
-        kv("Events", p.events_total.toLocaleString()),
-        kv("Last", fmtTS(p.last_parsed_at) || "—"),
+        kv(t("Events"), p.events_total.toLocaleString()),
+        kv(t("Last"), fmtTS(p.last_parsed_at) || "—"),
       ],
       artifacts ? "Artifacts: " + artifacts + more : null
     );
@@ -3892,14 +4079,14 @@ async function paintCaseSnapshot(host, caseID) {
     const evs = p.evidence || [];
     if (evs.length >= 1) {
       parseTile.appendChild(h("div", { class: "evidence-breakdown" }, [
-        h("div", { class: "evidence-breakdown-title" }, "Per evidence"),
+        h("div", { class: "evidence-breakdown-title" }, t("Per evidence")),
         ...evs.map((e) => evidenceParseDetails(e, caseID)),
       ]));
     }
     body.appendChild(parseTile);
   } else {
-    body.appendChild(snapshotTile("Tier 0 · Parse",
-      [h("span", { class: "muted" }, "no parsed events yet")], null));
+    body.appendChild(snapshotTile(t("Tier 0 · Parse"),
+      [h("span", { class: "muted" }, t("no parsed events yet"))], null));
   }
 
   // Collection completeness — distinguishes a DATA GAP from a detection MISS.
@@ -3909,57 +4096,57 @@ async function paintCaseSnapshot(host, caseID) {
     const present = inputs.filter((i) => i.present).length;
     const missing = inputs.filter((i) => !i.present);
     const rows = [
-      kv("Inputs present", `${present}/${inputs.length}`),
-      kv("Data gaps", c.missing_count +
+      kv(t("Inputs present"), `${present}/${inputs.length}`),
+      kv(t("Data gaps"), c.missing_count +
         (c.missing_critical ? ` · ${c.missing_critical} critical` : "")),
     ];
     const footer = missing.length === 0
-      ? "All catalogued detection inputs present."
+      ? t("All catalogued detection inputs present.")
       : "Not collected (absence ≠ detection failure): " +
         missing.map((i) => i.label).join(" · ");
-    body.appendChild(snapshotTile("Collection completeness", rows, footer));
+    body.appendChild(snapshotTile(t("Collection completeness"), rows, footer));
   }
 
   // Tier 1A
-  body.appendChild(findingsTile("Tier 1A · Signature rules", sum.tier1a));
+  body.appendChild(findingsTile(t("Tier 1A · Signature rules"), sum.tier1a));
   // Tier 1B
-  body.appendChild(findingsTile("Tier 1B · Skill anomalies", sum.tier1b));
+  body.appendChild(findingsTile(t("Tier 1B · Skill anomalies"), sum.tier1b));
 
   // Tier 2 synthesis
   if (sum.synthesis && sum.synthesis.present) {
     const s = sum.synthesis;
     const rows = [
-      kv("Clusters", s.clusters_count || 0),
-      kv("MITRE techniques", s.techniques_count || 0),
-      kv("Open questions", s.open_questions_count || 0),
-      kv("LLM calls", s.llm_calls_total || 0),
-      kv("Generated", fmtTS(s.generated_at) || "—"),
+      kv(t("Clusters"), s.clusters_count || 0),
+      kv(t("MITRE techniques"), s.techniques_count || 0),
+      kv(t("Open questions"), s.open_questions_count || 0),
+      kv(t("LLM calls"), s.llm_calls_total || 0),
+      kv(t("Generated"), fmtTS(s.generated_at) || "—"),
     ];
     if (s.active_search_enabled) {
-      rows.push(kv("Active SQL",
+      rows.push(kv(t("Active SQL"),
         `${s.active_sql_succeeded || 0}/${s.active_sql_attempted || 0} ok`));
       if (s.active_sql_self_corrected) {
-        rows.push(kv("Self-corrected",
+        rows.push(kv(t("Self-corrected"),
           `${s.active_sql_self_corrected} query(ies) recovered after revision`));
       }
     }
-    body.appendChild(snapshotTile("Tier 2 · Synthesis", rows,
+    body.appendChild(snapshotTile(t("Tier 2 · Synthesis"), rows,
       s.model_id ? "model: " + s.model_id : null));
   } else {
-    body.appendChild(snapshotTile("Tier 2 · Synthesis",
-      [h("span", { class: "muted" }, "no synthesis.json yet")], null));
+    body.appendChild(snapshotTile(t("Tier 2 · Synthesis"),
+      [h("span", { class: "muted" }, t("no synthesis.json yet"))], null));
   }
 
   // Tier 3 report
   if (sum.report) {
-    body.appendChild(snapshotTile("Tier 3 · Report",
+    body.appendChild(snapshotTile(t("Tier 3 · Report"),
       [
-        kv("Formats", (sum.report.formats || []).join(", ")),
-        kv("Generated", fmtTS(sum.report.generated_at) || "—"),
+        kv(t("Formats"), (sum.report.formats || []).join(", ")),
+        kv(t("Generated"), fmtTS(sum.report.generated_at) || "—"),
       ], null));
   } else {
-    body.appendChild(snapshotTile("Tier 3 · Report",
-      [h("span", { class: "muted" }, "no reports generated yet")], null));
+    body.appendChild(snapshotTile(t("Tier 3 · Report"),
+      [h("span", { class: "muted" }, t("no reports generated yet"))], null));
   }
 
   card.appendChild(body);
@@ -4041,7 +4228,7 @@ function snapshotTile(title, rows, footer) {
 function findingsTile(title, fs) {
   if (!fs) {
     return snapshotTile(title,
-      [h("span", { class: "muted" }, "no findings yet")], null);
+      [h("span", { class: "muted" }, t("no findings yet"))], null);
   }
   const sevChips = ["critical","high","medium","low","info"]
     .filter((s) => (fs.by_severity || {})[s])
@@ -4052,15 +4239,15 @@ function findingsTile(title, fs) {
   const tile = h("div", { class: "snapshot-tile" }, [
     h("div", { class: "snapshot-tile-title" }, title),
     h("div", { class: "snapshot-row" }, [
-      h("span", { class: "k" }, "Total"),
+      h("span", { class: "k" }, t("Total")),
       h("span", { class: "v" }, String(fs.findings_count)),
     ]),
     h("div", { class: "snapshot-row" }, [
-      h("span", { class: "k" }, "Severity"),
+      h("span", { class: "k" }, t("Severity")),
       h("span", { class: "v" }, sevChips.length ? sevChips : "—"),
     ]),
     h("div", { class: "snapshot-row" }, [
-      h("span", { class: "k" }, "Review"),
+      h("span", { class: "k" }, t("Review")),
       h("span", { class: "v" },
         `pending:${fs.pending_count} · approved:${fs.approved_count} · auto:${fs.auto_approved_count} · rejected:${fs.rejected_count}`),
     ]),
@@ -4149,7 +4336,7 @@ function paintEventLog(host, caseID) {
   const mine = statusEventLog.filter((ev) => ev.caseID === caseID);
   if (mine.length === 0) {
     host.dataset.sig = "";
-    host.innerHTML = '<div class="empty">No events yet. Run Parse / Analyze / Synthesize / Report to populate.</div>';
+    host.innerHTML = '<div class="empty">' + t("No events yet. Run Parse / Analyze / Synthesize / Report to populate.") + '</div>';
     return;
   }
   // Render only recent N; signature-guard against repaint.
@@ -4189,7 +4376,7 @@ async function renderExtractsSection(pane, caseID) {
   if (old) old.remove();
 
   const exSection = h("div", { class: "card extracts-section" });
-  exSection.appendChild(h("h2", {}, "Extracts — Review Gate 0 (image)"));
+  exSection.appendChild(h("h2", {}, t("Extracts — Review Gate 0 (image)")));
 
   const records = data.records || [];
   const headers = data.headers || (data.header ? [data.header] : []);
@@ -4261,14 +4448,14 @@ async function renderExtractsSection(pane, caseID) {
 function extractTable(caseID, pane, records) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
-    h("th", {}, "Target"),
-    h("th", {}, "Status"),
-    h("th", {}, "Part"),
+    h("th", {}, t("Target")),
+    h("th", {}, t("Status")),
+    h("th", {}, t("Part")),
     h("th", {}, "Inum"),
-    h("th", {}, "Bytes"),
+    h("th", {}, t("Bytes")),
     h("th", {}, "SHA-256"),
-    h("th", {}, "Review"),
-    h("th", {}, "Action"),
+    h("th", {}, t("Review")),
+    h("th", {}, t("Action")),
   ])));
   const body = h("tbody");
   (records || []).forEach((r) => body.appendChild(extractRow(caseID, pane, r)));
@@ -4296,33 +4483,33 @@ function extractRow(caseID, pane, r) {
         try {
           await api("POST",
             `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/approve`);
-          toast("Approved " + r.target, "success");
+          toast(t("Approved ") + r.target, "success");
           await renderExtractsSection(pane, caseID);
         } catch (e) { toast(e.message, "error"); }
       },
-    }, "Approve"));
+    }, t("Approve")));
     action.appendChild(h("button", {
       class: "danger",
       onclick: () => {
         const close = modal([
-          h("h3", {}, "Reject extract " + r.target),
-          h("div", { class: "form-row" }, [h("label", {}, "Reason (optional)"),
+          h("h3", {}, t("Reject extract ") + r.target),
+          h("div", { class: "form-row" }, [h("label", {}, t("Reason (optional)")),
             h("input", { id: "ex_reason", placeholder: "why is this extract bad? (optional)" })]),
           h("div", { class: "actions" }, [
-            h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+            h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
             h("button", { class: "danger", onclick: async () => {
               try {
                 await api("POST",
                   `/api/cases/${encodeURIComponent(caseID)}/extracts/${encodeURIComponent(key)}/reject`,
                   { reason: $("#ex_reason").value.trim() });
-                close(); toast("Rejected " + r.target, "success");
+                close(); toast(t("Rejected ") + r.target, "success");
                 await renderExtractsSection(pane, caseID);
               } catch (e) { toast(e.message, "error"); }
-            }}, "Reject"),
+            }}, t("Reject")),
           ]),
         ]);
       },
-    }, "Reject"));
+    }, t("Reject")));
   }
   const statusClass = r.status === "ok" ? "ok"
                     : r.status === "not_found" ? "pending"
@@ -4378,18 +4565,18 @@ function sortParseResults(prs) {
   });
 }
 
-// parseResultThead builds the <thead>. countLabel is "Rows" (flat — parse
-// output rows) or "Events" (per-evidence — ingested events for one evidence).
+// parseResultThead builds the <thead>. countLabel is t("Rows") (flat — parse
+// output rows) or t("Events") (per-evidence — ingested events for one evidence).
 function parseResultThead(countLabel) {
   return h("thead", {}, h("tr", {}, [
-    h("th", {}, "Artifact"),
-    h("th", {}, "Status"),
+    h("th", {}, t("Artifact")),
+    h("th", {}, t("Status")),
     h("th", {}, countLabel),
-    h("th", {}, "Duration"),
-    h("th", {}, "Started"),
-    h("th", {}, "Review"),
-    h("th", {}, "Action"),
-    h("th", {}, "Analyze"),
+    h("th", {}, t("Duration")),
+    h("th", {}, t("Started")),
+    h("th", {}, t("Review")),
+    h("th", {}, t("Action")),
+    h("th", {}, t("Analyze")),
   ]));
 }
 
@@ -4422,32 +4609,32 @@ function parseResultRow(caseID, detail, pr, review, count) {
       onclick: async () => {
         try {
           await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/approve`);
-          toast("Approved " + aid, "success");
+          toast(t("Approved ") + aid, "success");
           await renderEvents($("#tabpane"), caseID, detail);
         } catch (e) { toast(e.message, "error"); }
       },
-    }, "Approve"));
+    }, t("Approve")));
     action.appendChild(h("button", {
       class: "danger",
       onclick: () => {
         const close = modal([
-          h("h3", {}, "Reject parse result " + aid),
-          h("div", { class: "form-row" }, [h("label", {}, "Reason"),
+          h("h3", {}, t("Reject parse result ") + aid),
+          h("div", { class: "form-row" }, [h("label", {}, t("Reason")),
             h("input", { id: "pr_reason", placeholder: "why is this parser output bad?" })]),
           h("div", { class: "actions" }, [
-            h("button", { class: "ghost", onclick: () => close() }, "Cancel"),
+            h("button", { class: "ghost", onclick: () => close() }, t("Cancel")),
             h("button", { class: "danger", onclick: async () => {
               try {
                 await api("POST", `/api/cases/${encodeURIComponent(caseID)}/parse-review/${encodeURIComponent(aid)}/reject`,
                   { reason: $("#pr_reason").value.trim() });
-                close(); toast("Rejected " + aid, "success");
+                close(); toast(t("Rejected ") + aid, "success");
                 await renderEvents($("#tabpane"), caseID, detail);
               } catch (e) { toast(e.message, "error"); }
-            }}, "Reject"),
+            }}, t("Reject")),
           ]),
         ]);
       },
-    }, "Reject"));
+    }, t("Reject")));
   }
 
   // Per-artifact Analyze button — only for rows with actual data (OK). Empty /
@@ -4517,7 +4704,7 @@ async function renderEvents(pane, caseID, detail, params) {
 
   // ---------- Parse Results + Review Gate 0 ----------
   const prSection = h("div", { class: "card" });
-  prSection.appendChild(h("h2", {}, "Parse Results — Review Gate 0"));
+  prSection.appendChild(h("h2", {}, t("Parse Results — Review Gate 0")));
   const prs = (detail && detail.parse_results) || [];
 
   // Pull current per-artifact review state so we can render approve/reject
@@ -4530,7 +4717,7 @@ async function renderEvents(pane, caseID, detail, params) {
 
   if (prs.length === 0) {
     prSection.appendChild(h("div", { class: "empty" },
-      "No parse results yet. Run Parse from the pipeline buttons above."));
+      t("No parse results yet. Run Parse from the pipeline buttons above.")));
   } else {
     // Header banner: roll-up + skip-all toggle. parse_results is keyed per
     // (evidence, artifact), so the artifact count dedupes across evidence —
@@ -4555,7 +4742,7 @@ async function renderEvents(pane, caseID, detail, params) {
             } catch (e) { toast(e.message, "error"); }
           },
         }),
-        "Skip Review Gate 0 (auto-approve all)",
+        t("Skip Review Gate 0 (auto-approve all)"),
       ]),
     ]);
     prSection.appendChild(banner);
@@ -4603,14 +4790,11 @@ async function renderEvents(pane, caseID, detail, params) {
     if (!multiEvidence) {
       // Single evidence (or no attribution data at all) — flat per-artifact table.
       prSection.appendChild(parseResultTable(caseID, detail,
-        sortParseResults(prs).map((pr) => ({ pr, count: null })), review, "Rows"));
+        sortParseResults(prs).map((pr) => ({ pr, count: null })), review, t("Rows")));
     } else {
       prSection.appendChild(h("div",
         { class: "muted", style: "margin-bottom: 8px; font-size: 11px;" },
-        "Artifacts grouped by source evidence; artifacts that produced no " +
-        "events from an evidence are listed under it with a 0 count. " +
-        "Approve / Reject applies to an artifact's parser output across the " +
-        "whole case (parse review is keyed per artifact, not per evidence)."));
+t("Artifacts grouped by source evidence; artifacts that produced no events from an evidence are listed under it with a 0 count. Approve / Reject applies to an artifact's parser output across the whole case (parse review is keyed per artifact, not per evidence).")));
 
       const rendered = new Set();
       groupIDs.forEach((evID) => {
@@ -4662,7 +4846,7 @@ async function renderEvents(pane, caseID, detail, params) {
         const detailEl = h("div", { class: "evidence-detail" }, [
           ...(evPath ? [h("div", { class: "muted mono",
             style: "font-size: 10px; margin-bottom: 6px; word-break: break-all;" }, evPath)] : []),
-          parseResultTable(caseID, detail, entries, review, "Events"),
+          parseResultTable(caseID, detail, entries, review, t("Events")),
         ]);
         prSection.appendChild(
           h("details", { class: "evidence-item", open: "open" }, [summary, detailEl]));
@@ -4681,7 +4865,7 @@ async function renderEvents(pane, caseID, detail, params) {
         ]);
         const detailEl = h("div", { class: "evidence-detail" }, [
           parseResultTable(caseID, detail,
-            orphans.map((pr) => ({ pr, count: null })), review, "Rows"),
+            orphans.map((pr) => ({ pr, count: null })), review, t("Rows")),
         ]);
         prSection.appendChild(
           h("details", { class: "evidence-item", open: "open" }, [summary, detailEl]));
@@ -4690,18 +4874,17 @@ async function renderEvents(pane, caseID, detail, params) {
 
     if (!review.all_approved_or_skipped && prs.length > 0) {
       prSection.appendChild(h("div", { class: "muted", style: "margin-top: 8px; font-size: 11px;" },
-        "⚠ Analyze All / Analyze single tactic は、全アーティファクトを Approve するか" +
-        "「Skip Review Gate 0」を有効化するまでブロックされます。"));
+t("⚠ Analyze All / Analyze single tactic は、全アーティファクトを Approve するか「Skip Review Gate 0」を有効化するまでブロックされます。")));
     }
   }
   pane.appendChild(prSection);
 
   // ---------- Events Browser ----------
   const browserCard = h("div", { class: "card" });
-  browserCard.appendChild(h("h2", {}, "Events Browser"));
+  browserCard.appendChild(h("h2", {}, t("Events Browser")));
   browserCard.appendChild(h("div", { class: "muted", style: "margin-bottom: 8px;" },
     `Total events parsed: ${detail.case.unified_event_rows.toLocaleString()}. ` +
-    "Use the filters below to query the unified_events table."));
+    t("Use the filters below to query the unified_events table.")));
 
   // Evidence metadata stashed on the card so loadEventsPage (called from
   // Prev/Next without `detail` in scope) can still resolve evidence_id →
@@ -4724,40 +4907,40 @@ async function renderEvents(pane, caseID, detail, params) {
   const filterRow = h("div", { class: "filter-row" }, [
     evField,
     h("div", { class: "f-field" }, [
-      h("label", {}, "Artifact"),
+      h("label", {}, t("Artifact")),
       h("select", { id: "ev_artifact" },
         [h("option", { value: "" }, "(all)"),
          ...artifactIDs.map((a) => h("option", { value: a }, a))]),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "Computer (exact)"),
+      h("label", {}, t("Computer (exact)")),
       h("input", { id: "ev_computer", placeholder: "e.g. IEWIN7" }),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "Contains"),
+      h("label", {}, t("Contains")),
       h("input", { id: "ev_contains", placeholder: "substring in payload" }),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "Start (UTC)"),
+      h("label", {}, t("Start (UTC)")),
       h("input", { id: "ev_start", placeholder: "2019-02-13T00:00:00Z" }),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "End (UTC)"),
+      h("label", {}, t("End (UTC)")),
       h("input", { id: "ev_end", placeholder: "2019-02-15T00:00:00Z" }),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "Limit"),
+      h("label", {}, t("Limit")),
       h("input", { id: "ev_limit", value: "100", style: "max-width: 80px;" }),
     ]),
     h("div", { class: "f-field" }, [
-      h("label", {}, "Offset"),
+      h("label", {}, t("Offset")),
       h("input", { id: "ev_offset", value: "0", style: "max-width: 80px;" }),
     ]),
     h("div", { class: "f-field", style: "align-self: end;" }, [
       h("button", {
         class: "primary",
         onclick: () => loadEventsPage(caseID, browserCard, 0),
-      }, "Search"),
+      }, t("Search")),
     ]),
   ]);
   browserCard.appendChild(filterRow);
@@ -4790,7 +4973,7 @@ async function renderEvents(pane, caseID, detail, params) {
 
 async function loadEventsPage(caseID, browserCard, offsetOverride) {
   const resultsBox = browserCard.querySelector("#ev_results");
-  resultsBox.innerHTML = `<div class="empty"><span class="spinner"></span>querying…</div>`;
+  resultsBox.innerHTML = `<div class="empty"><span class="spinner"></span>${t("querying…")}</div>`;
 
   const q = new URLSearchParams();
   const evSel    = browserCard.querySelector("#ev_evidence");
@@ -4835,16 +5018,16 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
       class: "ghost",
       disabled: offset === 0 ? "disabled" : null,
       onclick: () => loadEventsPage(caseID, browserCard, Math.max(0, offset - limit)),
-    }, "« Prev"),
+    }, t("« Prev")),
     h("button", {
       class: "ghost",
       disabled: (data.events && data.events.length < limit) ? "disabled" : null,
       onclick: () => loadEventsPage(caseID, browserCard, offset + limit),
-    }, "Next »"),
+    }, t("Next »")),
   ]));
 
   if (!data.events || data.events.length === 0) {
-    resultsBox.appendChild(h("div", { class: "empty" }, "No events match these filters."));
+    resultsBox.appendChild(h("div", { class: "empty" }, t("No events match these filters.")));
     return;
   }
 
@@ -4890,18 +5073,18 @@ async function loadEventsPage(caseID, browserCard, offsetOverride) {
 function eventsTable(rows) {
   const tbl = h("table", { class: "events-table" });
   tbl.appendChild(h("thead", {}, h("tr", {}, [
-    h("th", {}, "Timestamp"),
-    h("th", {}, "Artifact"),
-    h("th", {}, "Event Type"),
-    h("th", {}, "Computer"),
-    h("th", {}, "Audit ID"),
-    h("th", {}, "Payload"),
+    h("th", {}, t("Timestamp")),
+    h("th", {}, t("Artifact")),
+    h("th", {}, t("Event Type")),
+    h("th", {}, t("Computer")),
+    h("th", {}, t("Audit ID")),
+    h("th", {}, t("Payload")),
   ])));
   const body = h("tbody");
   rows.forEach((e) => {
     const previewBtn = h("button", { class: "ghost",
       onclick: () => showPayloadModal(e),
-    }, "view");
+    }, t("view"));
     body.appendChild(h("tr", {}, [
       h("td", { class: "ts" }, fmtTS(e.ts_utc, e.evidence_id)),
       h("td", {}, h("span", { class: "badge tactic" }, e.artifact_id || "")),
@@ -4921,7 +5104,7 @@ function showPayloadModal(ev) {
     pretty = JSON.stringify(JSON.parse(ev.payload_json), null, 2);
   } catch (_) { /* leave as-is */ }
   const close = modal([
-    h("h3", {}, "Event payload"),
+    h("h3", {}, t("Event payload")),
     h("div", { class: "muted", style: "margin-bottom: 8px;" },
       `${ev.artifact_id} · ${ev.event_type} · ${ev.computer || "(no host)"} · ${fmtTS(ev.ts_utc, ev.evidence_id)}`),
     h("div", { class: "muted", style: "margin-bottom: 8px;" }, "audit_id: " + (ev.audit_id || "")),
@@ -4934,8 +5117,8 @@ function showPayloadModal(ev) {
             .then(() => toast("payload copied", "success"))
             .catch(() => toast("clipboard blocked", "error"));
         },
-      }, "Copy JSON"),
-      h("button", { class: "primary", onclick: () => close() }, "Close"),
+      }, t("Copy JSON")),
+      h("button", { class: "primary", onclick: () => close() }, t("Close")),
     ]),
   ]);
 }
@@ -5042,7 +5225,7 @@ function renderChatDrawer(drawer) {
   const model  = prefs.model || "";
   const scope = chatState.scope;
   const ctxLabel = scope === "global"
-    ? "context: TLVB documentation"
+    ? t("context: TLVB documentation")
     : `context: case ${scope}`;
 
   drawer.innerHTML = "";
@@ -5050,11 +5233,11 @@ function renderChatDrawer(drawer) {
     h("span", { class: "title" }, "TLVB Assistant"),
     h("span", { class: "ctx" }, ctxLabel),
     h("span", { class: "spacer" }),
-    h("button", { class: "close-btn", title: "Close (Esc)", onclick: () => toggleChatDrawer() }, "×"),
+    h("button", { class: "close-btn", title: t("Close (Esc)"), onclick: () => toggleChatDrawer() }, "×"),
   ]));
 
   drawer.appendChild(h("div", { class: "chat-toolbar" }, [
-    h("span", { class: "muted" }, "Engine:"),
+    h("span", { class: "muted" }, t("Engine:")),
     h("select", {
       id: "chat-engine",
       onchange: (ev) => {
@@ -5064,10 +5247,10 @@ function renderChatDrawer(drawer) {
       h("option", { value: "claude-code", ...(engine === "claude-code" ? {selected: "selected"} : {}) }, "claude-code"),
       h("option", { value: "anthropic-api", ...(engine === "anthropic-api" ? {selected: "selected"} : {}) }, "anthropic-api"),
     ]),
-    h("input", { id: "chat-model", placeholder: "model (engine default if blank)", value: model,
+    h("input", { id: "chat-model", placeholder: t("model (engine default if blank)"), value: model,
       style: "max-width:170px; font-size:11px;",
       onchange: (ev) => { const p = loadChatPrefs(); p.model = ev.target.value.trim(); saveChatPrefs(p); }}),
-    h("button", { class: "ghost clear-btn", onclick: () => clearChatHistory() }, "Clear"),
+    h("button", { class: "ghost clear-btn", onclick: () => clearChatHistory() }, t("Clear")),
   ]));
 
   const msgArea = h("div", { class: "chat-messages", id: "chat-messages" });
@@ -5077,14 +5260,14 @@ function renderChatDrawer(drawer) {
   drawer.appendChild(h("div", { class: "chat-input-row" }, [
     h("textarea", {
       id: "chat-input",
-      placeholder: "Ask about TLVB, or about this case's findings...  (Enter to send, Shift+Enter newline)",
+      placeholder: t("Ask about TLVB, or about this case's findings...  (Enter to send, Shift+Enter newline)"),
       onkeydown: (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {
           ev.preventDefault(); sendChat();
         }
       },
     }),
-    h("button", { class: "primary", id: "chat-send", onclick: () => sendChat() }, "Send"),
+    h("button", { class: "primary", id: "chat-send", onclick: () => sendChat() }, t("Send")),
   ]));
 }
 
@@ -5095,8 +5278,8 @@ function redrawChatMessages() {
 
   if (chatState.msgs.length === 0) {
     const tip = chatState.scope === "global"
-      ? "Try: 「TLVB の使い方を教えて」/ 「Tier 1A signature SQL Agent は何をしている？」"
-      : "Try: 「このケースの最も重要な findings は？」/ 「Kill Chain を解説して」";
+      ? t("Try: 「TLVB の使い方を教えて」/ 「Tier 1A signature SQL Agent は何をしている？」")
+      : t("Try: 「このケースの最も重要な findings は？」/ 「Kill Chain を解説して」");
     msgArea.appendChild(h("div", { class: "chat-empty" }, tip));
   }
 
@@ -5115,7 +5298,7 @@ function redrawChatMessages() {
 
   if (chatState.sending) {
     msgArea.appendChild(h("div", { class: "chat-loading" }, [
-      h("span", { class: "spinner" }), "thinking…",
+      h("span", { class: "spinner" }), t("thinking…"),
     ]));
   }
   msgArea.scrollTop = msgArea.scrollHeight;
