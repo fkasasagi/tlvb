@@ -73,7 +73,7 @@ dotnet /opt/zimmermantools/PECmd.dll --version
 | 推奨呼び出し | `/usr/local/bin/vol` または `vol` |
 | 状態 | ✅ |
 
-> ⚠️ グローバル `~/.claude/CLAUDE.md` に記載の `/opt/volatility3-2.20.0/vol.py` パスは**この環境では存在しない**。`vol` コマンド経由で呼び出すこと。
+> ⚠️ バージョン番号入りの絶対パス (`/opt/volatility3-<version>/vol.py` 等) は環境により存在しない。`vol` コマンド経由で呼び出すこと。
 
 > ⚠️ **Memory Baseliner** (`/opt/memory-baseliner`) は本環境に**未配置**。メモリ解析は Volatility 3 のみで対応。
 
@@ -88,7 +88,7 @@ dotnet /opt/zimmermantools/PECmd.dll --version
 | psort.py | system PATH | **20260119** | ✅ | (低レベル、既存 Storage file をフォーマットする場合) |
 | pinfo.py | system PATH | (同) | ✅ | Storage file のメタデータ確認 |
 
-> 想定 (CLAUDE.md グローバル) は GIFT PPA v20240308 だが、実環境は 20260119 (より新しい版)。
+> Plaso (GIFT PPA) のバージョンは環境により異なる (本環境は 20260119)。
 > **本プロジェクトでは log2timeline+psort の二段呼びを避け、`psteal.py` の単段呼出を採用** (Wave 12)。
 > 理由: ① 中間 `.plaso` storage のクリーンアップ漏れリスク回避、② フラグバージョン依存 (`psort -z` 廃止等) のトラブル削減、③ Subprocess 1 回で完結する分エラーパスがシンプル。
 
@@ -122,7 +122,7 @@ dotnet /opt/zimmermantools/PECmd.dll --version
 | YARA バイナリ (`yara`) | — | — | ❌ **未インストール** |
 | libyara10 (Python bindings) | dpkg | 4.5.0 | ✅（Pythonモジュール経由） |
 
-> ⚠️ グローバル `~/.claude/CLAUDE.md` 記載の dotnet 6.0.36 ではなく **9.0.15** が利用可能。EZ Tools (1.5.x) は問題なく動作することを確認済み。
+> ⚠️ dotnet のバージョンは環境により異なる (本環境は **9.0.15**)。EZ Tools (1.5.x) は問題なく動作することを確認済み。
 
 > ⚠️ YARA CLI (`yara` コマンド) はインストールされていない。必要なら以下でインストール:
 > ```bash
@@ -168,7 +168,7 @@ hayabusa csv-timeline -d <evtx_dir> -o hayabusa.csv -p super
 | ツール | 用途 | 代替 |
 |---|---|---|
 | Memory Baseliner | メモリ ベースライン比較 | Volatility 3 plugin (`windows.pslist`, `windows.netscan` など) |
-| MemProcFS | Windows-only | スキップ (CLAUDE.md グローバルにも明記) |
+| MemProcFS | Windows-only | スキップ (Linux/SIFT では非対応) |
 | VSCMount | Volume Shadow Copy mount (Windows-only) | `vss_carver` (`.bash_aliases` 提供) |
 
 ---
