@@ -281,6 +281,7 @@ var hedgeMarkers = []string{
 	// ja
 	"ではなく", "ではない", "ではありません", "では無く", "証拠が無い", "証拠がない", "証拠は無い",
 	"誤検知", "断定でき", "可能性", "未確認", "とは限らない", "確証", "裏付けられ", "示していません", "不明",
+	"未裏付け", "裏付けが無い", "裏付けがない", "証跡が無い", "証跡がない", "証跡は無い",
 	// en
 	"no evidence", "false positive", "cannot confirm", "could not confirm",
 	"unconfirmed", "rather than", "not confirmed", "is not ", "was not ",
@@ -294,6 +295,54 @@ func proseHedged(s string) bool {
 		}
 	}
 	return false
+}
+
+// splitSentences breaks prose into rough sentence fragments on JA/EN terminators
+// and newlines, so hedging can be judged per claim rather than over a whole field.
+func splitSentences(prose string) []string {
+	return strings.FieldsFunc(prose, func(r rune) bool {
+		switch r {
+		case '。', '．', '.', '！', '？', '!', '?', '\n', '\r', '；', ';':
+			return true
+		}
+		return false
+	})
+}
+
+// assertedUngroundedMentions filters the case's ungrounded-mention labels down to
+// those the conclusion prose ASSERTS as fact, dropping any whose every mention sits
+// in a hedging sentence (the narrative ruling the technique out — e.g.
+// "Web シェルも…未裏付けで、初期アクセスの前提に置かない"). Such refuted mentions are
+// already recorded under unconfirmed MITRE with a demotion note, so surfacing them
+// in the ⚠ "unsupported claim" banner misreads responsible prose as a hallucination.
+// Fail-safe: a label whose alias is found in NO sentence (incomplete alias table)
+// is kept, so a genuine hallucination is never silently dropped.
+func assertedUngroundedMentions(labels []string, prose string) []string {
+	if len(labels) == 0 || strings.TrimSpace(prose) == "" {
+		return labels
+	}
+	sentences := splitSentences(prose)
+	var out []string
+	for _, label := range labels {
+		aliases := aliasesForLabel(label)
+		asserted, hedged := false, false
+		for _, s := range sentences {
+			if !containsAny(strings.ToLower(s), aliases) {
+				continue
+			}
+			if proseHedged(s) {
+				hedged = true
+			} else {
+				asserted = true
+				break
+			}
+		}
+		if hedged && !asserted {
+			continue // every mention rules the claim out → not a hallucination
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 // containsAny reports whether low contains any of subs.

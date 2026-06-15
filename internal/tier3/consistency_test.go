@@ -269,3 +269,39 @@ func TestLocalizeProseTimestamps(t *testing.T) {
 		t.Error("plain text must be unchanged")
 	}
 }
+
+// assertedUngroundedMentions must drop a mention the conclusion only names to RULE
+// IT OUT (the WinRM-spray case: web shell / PtH are refuted, not asserted) while
+// keeping a mention asserted as fact, and keeping any label whose alias is absent
+// (fail-safe against an incomplete alias table).
+func TestAssertedUngroundedMentions(t *testing.T) {
+	labels := []string{"Web shell", "Pass-the-Hash"}
+
+	// Real winrm_spray_case tech_summary refutation: both phrases appear only in
+	// hedging sentences ("未裏付け" / "可能性"), so both must be dropped.
+	refute := "署名検知の一部は Pass-the-Hash や Web シェルをタグ付けしている可能性があるが、" +
+		"裏取りの結果、Pass-the-Hash は同一環境のパスワード推測成功で NTLM 成功を説明でき、" +
+		"ハッシュ窃取の証跡が無いため未裏付けである。" +
+		"Web シェルも Web サーバ由来アーティファクトやディスク上の Web ルートが存在せず未裏付けで、初期アクセスの前提に置かない。"
+	if got := assertedUngroundedMentions(labels, refute); len(got) != 0 {
+		t.Errorf("refuted mentions must be dropped from the banner, got %v", got)
+	}
+
+	// A flat assertion of a demoted technique must still surface (the hallucination
+	// the banner exists to catch).
+	assert := "攻撃者は公開アプリの脆弱性を悪用し Web シェルを設置して初期アクセスを得た。"
+	if got := assertedUngroundedMentions([]string{"Web shell"}, assert); len(got) != 1 || got[0] != "Web shell" {
+		t.Errorf("asserted web shell must be kept, got %v", got)
+	}
+
+	// Fail-safe: alias not present in any sentence → keep (do not silently drop).
+	other := "ブルートフォースのみが確認された。"
+	if got := assertedUngroundedMentions([]string{"Mimikatz"}, other); len(got) != 1 || got[0] != "Mimikatz" {
+		t.Errorf("unmatched label must be kept (fail-safe), got %v", got)
+	}
+
+	// Empty prose / empty labels are returned unchanged.
+	if got := assertedUngroundedMentions(labels, "  "); len(got) != 2 {
+		t.Errorf("empty prose must not filter, got %v", got)
+	}
+}

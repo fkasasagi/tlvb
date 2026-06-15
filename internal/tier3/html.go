@@ -264,6 +264,12 @@ func buildView(cs tier2.CaseSynthesis, cfg Config, en *enrichment, d labelDict, 
 		v.TechSummary = localizeProseTimestamps(cs.OverallStory, loc)
 	}
 
+	// ⚠ ungrounded-mention banner: list only mentions the conclusion ASSERTS as
+	// fact. A claim the narrative names only to rule it out (e.g. "Web シェルも…
+	// 未裏付けで") is responsible prose, not a hallucination — and is already shown
+	// under unconfirmed MITRE with a demotion note (issue #82 follow-up).
+	v.Case.UngroundedMentions = assertedUngroundedMentions(cs.UngroundedMentions, cs.ExecBrief+"\n"+cs.TechSummary+"\n"+cs.OverallStory)
+
 	// IOC three-tier split: confirmed (signature) / suspected (anomaly) / noise
 	// (parser artifact, hidden by default).
 	for _, ioc := range en.IOCs {
