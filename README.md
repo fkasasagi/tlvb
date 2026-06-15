@@ -156,6 +156,7 @@ Guardrails are enforced in code, not in the prompt: the MCP surface is **read-on
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — end-to-end pipeline, security boundaries, self-correction (with diagrams)
 - [`NEW_CONTRIBUTIONS.md`](NEW_CONTRIBUTIONS.md) — what is new hackathon work vs. reused foundation
 - [`docs/ACCURACY.md`](docs/ACCURACY.md) — self-assessment of detection accuracy, false positives, misses, and hallucination
+  - [`eval/winrm_spray_accuracy.md`](eval/winrm_spray_accuracy.md) — per-case accuracy self-assessment for the WinRM-spray dataset (the over-claim-suppression scenario: credential theft blocked by Defender/AMSI)
 - [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — detailed walkthrough, including how to try it yourself
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — complete beginner-friendly guide + glossary
 - [`docs/EVIDENCE_DATASETS.md`](docs/EVIDENCE_DATASETS.md) — what TLVB was tested on and where the data came from
