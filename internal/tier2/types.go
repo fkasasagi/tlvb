@@ -139,9 +139,15 @@ type TimelineEvent struct {
 
 // CaseSynthesis is the final Tier 2 output. Serialised to synthesis.json.
 type CaseSynthesis struct {
-	CaseID        string         `json:"case_id"`
-	GeneratedAt   time.Time      `json:"generated_at"`
-	ModelID       string         `json:"model_id,omitempty"`
+	CaseID      string    `json:"case_id"`
+	GeneratedAt time.Time `json:"generated_at"`
+	ModelID     string    `json:"model_id,omitempty"`
+	// Language is the language the LLM narratives (overall story, cluster
+	// narratives, open questions) were written in: "ja" | "en". Tier 3 reads it
+	// to decide whether a report requested in a different language needs a
+	// narrative translation pass. Empty in synthesis.json written before this
+	// field — Tier 3 then sniffs the prose for Japanese characters.
+	Language      string         `json:"language,omitempty"`
 	TotalFindings int            `json:"total_findings"`
 	ClusterCount  int            `json:"cluster_count"`
 	Clusters      []SynthCluster `json:"clusters"`

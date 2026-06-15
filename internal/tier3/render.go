@@ -69,6 +69,14 @@ func Render(cfg Config) (*Report, error) {
 		cs.MITREMapping = mitreEntriesFromEnrichment(en)
 	}
 
+	// Report-time narrative translation: the static labels follow cfg.Language
+	// via the ja/en dicts, but the LLM prose was baked into synthesis.json in the
+	// Tier 2 language. When the report is requested in a different language and
+	// the opt-in is set, translate the prose in place so the whole document — and
+	// the consistency digest below, and report.json — reads in one language.
+	// Best-effort: leaves cs untouched + warns on any failure.
+	maybeTranslateNarratives(cfg, &cs)
+
 	rep := &Report{
 		CaseID:      cfg.CaseID,
 		OutDir:      cfg.OutDir,

@@ -70,21 +70,22 @@ func runReportTier3(caseID string, args []string) error {
 
 	t3Start := time.Now()
 	rep, err := tier3.Render(tier3.Config{
-		CaseID:         caseID,
-		SynthesisPath:  *synthPath,
-		OutDir:         *outDir,
-		Formats:        formats,
-		Language:       *lang,
-		Timezone:       reportTZ,
-		FindingsDir:    *findingsDir,
-		CaseMeta:       meta,
-		Examiner:       *examiner,
-		Organization:   *org,
-		Classification: *classification,
-		ToolVersion:    "TLVB " + version,
-		CaseBackground: caseBG,
-		ConsistencyLLM: *llmConsistency,
-		Model:          *model,
+		CaseID:              caseID,
+		SynthesisPath:       *synthPath,
+		OutDir:              *outDir,
+		Formats:             formats,
+		Language:            *lang,
+		TranslateNarratives: true,
+		Timezone:            reportTZ,
+		FindingsDir:         *findingsDir,
+		CaseMeta:            meta,
+		Examiner:            *examiner,
+		Organization:        *org,
+		Classification:      *classification,
+		ToolVersion:         "TLVB " + version,
+		CaseBackground:      caseBG,
+		ConsistencyLLM:      *llmConsistency,
+		Model:               *model,
 	})
 	if err != nil {
 		return err

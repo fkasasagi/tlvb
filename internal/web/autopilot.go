@@ -106,6 +106,7 @@ func (s *Server) handleStartAutopilot(w http.ResponseWriter, r *http.Request) {
 			"--evidence-id", evID,
 			"--db", dbPath,
 			"--engine", engine,
+			"--language", req.Language,
 		}
 		if req.CaseName != "" {
 			args = append(args, "--name", req.CaseName)
