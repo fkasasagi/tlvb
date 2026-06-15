@@ -14,7 +14,7 @@ issue first.
 ## Workflow
 
 1. Create a feature branch off `main`
-2. Follow the conventions in [`CLAUDE.md`](CLAUDE.md):
+2. Follow these conventions:
    - **Go**: 1.22+ idioms, `errgroup` / `context.Context` for goroutines,
      `fmt.Errorf("ctx: %w", err)` for error wrapping, `_test.go` files for
      table-driven tests
@@ -76,11 +76,9 @@ rules:
   with no prior context. If a step requires data, env vars, apt packages,
   or external auth that isn't called out, fix the doc before merging.
 
-The full rule lives in `CLAUDE.md`'s "★ ドキュメント執筆ルール" section.
-
 ## Forensic discipline
 
-These rules in `CLAUDE.md` are non-negotiable:
+These forensic rules are non-negotiable:
 
 - Never modify files under `/cases/`, `/mnt/`, `/media/`, or any
   `evidence/` directory

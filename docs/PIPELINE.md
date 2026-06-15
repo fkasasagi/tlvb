@@ -2,7 +2,7 @@
 
 本書は **「証拠を投入してから HTML/CSV/JSON レポートが出るまで内部で何が起きているか」**
 を、実装コードに即して段階ごとに分解したリファレンスです。
-設計理由 (WHY) は `docs/DESIGN.md`、現在の実装度合いは `docs/STATUS.md`、
+設計理由 (WHY) は `docs/DESIGN.md`、
 利用者向けの使い方は `docs/USER_GUIDE.md` / `docs/QUICKSTART.md` を参照してください。
 
 凡例:
@@ -447,7 +447,7 @@ Corrector の入力になる。
 
 ### 🟩 Review Gate 2 [Gate] (未実装)
 
-Web UI Timeline タブ。設計のみで未実装 (STATUS.md 参照)。
+Web UI Timeline タブ。設計のみで未実装。
 
 ---
 
@@ -540,7 +540,6 @@ Claude Code / Claude Desktop から本 MCP サーバを設定すれば、外部�
 ## 関連ドキュメント
 
 - 設計理由 (WHY): `docs/DESIGN.md` §1〜§9
-- 実装ステータス: `docs/STATUS.md`
 - 使い方ガイド: `docs/USER_GUIDE.md` / `docs/QUICKSTART.md`
 - パーサ・ツール検証結果: `docs/tool_inventory.md`
 - テスト計画: `docs/TEST_*.md`

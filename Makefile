@@ -62,7 +62,7 @@ test-py-all: ## Run all Python tests verbosely from .venv (Wave 9 — full suite
 .PHONY: verify-all
 verify-all: verify ## Run verify.sh (8/8) + pytest (53/53) for full coverage
 	@echo
-	@echo "TLVB verify-all complete — see docs/TEST_FEATURES.md (manual items)."
+	@echo "TLVB verify-all complete."
 
 .PHONY: lint
 lint: ## Run go vet + ruff (Python) if available

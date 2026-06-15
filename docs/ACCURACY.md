@@ -144,5 +144,5 @@ LLM tiers record their model id and token/cost in the synthesis audit and in
 `actions.jsonl`, so a reviewer can see exactly where generative reasoning was
 used and what it cost.
 
-See `NEW_CONTRIBUTIONS.md` (what is new), `docs/ARCHITECTURE.md` (how it fits
-together), and `docs/STATUS.md` (per-feature status).
+See `NEW_CONTRIBUTIONS.md` (what is new) and `docs/ARCHITECTURE.md` (how it fits
+together).

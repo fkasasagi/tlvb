@@ -20,7 +20,7 @@ triage 収集物またはディスクイメージ(E01 / raw / VMDK / VHD / VHDX)
 
 🟢 **v0.1 主要パイプライン (a)-(g) 完走**。実機 Windows 11 トリアージで
 攻撃シナリオ 8 step を end-to-end で検出・再構成・レポート出力できることを
-2026-05-29 時点で確認済み。詳細は `docs/STATUS.md`。
+2026-05-29 時点で確認済み。
 
 ```
 INPUT (collector zip / disk image / live triage)
@@ -134,7 +134,7 @@ CLOUD_ML_REGION=global                          # 任意: Vertex リージョン
 
 ## 検出能力(2026-05-29 実機検証)
 
-86 MB の Win11 トリアージ zip(`docs/STATUS.md §0 のテスト) を 1 コマンドで処理:
+86 MB の Win11 トリアージ zip を 1 コマンドで処理:
 
 | 段 | 件数 | 例 |
 |---|---|---|
@@ -162,8 +162,6 @@ CLOUD_ML_REGION=global                          # 任意: Vertex リージョン
 ## 主要ドキュメント
 
 - `docs/DESIGN.md` — TLVB v0.1 設計書
-- `docs/STATUS.md` — 実装ステータストラッカー (single source of truth)
-- `CLAUDE.md` — Claude Code 用ガイド + 設計確定事項の規約
 - `docs/QUICKSTART.md` — 詳細な手順(動作確認込み)
 
 ## ライセンス

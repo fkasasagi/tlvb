@@ -163,7 +163,6 @@ Guardrails are enforced in code, not in the prompt: the MCP surface is **read-on
 - [`docs/EXECUTION_LOG.md`](docs/EXECUTION_LOG.md) — agent execution log & finding traceability
 - [`docs/SECURITY_GUARDRAILS.md`](docs/SECURITY_GUARDRAILS.md) — the enforced security boundaries
 - [`docs/DESIGN.md`](docs/DESIGN.md) — TLVB v0.1 design document
-- [`CLAUDE.md`](CLAUDE.md) — guide for Claude Code + the agreed design conventions
 
 ## License
 

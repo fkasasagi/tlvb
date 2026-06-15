@@ -199,7 +199,7 @@ hayabusa csv-timeline -d <evtx_dir> -o hayabusa.csv -p super
 2. **Hayabusa を P1 タスクで導入**: 公式 GitHub Releases から `/opt/hayabusa/` に配置。Sigma ルールは `update-rules` で取得。
 3. **YARA バイナリの追加検討**: P1 フェーズで `yara-hunting` スキル使用時に `apt install yara` で導入。
 4. ~~**SrumECmd**~~ ✅ **Wave 13 (2026-05-16) 完了** — SrumECmd を `EricZimmerman/Srum` repo からソースビルド (`dotnet build -c Release SrumECmd/SrumECmd.csproj`) して `/opt/zimmermantools/SrumECmd.dll` に配置。ただし ESE Windows API 依存で Linux 実行不可と判明、`parsers/srum_parser.py` を **Plaso (`psteal.py --parsers esedb/srum`) primary + SrumECmd Windows-only fallback** に refactor。SIFT 上では Plaso 経路で実 SRUDB.dat (1.9 MB) を 1404 events / 3.2s で parse 可能。
-5. **CLAUDE.md グローバルとの差分を留意**: Volatility パスと dotnet バージョンが実環境では異なる。プロジェクト用 `CLAUDE.md` に正しいパスを反映済み。
+5. **環境差分に留意**: Volatility のパスと dotnet のバージョンは想定と実環境で異なる(本書の各注記を参照)。
 
 ---
 

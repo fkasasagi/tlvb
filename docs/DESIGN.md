@@ -4,7 +4,7 @@
 **ステータス**: **v0.1 主要パイプライン (a)-(g) 完走済**。
 Tier 0 / 1A (build + runtime + Hayabusa pass-through) / 1B (MVP + 強化済 prefilter)
 / 2 (受動 + 能動 + lenient JSON parser + fallback) / 3 (HTML/CSV/JSON Reporter) すべて
-動作確認済。残りは (d) Review UI と coverage 拡張のみ。詳細は `docs/STATUS.md`
+動作確認済。残りは (d) Review UI と coverage 拡張のみ。
 
 ## 0. 設計思想
 
@@ -77,8 +77,7 @@ Tier 3   Reporter (HTML / CSV / JSON, ja/en, moai 流用)
 各パーサは Python サブプロセスで EZ Tools / Hayabusa / Plaso 等を呼び、
 出力を **UnifiedEvent** (DuckDB の `unified_events` 8 カラム) に正規化。
 
-スキーマは `internal/casedb/schema_doc.go::UnifiedEventsDDL`。詳細は `CLAUDE.md`
-の「実装済みパッケージマップ」を参照。本 v0.1 で改修予定なし。
+スキーマは `internal/casedb/schema_doc.go::UnifiedEventsDDL`。本 v0.1 で改修予定なし。
 
 ## 3. Tier 1A — Signature-driven SQL Agent
 
@@ -435,7 +434,7 @@ tlvb version
    は v0.2 候補。
 6. **共有基盤の旧名残置**: 一部のコード / doc に共有基盤由来の旧名 (findevil) が
    残る場合は `tlvb` と読み替える。姉妹プロジェクト moai (旧 findevil) との関係は
-   CLAUDE.md「★ moai との関係 — sibling project」を参照。
+   `NEW_CONTRIBUTIONS.md` を参照。
 
 ## 12. v0.1 実装サマリ
 
@@ -448,4 +447,4 @@ tlvb version
 | Tier 2 | `internal/tier2/` | cluster + per-cluster LLM + overall + active-search + lenient JSON |
 | Tier 3 | `internal/tier3/` | HTML / CSV / JSON renderer |
 | CLI | `cmd/tlvb/` | dispatcher、status、run --tier all |
-| Doc | `README.md`, `docs/DESIGN.md`, `docs/STATUS.md`, `CLAUDE.md` | 設計と運用ガイド |
+| Doc | `README.md`, `docs/DESIGN.md` | 設計と運用ガイド |

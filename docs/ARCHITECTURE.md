@@ -215,5 +215,4 @@ log per case spanning the whole investigation.
 (see `NEW_CONTRIBUTIONS.md`). They remain only to serve the legacy `--tactic`
 analysis path and are not part of the TLVB pipeline described above.
 
-See `NEW_CONTRIBUTIONS.md` for what is new hackathon work vs. reused foundation,
-and `docs/STATUS.md` for per-feature implementation status.
+See `NEW_CONTRIBUTIONS.md` for what is new hackathon work vs. reused foundation.

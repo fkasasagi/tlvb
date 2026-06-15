@@ -233,7 +233,7 @@ TLVB の Tier 0 MCP サーバは、Claude Code / Cursor / 任意の MCP
 | `health` | サーバ生存確認 |
 
 **全部 read-only**。MCP 経由で `parse` / `analyze` を引き起こすことは
-構造的にできません (CLAUDE.md「`execute_shell` は MCP に絶対公開しない」)。
+構造的にできません (設計上、`execute_shell` は MCP に一切公開しません)。
 
 ---
 
@@ -584,15 +584,13 @@ altpf 配置後に再 parse すると Audit タブの command 列が `/opt/altpf
 ├── internal/                          # Tier 1〜3 + web (Go)
 └── docs/
     ├── DESIGN.md                      # 設計書 v0.3
-    ├── STATUS.md                      # 実装ステータストラッカー
     ├── USER_GUIDE.md                  # 初心者向け完全ガイド + 用語集
     ├── tool_inventory.md              # SIFT ツール検証結果
-    ├── valhuntir_analysis.md          # 参考リポジトリ分析
     └── QUICKSTART.md                  # 本ファイル
 ```
 
 evidence(`$EVTX_DIR` や自分の調査対象 zip)は **read-only**。書き込まれる
-場所は **すべて `outputs/`** に集約されています(CLAUDE.md「証拠は read-only」)。
+場所は **すべて `outputs/`** に集約されています(設計上、証拠は read-only です)。
 
 ---
 
@@ -606,5 +604,5 @@ evidence(`$EVTX_DIR` や自分の調査対象 zip)は **read-only**。書き込�
 - `config/artifacts.yaml` に独自パーサを追加(Linux syslog 等)
 - `internal/synthesizer/consistency.go` に独自ルール R5+ を追加
 
-困ったら `docs/DESIGN.md`(システム設計書 v0.3)、`docs/STATUS.md`
-(実装トラッカー)、`docs/USER_GUIDE.md`(初心者向け完全ガイド)を併読してください。
+困ったら `docs/DESIGN.md`(システム設計書 v0.3)、`docs/USER_GUIDE.md`
+(初心者向け完全ガイド)を併読してください。

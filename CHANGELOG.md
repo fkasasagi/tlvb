@@ -223,7 +223,7 @@ CLI: `tlvb synthesize CASE_ID --tier 2 [--active-search]`
 - (d) Review UI Gate 1A は未実装 (CLI 経由のみ)
 - Tier 1B の Hybrid Cache (canonical SQL 蓄積 + LLM 都度生成) は v0.2 で実装予定
 - Forensic 系 ルール (LOLBAS / Atomic Red Team / DFIR Report) は v0.2 で取り込み検討
-- findevil → TLVB のドキュメント / scripts 名義残置 (`CLAUDE.md` 参照)
+- findevil → TLVB のドキュメント / scripts 名義残置
 
 ### Test data
 

@@ -251,7 +251,7 @@ All 19 tools exposed — the 10 core ones below; see the `tools/list` output abo
 | `health` | server liveness check |
 
 **Everything is read-only.** It is structurally impossible to trigger `parse` /
-`analyze` over MCP (per CLAUDE.md: "never expose `execute_shell` over MCP").
+`analyze` over MCP (by design: `execute_shell` is never exposed over MCP).
 
 ---
 
@@ -633,13 +633,12 @@ resolution of execution history than the Plaso fallback (LastRun only).
     ├── ARCHITECTURE.md                # end-to-end pipeline + security boundaries
     ├── USER_GUIDE.md                  # complete beginner-friendly guide + glossary
     ├── tool_inventory.md              # SIFT tool validation results
-    ├── valhuntir_analysis.md          # reference repository analysis
     └── QUICKSTART.md                  # this file
 ```
 
 The evidence (`$EVTX_DIR` or your own investigation zip) is **read-only**.
 Everything that gets written is consolidated entirely under **`outputs/`**
-(per CLAUDE.md: "evidence is read-only").
+(by design: evidence is read-only).
 
 ---
 
