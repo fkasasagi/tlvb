@@ -2,6 +2,7 @@ package tier2
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -244,5 +245,167 @@ func TestBruteForcedAccountsOf(t *testing.T) {
 	got := bruteForcedAccountsOf(findings)
 	if !got["administrator"] || got["bob"] {
 		t.Errorf("brute-forced accounts = %v, want only administrator", got)
+	}
+}
+
+// --- narrative coverage backstop (coverageAddendum) ---
+
+func TestCanonicalTactic(t *testing.T) {
+	cases := map[string]string{
+		"stealth":             "defense-evasion",
+		"defense-impairment":  "defense-evasion",
+		"defense_evasion":     "defense-evasion",
+		"Credential_Access":   "credential-access",
+		"command and control": "command-and-control",
+		"c2":                  "command-and-control",
+		"discovery":           "discovery",
+	}
+	for in, want := range cases {
+		if got := canonicalTactic(in); got != want {
+			t.Errorf("canonicalTactic(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A security-control detection (Defender/AMSI) the narrative ignored must be
+// surfaced as an attempted action — neither omitted nor claimed as success.
+func TestCoverageAddendumSecurityControlDetection(t *testing.T) {
+	c := Cluster{
+		AttackPhase: "credential-access",
+		Narrative:   "WS01 を起点に administrator への短時間の総当たりが発生し、直後にログオン成功。Pass-the-Hash とは断定しない。",
+		Findings: []Finding{
+			{Title: "Antivirus Password Dumper Detection", Source: "sigma", Severity: "critical", MITRETactic: "credential-access", MITRETechniques: []string{"T1003.001"}},
+			{Title: "Windows Defender AMSI Trigger Detected", Source: "sigma", Severity: "high", MITRETactic: "credential-access"},
+		},
+	}
+	got := coverageAddendum(c, true)
+	if got == "" {
+		t.Fatal("expected an addendum for an unmentioned Defender/AMSI detection")
+	}
+	if !strings.Contains(got, "試行") {
+		t.Errorf("addendum should frame it as an attempt (試行); got %q", got)
+	}
+	for _, overclaim := range []string{"窃取に成功", "盗まれ", "認証情報を取得"} {
+		if strings.Contains(got, overclaim) {
+			t.Errorf("addendum must NOT over-claim theft success (%q); got %q", overclaim, got)
+		}
+	}
+}
+
+// If the narrative already covers the detection, no addendum (no duplicate).
+func TestCoverageAddendumNoDuplicateWhenCovered(t *testing.T) {
+	c := Cluster{
+		AttackPhase: "credential-access",
+		Narrative:   "資格情報ダンプの試行があったが Microsoft Defender が検知し遮断したため窃取は成立していない。",
+		Findings: []Finding{
+			{Title: "Antivirus Password Dumper Detection", Source: "sigma", Severity: "critical", MITRETactic: "credential-access", MITRETechniques: []string{"T1003.001"}},
+		},
+	}
+	if got := coverageAddendum(c, true); got != "" {
+		t.Errorf("narrative already covers the detection — expected no addendum, got %q", got)
+	}
+}
+
+// Generality: a tactic that never appeared in the winrm case (lateral-movement,
+// exfiltration) must still trigger the backstop when its critical/high findings
+// are absent from the prose. This locks in that the net is NOT a fixed 3-category
+// list.
+func TestCoverageAddendumGeneralTactics(t *testing.T) {
+	c := Cluster{
+		AttackPhase: "lateral-movement",
+		Narrative:   "The attacker brute-forced the local administrator and logged on.",
+		Findings: []Finding{
+			{Title: "Remote Service Creation On Target", Source: "sigma", Severity: "high", MITRETactic: "lateral-movement", MITRETechniques: []string{"T1021.002"}},
+			{Title: "Large Outbound Data Transfer", Source: "sigma", Severity: "high", MITRETactic: "exfiltration", MITRETechniques: []string{"T1048"}},
+		},
+	}
+	got := coverageAddendum(c, false)
+	if !strings.Contains(got, "lateral movement") {
+		t.Errorf("expected a lateral movement addendum; got %q", got)
+	}
+	if !strings.Contains(got, "exfiltration") {
+		t.Errorf("expected an exfiltration addendum; got %q", got)
+	}
+}
+
+// Discovery (recon) dropped from the prose is surfaced; when mentioned, it is not.
+func TestCoverageAddendumDiscovery(t *testing.T) {
+	findings := []Finding{
+		{Title: "WhoAmI as Parameter", Source: "sigma", Severity: "high", MITRETactic: "discovery", MITRETechniques: []string{"T1033"}},
+	}
+	dropped := Cluster{AttackPhase: "discovery", Narrative: "総当たりでログオン成功した。", Findings: findings}
+	if got := coverageAddendum(dropped, true); !strings.Contains(got, "探索") && !strings.Contains(got, "偵察") {
+		t.Errorf("expected a discovery addendum; got %q", got)
+	}
+	covered := Cluster{AttackPhase: "discovery", Narrative: "ログオン後に whoami 等で内部偵察が行われた。", Findings: findings}
+	if got := coverageAddendum(covered, true); got != "" {
+		t.Errorf("narrative mentions 偵察/whoami — expected no addendum, got %q", got)
+	}
+}
+
+// No false addendum: a narrative that covers every salient tactic yields "".
+func TestCoverageAddendumNoFalsePositive(t *testing.T) {
+	c := Cluster{
+		AttackPhase: "credential-access",
+		Narrative:   "リモートの PowerShell 実行後に whoami 等で偵察し、Defender が資格情報ダンプを検知・遮断、WMI による永続化も登録された。",
+		Findings: []Finding{
+			{Title: "Suspicious Processes Spawned by WinRM", Source: "sigma", Severity: "high", MITRETactic: "execution", MITRETechniques: []string{"T1059.001"}},
+			{Title: "WhoAmI as Parameter", Source: "sigma", Severity: "high", MITRETactic: "discovery"},
+			{Title: "Antivirus Password Dumper Detection", Source: "sigma", Severity: "critical", MITRETactic: "credential-access"},
+		},
+	}
+	if got := coverageAddendum(c, true); got != "" {
+		t.Errorf("all salient tactics are covered — expected no addendum, got %q", got)
+	}
+}
+
+// Medium/low findings are not salient: a thin narrative over only low findings
+// gets no addendum (avoids noise).
+func TestCoverageAddendumIgnoresNonSalient(t *testing.T) {
+	c := Cluster{
+		AttackPhase: "discovery",
+		Narrative:   "ログオン成功。",
+		Findings: []Finding{
+			{Title: "Nltest.EXE Execution", Source: "sigma", Severity: "low", MITRETactic: "discovery"},
+		},
+	}
+	if got := coverageAddendum(c, true); got != "" {
+		t.Errorf("only low-severity findings — expected no addendum, got %q", got)
+	}
+}
+
+// applyCoverageBackstop mutates narratives in place and is idempotent: running it
+// twice (e.g. before overall synthesis and again later) must not double-append.
+func TestApplyCoverageBackstopIdempotent(t *testing.T) {
+	clusters := []Cluster{{
+		AttackPhase: "credential-access",
+		Narrative:   "総当たりでログオン成功した。",
+		Findings: []Finding{
+			{Title: "Antivirus Password Dumper Detection", Source: "sigma", Severity: "critical", MITRETactic: "credential-access"},
+		},
+	}}
+	applyCoverageBackstop(clusters, "ja")
+	once := clusters[0].Narrative
+	if !strings.Contains(once, coverageAddendumMarkerJA) {
+		t.Fatal("expected the backstop to append an addendum")
+	}
+	applyCoverageBackstop(clusters, "ja")
+	if clusters[0].Narrative != once {
+		t.Errorf("backstop is not idempotent:\n once=%q\n twice=%q", once, clusters[0].Narrative)
+	}
+	if strings.Count(clusters[0].Narrative, coverageAddendumMarkerJA) != 1 {
+		t.Error("addendum marker appears more than once")
+	}
+}
+
+// Noise/benign clusters are gated out at the call site (IsNoiseCluster), so even
+// salient findings there get no addendum.
+func TestCoverageBackstopSkipsNoiseClusters(t *testing.T) {
+	if !IsNoiseCluster("noise", "") {
+		t.Fatal("precondition: phase 'noise' must be a noise cluster")
+	}
+	// The hook guards coverageAddendum behind !IsNoiseCluster; assert the gate.
+	if !IsNoiseCluster("noise", "OS first-boot provisioning") {
+		t.Error("a provisioning noise cluster must be gated out of the backstop")
 	}
 }

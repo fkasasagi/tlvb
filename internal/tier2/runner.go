@@ -281,6 +281,14 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		clusters, _ = RunActiveSearch(ctx, cfg, db, clusters, &audit)
 	}
 
+	// Deterministic coverage backstop: append a neutral sentence to any cluster
+	// whose narrative silently dropped a salient detection (a security-control-
+	// blocked attempt, recon, persistence, or any other tactic the cluster's
+	// critical/high findings prove). Applied HERE, before the overall pass, so the
+	// case-wide story — built from cluster narratives — also reflects it instead of
+	// inheriting the omission. Tactic-agnostic; noise clusters are skipped.
+	applyCoverageBackstop(clusters, cfg.Language)
+
 	// Overall synthesis call: uses a dedicated system prompt
 	// (skills/overall_synthesis.md, NOT the cluster-analysis
 	// timeline_review.md) to write one case-wide story.
@@ -1082,7 +1090,12 @@ Return ONLY a single JSON object:
     ]` + reqFilesKey + `
   }
 
-No markdown fences, no text outside the JSON.` + reqFilesRule + clusterTimelineWarning(clockReversed) + `
+No markdown fences, no text outside the JSON.
+
+COVERAGE REQUIREMENT (account for every significant finding — do not silently drop detected attacker activity):
+- Every critical/high finding in this cluster MUST be reflected in the narrative prose, whatever its tactic (discovery, credential-access, execution, persistence, lateral-movement, collection, exfiltration, command-and-control, impact, ...). Do NOT omit a detected attacker action just because the dominant event in the cluster is something else.
+- If a finding is itself a DETECTION or BLOCK by a security control (antivirus / EDR / Microsoft Defender / AMSI / AppLocker — e.g. a quarantine of a credential-dumping tool), narrate it as an ATTEMPTED action that the control detected and, where the evidence shows it, blocked: state that the attempt occurred AND that it was caught, so the underlying action did NOT succeed. Do not omit it, and do not describe a blocked action as having succeeded.
+- This does NOT license over-claiming: never assert a tool, technique, or successful outcome the findings do not support. "Attempted but detected/blocked" and "evidence does not show success" are the correct framings; the absence of a finding is never evidence that something succeeded.` + reqFilesRule + clusterTimelineWarning(clockReversed) + `
 
 ClusterContext:
 `
@@ -1329,6 +1342,9 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 				Confidence: conf,
 			})
 		}
+		// (cluster narratives already carry the deterministic coverage addendum:
+		// applyCoverageBackstop ran before the overall-synthesis pass, so sc.Narrative
+		// inherits it via c.Narrative above.)
 		cs.Clusters = append(cs.Clusters, sc)
 	}
 

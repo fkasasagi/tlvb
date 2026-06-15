@@ -3,6 +3,7 @@ package tier2
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -667,4 +668,244 @@ func uncorroboratedClaimDirectives(aliases map[string][]string, ja bool) []strin
 		}
 	}
 	return out
+}
+
+// ----------------------------------------------------------------------------
+// Narrative coverage backstop (tactic-agnostic)
+//
+// The per-cluster LLM narrative can silently drop event-backed attacker activity
+// under over-suppression pressure (examiner background + the "don't over-claim"
+// grounding guards): a credential-dump ATTEMPT a control blocked, recon, or
+// persistence omitted from the prose while the conclusion says "no post-success
+// activity", even though those findings are members of the cluster and shown in
+// the finding table. coverageAddendum is a deterministic net: when a cluster's
+// critical/high findings prove an activity the narrative never mentions, it
+// appends a neutral sentence so the detection always surfaces.
+//
+// It is deliberately tactic-AGNOSTIC — driven by the finding MITRETactic plus a
+// generic "security control detection" signal — so it catches any tactic
+// (lateral movement, exfiltration, collection, C2, impact, ...), not a fixed
+// per-case list. No host names, tool names, or thresholds from any evaluation
+// case are baked in; the only knowledge tables are generic security-control
+// markers and the MITRE tactic vocabulary.
+
+// salientSeverity reports whether a finding is important enough that a missing
+// mention in the narrative is a real omission (not medium/low noise).
+func salientSeverity(sev string) bool {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical", "high":
+		return true
+	}
+	return false
+}
+
+// securityControlMarkers identify a finding that is itself a detection/block by a
+// security control (AV / EDR / Defender / AMSI / AppLocker). Such a finding is an
+// ATTEMPTED action a control caught — the class an over-suppressed narrative most
+// often drops entirely (nothing "succeeded", so the LLM omits it). Generic
+// markers only.
+var securityControlMarkers = []string{
+	"defender", "antivirus", "anti-virus", "amsi", "applocker",
+	"quarantine", "hacktool", "threat detected", "blocked", "prevented", "edr",
+}
+
+// securityControlProseMarkers count as "the prose already covered the
+// detected/blocked attempt" so the addendum is not duplicated.
+var securityControlProseMarkers = []string{
+	"defender", "antivirus", "anti-virus", "amsi", "applocker", "quarantine",
+	"blocked", "検知", "遮断", "ブロック", "検疫", "防御製品", "セキュリティ製品",
+}
+
+// isSecurityControlDetection reports whether a finding represents a security
+// control firing on an attacker tool/script (its title/source/rule names a
+// control or a block), independent of tactic.
+func isSecurityControlDetection(f Finding) bool {
+	hay := strings.ToLower(f.Title + " " + f.Source + " " + f.RuleID)
+	for _, m := range securityControlMarkers {
+		if strings.Contains(hay, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// tacticAliases folds the tactic slugs that appear in rule metadata (Sigma's
+// "stealth" / "defense-impairment", underscore/space variants) onto one
+// canonical, hyphenated MITRE tactic key so coverage is judged per real tactic.
+var tacticAliases = map[string]string{
+	"stealth":            "defense-evasion",
+	"defense-impairment": "defense-evasion",
+	"c2":                 "command-and-control",
+}
+
+func canonicalTactic(slug string) string {
+	s := strings.ToLower(strings.TrimSpace(slug))
+	s = strings.ReplaceAll(s, "_", "-")
+	s = strings.ReplaceAll(s, " ", "-")
+	if c, ok := tacticAliases[s]; ok {
+		return c
+	}
+	return s
+}
+
+// tacticCoverage is the per-tactic label + the prose synonyms that count as "the
+// narrative mentioned this tactic". The synonym sets are the general MITRE tactic
+// vocabulary (ja + en), not values from any case.
+type tacticCoverage struct {
+	labelJA  string
+	labelEN  string
+	synonyms []string // lowercased prose markers (ja+en)
+}
+
+var tacticCoverageTable = map[string]tacticCoverage{
+	"initial-access":       {"初期アクセス", "initial access", []string{"初期アクセス", "initial access", "侵入経路", "phishing", "フィッシング", "exploit", "公開アプリ"}},
+	"execution":            {"実行", "execution", []string{"実行", "execution", "powershell", "コマンド", "script", "スクリプト", "wsmprovhost", "cmd.exe"}},
+	"persistence":          {"永続化", "persistence", []string{"永続化", "persistence", "subscription", "サブスクリプション", "scheduled task", "スケジュール", "run key", "自動実行", "wmi"}},
+	"privilege-escalation": {"権限昇格", "privilege escalation", []string{"権限昇格", "昇格", "privilege", "escalat", "uac", "token", "sid history"}},
+	"defense-evasion":      {"防御回避", "defense evasion", []string{"防御回避", "回避", "evasion", "難読", "obfuscat", "disable", "無効化", "exclusion", "除外", "ログ削除", "clear log"}},
+	"credential-access":    {"資格情報アクセス", "credential access", []string{"資格情報", "認証情報", "credential", "ダンプ", "dump", "lsass", "窃取", "パスワード", "password", "ハッシュ", "hash"}},
+	"discovery":            {"探索/偵察", "discovery / reconnaissance", []string{"偵察", "探索", "列挙", "discovery", "recon", "enumerat", "whoami", "nltest", "systeminfo", "ipconfig"}},
+	"lateral-movement":     {"横展開", "lateral movement", []string{"横展開", "横移動", "lateral", "remote", "リモート", "winrm", "psexec", "rdp", "wmi exec"}},
+	"collection":           {"収集", "collection", []string{"収集", "collection", "ステージング", "staging", "archive", "圧縮", "screenshot"}},
+	"command-and-control":  {"C2 (遠隔操作)", "command and control", []string{"c2", "command-and-control", "command and control", "ビーコン", "beacon", "外部通信", "外部接続", "コールバック"}},
+	"exfiltration":         {"持ち出し", "exfiltration", []string{"持ち出し", "流出", "exfiltrat", "アップロード", "upload", "送信", "転送", "transfer"}},
+	"impact":               {"影響/破壊", "impact", []string{"impact", "破壊", "暗号化", "ransom", "ランサム", "wipe", "destruction", "改ざん", "サービス停止"}},
+}
+
+// narrativeMentionsAny reports whether the lowercased narrative contains any of
+// the markers.
+func narrativeMentionsAny(lowNarrative string, markers []string) bool {
+	for _, m := range markers {
+		if m != "" && strings.Contains(lowNarrative, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// joinTitles renders up to max finding titles, with a "他N件" / "+N more" tail.
+func joinTitles(titles []string, max int, ja bool) string {
+	// de-dup while preserving order
+	seen := map[string]bool{}
+	var uniq []string
+	for _, t := range titles {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		uniq = append(uniq, t)
+	}
+	if len(uniq) <= max {
+		return strings.Join(uniq, ", ")
+	}
+	head := strings.Join(uniq[:max], ", ")
+	if ja {
+		return head + " 他" + strconv.Itoa(len(uniq)-max) + "件"
+	}
+	return head + " +" + strconv.Itoa(len(uniq)-max) + " more"
+}
+
+// coverageAddendum returns the deterministic sentence(s) to append to a cluster
+// narrative for every salient activity class the narrative omitted. Returns ""
+// when the narrative already covers everything. The caller gates this on
+// IsNoiseCluster so benign clusters get no addendum.
+func coverageAddendum(c Cluster, ja bool) string {
+	low := strings.ToLower(c.Narrative)
+	var parts []string
+
+	// Check 1 (tactic-agnostic): security-control detections = attempted → caught.
+	var ctrlTitles []string
+	for _, f := range c.Findings {
+		if salientSeverity(f.Severity) && isSecurityControlDetection(f) {
+			ctrlTitles = append(ctrlTitles, f.Title)
+		}
+	}
+	if len(ctrlTitles) > 0 && !narrativeMentionsAny(low, securityControlProseMarkers) {
+		titles := joinTitles(ctrlTitles, 3, ja)
+		if ja {
+			parts = append(parts, "セキュリティ製品 (AV/EDR/Defender 等) が検知した攻撃ツール/スクリプトの実行試行が含まれます ("+titles+") — narrative に未反映。試行が遮断されたか否か(成否)は evidence で要確認。")
+		} else {
+			parts = append(parts, "an attempt flagged by a security control (AV/EDR/Defender) is present ("+titles+") but not reflected in the narrative; whether it was blocked must be confirmed from the evidence.")
+		}
+	}
+
+	// Check 2 (all tactics): salient findings grouped by tactic, excluding the
+	// control detections Check 1 already owns. A tactic whose synonyms never
+	// appear in the prose was dropped.
+	byTactic := map[string][]string{}
+	var order []string
+	for _, f := range c.Findings {
+		if !salientSeverity(f.Severity) || isSecurityControlDetection(f) {
+			continue
+		}
+		tac := canonicalTactic(f.MITRETactic)
+		if tac == "" {
+			continue
+		}
+		if _, ok := byTactic[tac]; !ok {
+			order = append(order, tac)
+		}
+		byTactic[tac] = append(byTactic[tac], f.Title)
+	}
+	for _, tac := range order {
+		info, ok := tacticCoverageTable[tac]
+		if !ok {
+			continue // unknown tactic (no synonym table) — skip to avoid a false addendum
+		}
+		if narrativeMentionsAny(low, info.synonyms) {
+			continue
+		}
+		titles := joinTitles(byTactic[tac], 3, ja)
+		if ja {
+			parts = append(parts, info.labelJA+" の検出が narrative に未反映 ("+titles+")。")
+		} else {
+			parts = append(parts, info.labelEN+" activity detected but not reflected in the narrative ("+titles+").")
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	if ja {
+		return coverageAddendumMarkerJA + " (narrative がクラスタ内の検出を反映していない可能性): " + strings.Join(parts, " ")
+	}
+	return coverageAddendumMarkerEN + " — the narrative may not reflect this cluster's detections): " + strings.Join(parts, " ")
+}
+
+// coverageAddendum marker prefixes — also used as the idempotency guard so the
+// backstop can be applied before the overall-synthesis pass without being
+// double-appended later.
+const (
+	coverageAddendumMarkerJA = "※決定論チェックによる補足"
+	coverageAddendumMarkerEN = "Note (deterministic coverage check"
+)
+
+// applyCoverageBackstop appends the deterministic coverage addendum to each
+// non-noise cluster's narrative IN PLACE. Run BEFORE the overall-synthesis LLM
+// call so the case-wide story (which is built from cluster narratives, not raw
+// findings) also reflects any salient detection the per-cluster prose dropped —
+// otherwise the headline conclusion can keep denying activity the findings prove.
+// Idempotent: a narrative already carrying the addendum marker is left untouched.
+func applyCoverageBackstop(clusters []Cluster, lang string) {
+	ja := strings.ToLower(lang) != "en"
+	for i := range clusters {
+		c := &clusters[i]
+		if IsNoiseCluster(c.AttackPhase, c.Narrative) {
+			continue
+		}
+		if strings.Contains(c.Narrative, coverageAddendumMarkerJA) ||
+			strings.Contains(c.Narrative, coverageAddendumMarkerEN) {
+			continue
+		}
+		add := coverageAddendum(*c, ja)
+		if add == "" {
+			continue
+		}
+		if strings.TrimSpace(c.Narrative) == "" {
+			c.Narrative = add
+		} else {
+			c.Narrative = c.Narrative + "\n\n" + add
+		}
+	}
 }
