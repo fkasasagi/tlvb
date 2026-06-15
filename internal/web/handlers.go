@@ -1341,17 +1341,18 @@ func (s *Server) handleStartReport(w http.ResponseWriter, r *http.Request) {
 		// display conversion); empty/unloadable falls back to UTC.
 		t3Start := time.Now()
 		res, err := tier3.Render(tier3.Config{
-			CaseID:         caseID,
-			SynthesisPath:  filepath.Join(root, caseID, "synthesis.json"),
-			OutDir:         filepath.Join(root, caseID, "reports"),
-			FindingsDir:    filepath.Join(root, caseID, "findings"),
-			Formats:        formats,
-			Language:       lang,
-			Timezone:       reportTZ,
-			OnlyApproved:   onlyApproved,
-			CaseMeta:       meta,
-			Examiner:       examiner,
-			CaseBackground: caseBG,
+			CaseID:              caseID,
+			SynthesisPath:       filepath.Join(root, caseID, "synthesis.json"),
+			OutDir:              filepath.Join(root, caseID, "reports"),
+			FindingsDir:         filepath.Join(root, caseID, "findings"),
+			Formats:             formats,
+			Language:            lang,
+			TranslateNarratives: true,
+			Timezone:            reportTZ,
+			OnlyApproved:        onlyApproved,
+			CaseMeta:            meta,
+			Examiner:            examiner,
+			CaseBackground:      caseBG,
 		})
 		if err != nil {
 			return "", err

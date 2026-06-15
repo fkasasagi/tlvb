@@ -238,13 +238,22 @@ type consistencyResult struct {
 	costUSD      float64
 }
 
-// callConsistencyLLM dispatches one call to whichever transport is configured.
+// callConsistencyLLM dispatches one consistency-review call (adaptive thinking,
+// the review token budget) to whichever transport is configured.
 func callConsistencyLLM(ctx context.Context, cfg Config, t *llm.Transport, sys, user string) (*consistencyResult, error) {
+	return callLLMOneShot(ctx, cfg, t, sys, user, consistencyMaxTokens, true)
+}
+
+// callLLMOneShot is the shared one-shot transport dispatch used by both the
+// consistency reviewer and the narrative translator. maxTokens caps the output;
+// thinking toggles adaptive extended thinking (off for translation — it is a
+// mechanical task and the budget is better spent on output).
+func callLLMOneShot(ctx context.Context, cfg Config, t *llm.Transport, sys, user string, maxTokens int, thinking bool) (*consistencyResult, error) {
 	switch t.Kind {
 	case llm.KindAnthropic:
-		return callConsistencyAPI(ctx, cfg, consistencyAPIURL, false, t, sys, user)
+		return callConsistencyAPI(ctx, cfg, consistencyAPIURL, false, t, sys, user, maxTokens, thinking)
 	case llm.KindVertex:
-		return callConsistencyAPI(ctx, cfg, t.VertexURL(consistencyModel(cfg.Model)), true, t, sys, user)
+		return callConsistencyAPI(ctx, cfg, t.VertexURL(consistencyModel(cfg.Model)), true, t, sys, user, maxTokens, thinking)
 	default:
 		return callConsistencyCLI(ctx, cfg, sys, user)
 	}
@@ -277,12 +286,14 @@ type consistencyAPIResp struct {
 // callConsistencyAPI handles both the direct Anthropic API and Vertex (model in
 // the URL + anthropic_version + OAuth bearer). No prompt caching: this is a
 // single one-shot call per report.
-func callConsistencyAPI(ctx context.Context, cfg Config, url string, vertex bool, t *llm.Transport, sys, user string) (*consistencyResult, error) {
+func callConsistencyAPI(ctx context.Context, cfg Config, url string, vertex bool, t *llm.Transport, sys, user string, maxTokens int, thinking bool) (*consistencyResult, error) {
 	body := consistencyAPIReq{
-		MaxTokens: consistencyMaxTokens,
-		Thinking:  map[string]string{"type": "adaptive"},
+		MaxTokens: maxTokens,
 		System:    sys,
 		Messages:  []map[string]string{{"role": "user", "content": user}},
+	}
+	if thinking {
+		body.Thinking = map[string]string{"type": "adaptive"}
 	}
 	if vertex {
 		body.AnthropicVersion = llm.VertexAnthropicVersion

@@ -25,8 +25,19 @@ type Config struct {
 	SynthesisPath string   // outputs/cases/<id>/synthesis.json
 	OutDir        string   // outputs/cases/<id>/reports
 	Formats       []string // subset of {"html","csv","json"}; default ["html","csv","json"]
-	Language      string   // "ja" | "en" — UI labels, NOT LLM-narratives
+	Language      string   // "ja" | "en" — UI labels; LLM-narratives translated only when TranslateNarratives is set
 	OnlyApproved  bool     // (future) filter to Review Gate 1A approved findings
+
+	// TranslateNarratives opts into the report-time LLM translation pass: when the
+	// synthesis was written in a different language than Language, the verbatim
+	// LLM prose (executive summary, cluster narratives, open questions, timeline
+	// notes, active-search answers) is translated into Language so the whole
+	// report reads in one language — not just the static UI labels. Off by default
+	// (it costs one LLM call and is non-deterministic); the CLI / web report path
+	// turn it on. Best-effort: no transport or a failed call leaves the narratives
+	// untranslated and logs a warning rather than failing the report. Tier 1A
+	// stays LLM-free — this is a Tier 3 concern only.
+	TranslateNarratives bool
 
 	// Timezone is the IANA zone the report's timestamps are displayed in
 	// (e.g. "Asia/Tokyo"). Events are stored in UTC; this only changes the

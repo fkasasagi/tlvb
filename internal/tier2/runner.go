@@ -1303,6 +1303,16 @@ func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (
 // synthesis assembly
 // ----------------------------------------------------------------------------
 
+// normalizeSynthLang collapses the language config to the two values the
+// narratives are actually written in ("en" | "ja"), so synthesis.json records a
+// canonical value Tier 3 can compare against.
+func normalizeSynthLang(lang string) string {
+	if strings.EqualFold(strings.TrimSpace(lang), "en") {
+		return "en"
+	}
+	return "ja"
+}
+
 func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 	overall string, audit SynthAudit, lang string, gctx groundingContext) CaseSynthesis {
 
@@ -1310,6 +1320,7 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 	cs := CaseSynthesis{
 		CaseID:        caseID,
 		GeneratedAt:   time.Now().UTC(),
+		Language:      normalizeSynthLang(lang),
 		TotalFindings: countFindings(clusters),
 		ClusterCount:  len(clusters),
 		OverallStory:  techSummary,
