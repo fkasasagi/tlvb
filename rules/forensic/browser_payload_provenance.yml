@@ -1,0 +1,24 @@
+id: forensic-browser-payload-provenance
+title: "Browser Delivered a Payload (Typed Download / Open-Directory Drop Site)"
+level: medium
+artifacts: [browser_history]
+mitre:
+  tactics: [initial-access, command-and-control]
+  techniques: [T1566.002, T1105]
+description: >
+  The web provenance of an intrusion. A user who directly TYPES a URL ending in
+  an executable or archive, or who lands on a bare "Directory listing for /"
+  page, is almost always fetching a payload from an attacker-controlled host
+  rather than browsing normally. Correlated with an execution-artifact hit, this
+  reconstructs the initial-access step (browser download -> run) that leaves no
+  EVTX trace.
+detection: >
+  Match browser_history rows where EITHER:
+    (a) $.title starts with 'Directory listing for' (open-dir drop site), OR
+    (b) $.url ends in an executable/archive extension (.exe, .scr, .dll, .zip,
+        .7z, .rar, .iso, .img, .lnk, .hta, .ps1, .bat) AND the visit was
+        user-initiated — $.transition='typed' OR
+        CAST($.typed_count AS INTEGER) > 0.
+  Surface $.url, $.title and $.transition.
+references:
+  - https://attack.mitre.org/techniques/T1566/002/

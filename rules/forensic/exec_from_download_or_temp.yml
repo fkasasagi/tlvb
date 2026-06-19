@@ -1,0 +1,32 @@
+id: forensic-exec-from-download-or-temp
+title: "Executable Ran From a User Downloads or Temp Folder (Forensic Execution Evidence)"
+level: high
+artifacts: [prefetch, amcache, registry, shimcache]
+mitre:
+  tactics: [execution, initial-access]
+  techniques: [T1204.002]
+description: >
+  A binary executed (or was recorded as present) from a user-writable staging
+  folder — \Users\<u>\Downloads\, \Users\<u>\Desktop\, or \AppData\Local\Temp\.
+  Browser-delivered and archive-extracted payloads almost always land and run
+  from these folders, and on hosts without process-creation auditing (no
+  Security 4688, no Sysmon) the ONLY trace is in these forensic execution
+  artifacts. This is the exact pattern that let case_R's niceeditor.exe slip
+  past every EVTX-only signature.
+detection: >
+  Emit one row per execution-evidence hit across the listed artifacts. Use the
+  full path field documented for each artifact and match (case-insensitively)
+  an .exe under a user Downloads/Desktop folder or under AppData\Local\Temp:
+    - prefetch:  $.files_loaded contains "\DOWNLOADS\...\*.EXE",
+                 "\DESKTOP\...\*.EXE" or "\APPDATA\LOCAL\TEMP\...\*.EXE"
+                 (paths are UPPERCASE there)
+    - amcache:   $.FullPath under \Users\...\Downloads\ / \Desktop\ /
+                 \AppData\Local\Temp\ and ends in .exe, with $.IsOsComponent='false'
+    - registry:  $.Category='Program Execution' (UserAssist/AppCompat) and
+                 $.ValueData is such an .exe path
+    - shimcache: $.Path is such an .exe path
+  A single SELECT over artifact_id IN ('prefetch','amcache','registry','shimcache')
+  with per-artifact OR branches is expected. Surface the matched path and the
+  source artifact so the examiner can see where it ran from.
+references:
+  - https://attack.mitre.org/techniques/T1204/002/

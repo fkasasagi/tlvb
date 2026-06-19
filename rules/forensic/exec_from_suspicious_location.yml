@@ -1,0 +1,23 @@
+id: forensic-exec-from-suspicious-location
+title: "Executable Ran From an Unusual / World-Writable Location"
+level: high
+artifacts: [prefetch, amcache, registry, shimcache]
+mitre:
+  tactics: [execution, defense-evasion]
+  techniques: [T1036.005, T1204.002]
+description: >
+  Legitimate software runs from \Program Files\, \Windows\System32\, or a user's
+  AppData install dirs. Execution from world-writable or non-standard staging
+  locations — \ProgramData\, \PerfLogs\, \Users\Public\, $Recycle.Bin, the root
+  of C:\, or \Windows\Temp\ — is a classic malware staging tell, used both to
+  evade per-user controls and to masquerade as system files.
+detection: >
+  Emit one row per execution-evidence hit across the listed artifacts where the
+  executable path (prefetch $.files_loaded, amcache $.FullPath, registry
+  $.ValueData with $.Category='Program Execution', shimcache $.Path) ends in
+  .exe AND sits under one of: \ProgramData\, \PerfLogs\, \Users\Public\,
+  $Recycle.Bin, \Windows\Temp\, or directly at the drive root (e.g. 'C:\' with
+  no further directory). Do NOT flag \Program Files\, \Windows\System32\ or
+  \Windows\SysWOW64\. Surface the matched path and source artifact.
+references:
+  - https://attack.mitre.org/techniques/T1036/005/

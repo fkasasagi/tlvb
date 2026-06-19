@@ -1,0 +1,23 @@
+id: forensic-dll-sideload-from-userwritable
+title: "DLL Loaded From a User-Writable Path (Side-Loading) — Prefetch"
+level: high
+artifacts: [prefetch]
+mitre:
+  tactics: [defense-evasion, persistence, privilege-escalation]
+  techniques: [T1574.002]
+description: >
+  Re-expresses Sigma 'image_load' (Sysmon EventID 7) DLL-side-loading detection
+  WITHOUT Sysmon. Sysmon is rarely deployed, but Prefetch records every file a
+  process referenced during execution in files_loaded — including the DLLs it
+  loaded, with their full paths. A legitimately-signed EXE that loads a DLL from
+  a user-writable folder (instead of System32 / its install dir) is the classic
+  side-loading / search-order-hijack pattern.
+detection: >
+  Match prefetch rows where files_loaded contains a .DLL whose path is under a
+  user-writable staging location — ILIKE '%\DOWNLOADS\%.DLL' OR
+  '%\APPDATA\LOCAL\TEMP\%.DLL' OR '%\APPDATA\ROAMING\%.DLL' OR
+  '%\PROGRAMDATA\%.DLL' OR '%\USERS\PUBLIC\%.DLL' OR '%\WINDOWS\TEMP\%.DLL'
+  (prefetch paths are UPPERCASE with \VOLUME{...} prefixes; use ILIKE
+  substrings). Surface the prefetch executable and the matched files_loaded.
+references:
+  - https://attack.mitre.org/techniques/T1574/002/

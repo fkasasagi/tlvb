@@ -64,20 +64,5 @@ libSQLite.Interop.so
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# Internal dev / process docs — excluded from the public release. These are
-# planning notes, status trackers, internal QA test sheets, hackathon-prep
-# drafts and AI-agent config that have no value to a public reader. Kept in
-# private branches/history only.
+# Internal hackathon planning notes — never commit (kept locally in outputs/).
 docs/HACKATHON_GAP.md
-docs/SESSION_HANDOFF.md
-docs/STATUS.md
-docs/IMPROVEMENTS.md
-docs/valhuntir_analysis.md
-docs/DEVPOST.md
-docs/DEMO_SCRIPT.md
-docs/TEST_*.md
-docs/TEST_FEATURES.csv
-/CLAUDE.md
-/.session-board
-/.claude/settings.json
-reference/README.md

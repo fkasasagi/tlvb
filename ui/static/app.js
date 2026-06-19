@@ -217,6 +217,53 @@ const I18N_DICT = {
   "Generate Report": "レポート生成"
 },
   en: {
+  "タイムライン補足": "Timeline note",
+  "タイムライン信頼性: 要再アンカー — システム時刻の後方ジャンプを検出": "Timeline reliability: needs re-anchoring — backward jump in system time detected",
+  "記録時刻 — 本ケースはクロック巻き戻しを検出、絶対時刻・発生順は不確実": "Recorded time — clock rollback detected in this case; absolute time and ordering are uncertain",
+  "記録順とタイムスタンプが乖離するため、下表は表示時刻順ではなく攻撃の論理的順序 (フェーズ) で並べています。改ざんかプロビジョニング補正かは要確認。": "Recorded order and timestamps diverge, so the table below is ordered by the attack's logical order (phase), not by display time. Whether this is tampering or a provisioning correction needs review.",
+  "rules.duckdb が見つかりません。`tlvb rules build` でルール SQL キャッシュを生成してください。": "rules.duckdb not found. Run `tlvb rules build` to generate the rule SQL cache.",
+  "学習済みクエリはまだありません (analyze --tier 1b を実 LLM で実行すると蓄積されます)。": "No learned queries yet (they accumulate when you run analyze --tier 1b with a real LLM).",
+  "一部のアーティファクトのパースでエラー": "errors parsing some artifacts",
+  " ⏳(処理開始前の値)": " ⏳(pre-job values)",
+  "別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。": "Another job (e.g. Parse) is using the DB, so counts are pre-job values. The progress bar is live; it updates automatically when the job finishes.",
+  "✓ auto 承認 (severity 既定)": "✓ auto-approved (severity default)",
+  " 件": " items",
+  " 件が未レビュー": " unreviewed",
+  "全件レビュー済": "All reviewed",
+  "… ほか ": "… +",
+  " — クリックで表示": " — click to show",
+  " 件の finding を却下": " findings to reject",
+  "ON にすると Parse 完了後のレビューを飛ばし、Analyze がブロックされなくなる (auto_skip)": "When ON, skips post-Parse review so Analyze is not blocked (auto_skip)",
+  "ON にすると Parse Results の人間レビューを飛ばして Analyze を開始 (auto_skip)": "When ON, skips human review of Parse Results and starts Analyze (auto_skip)",
+  "残りの finding を表示": "Show remaining findings",
+  "このクラスターの表示中 finding を全選択 / 解除": "Select / deselect all visible findings in this cluster",
+  "MITRE tactic 未割当の finding": "Findings with no MITRE tactic assigned",
+  "クラスター内の finding の並び順": "Sort order of findings within a cluster",
+  "全クラスターを展開": "Expand all clusters",
+  "全クラスターを折り畳む": "Collapse all clusters",
+  "表示中の finding をすべて承認 (上のフィルタが効きます)": "Approve all visible findings (the filters above apply)",
+  "表示中の finding を全選択 / 解除": "Select / deselect all visible findings",
+  "判断を取り消して severity 既定値に戻す": "Undo the decision and restore the severity default",
+  "詳細 (finding_id / rule / source path)": "Details (finding_id / rule / source path)",
+  "クリックで全文表示 / 折り畳み": "Click to expand / collapse",
+  "クリックで展開": "Click to expand",
+  "Events タブでこの時刻の前後 ±5 分を表示": "Show ±5 min around this time on the Events tab",
+  "判断を取り消して未レビューに戻す": "Undo the decision and return to unreviewed",
+  "attack.mitre.org で ": "Open ",
+  " を開く": " on attack.mitre.org",
+  "Events タブを contains ": "Filter the Events tab: contains ",
+  " で絞る": " — filter",
+  " をコピーしました": " copied",
+  " をコピー": " — copy",
+  "〜 約": "~ ",
+  "分の無記録 〜": " min of no activity ~",
+  "preview は先頭 ": "preview shows only the first ",
+  " 件のみ — 全 ": " — ",
+  "全 ": "total ",
+  " 件)": ")",
+  "空欄フィールド ": "empty fields: ",
+  " 件 非表示 ": " hidden ",
+  "ケース一覧": "Cases",
   "ビルドカバレッジ": "Build coverage",
   "ルール一覧": "Rules",
   "Tier 1B 学習済みクエリ (skill cache)": "Tier 1B learned queries (skill cache)",
@@ -688,7 +735,7 @@ route(/^\/$/, async () => {
   // Case list
   const list = h("div", { class: "card" }, [
     h("div", { class: "row", style: "align-items: center;" }, [
-      h("h2", { style: "flex: 1; margin: 0;" }, `ケース一覧 (${cases.length})`),
+      h("h2", { style: "flex: 1; margin: 0;" }, `${t("ケース一覧")} (${cases.length})`),
       // Issue #16: Import a .fcz exported from another environment.
       h("label", {
         class: "ghost",
@@ -834,7 +881,7 @@ route(/^\/rules$/, async ({ params }) => {
 
   if (!summary.available) {
     sumCard.appendChild(h("div", { class: "empty" },
-      "rules.duckdb が見つかりません。`tlvb rules build` でルール SQL キャッシュを生成してください。"));
+      t("rules.duckdb が見つかりません。`tlvb rules build` でルール SQL キャッシュを生成してください。")));
   } else {
     const r = summary.rules || { by_state: {}, by_source: [] };
     const bs = r.by_state || {};
@@ -925,7 +972,7 @@ route(/^\/rules$/, async ({ params }) => {
   const skillRows = skillResp.rows || [];
   if (skillRows.length === 0) {
     skillCard.appendChild(h("div", { class: "empty" },
-      "学習済みクエリはまだありません (analyze --tier 1b を実 LLM で実行すると蓄積されます)。"));
+      t("学習済みクエリはまだありません (analyze --tier 1b を実 LLM で実行すると蓄積されます)。")));
   } else {
     skillRows.forEach((sr) => skillCard.appendChild(skillDetailsEl(sr)));
   }
@@ -1086,7 +1133,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
     }
   }
   setMeta(`evidence=${detail.case.evidence_count} events=${detail.case.unified_event_rows}` +
-    (staleFromCache ? " ⏳(処理開始前の値)" : ""));
+    (staleFromCache ? t(" ⏳(処理開始前の値)") : ""));
 
   const app = $("#app");
   app.innerHTML = "";
@@ -1108,7 +1155,7 @@ route(/^\/cases\/([^/]+)\/?$/, async ({ args, params }) => {
         h("h1", {}, c.case_id + " — " + c.name),
         staleFromCache ? h("span", {
           class: "badge warn",
-          title: "別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。",
+          title: t("別の処理 (Parse 等) が DB を使用中のため、件数などはジョブ開始前の値です。進捗バーはライブ。完了すると自動で更新されます。"),
         }, t("⏳ 処理中（表示はジョブ開始前の値）")) : null,
         h("div", { class: "muted" },
           `Examiner: ${c.examiner || "—"} · TZ: ${c.timezone || "UTC"} · Status: ${c.status || "active"} · Created: ${fmtTS(c.created_at)}`),
@@ -1372,7 +1419,7 @@ function pipelineLabel(st) {
   // Partial = the step completed and produced usable output, but some
   // sub-units failed (e.g. some artifacts didn't parse). A warning, not a
   // red FAIL — the detail rides in st.message.
-  if (st.state === "partial")   return "PARTIAL · " + (st.message || "一部のアーティファクトのパースでエラー");
+  if (st.state === "partial")   return "PARTIAL · " + (st.message || t("一部のアーティファクトのパースでエラー"));
   if (st.state === "failed")    return "FAIL · " + (st.error || "see logs");
   if (st.state === "canceled")  return "canceled · " + (st.message || "by examiner");
   return st.state;
@@ -1542,7 +1589,7 @@ t("1 ケースに対して **複数の Evidence を一度に登録 + パース**
       h("label", {}, t("Review Gate 0 をスキップ")),
       h("input", {
         type: "checkbox", id: "p_skip_gate0",
-        title: "ON にすると Parse 完了後のレビューを飛ばし、Analyze がブロックされなくなる (auto_skip)",
+        title: t("ON にすると Parse 完了後のレビューを飛ばし、Analyze がブロックされなくなる (auto_skip)"),
       }),
     ]),
     h("p", { class: "muted", style: "font-size: 11px; margin-top: 0;" },
@@ -1629,7 +1676,7 @@ t("Tier 1A always runs: cached signature SQL (Sigma / Hayabusa / STIX / custom /
       h("label", {}, t("Review Gate 0 をスキップ")),
       h("input", {
         type: "checkbox", id: "a_skip_gate0",
-        title: "ON にすると Parse Results の人間レビューを飛ばして Analyze を開始 (auto_skip)",
+        title: t("ON にすると Parse Results の人間レビューを飛ばして Analyze を開始 (auto_skip)"),
       }),
     ]),
     h("p", { class: "muted", style: "font-size: 11px; margin-top: 0;" },
@@ -1982,7 +2029,7 @@ function buildClusterGroup(pane, caseID, g, expanded) {
   // "… ほか N 件" overflow row — text + visibility managed by applyVisibilityFilter.
   const moreRow = h("div", {
     class: "fnd-more hidden",
-    title: "残りの finding を表示",
+    title: t("残りの finding を表示"),
     onclick: () => { state.uncapped.add(g.tactic); applyVisibilityFilter(pane); },
   });
   list.appendChild(moreRow);
@@ -1990,7 +2037,7 @@ function buildClusterGroup(pane, caseID, g, expanded) {
   const groupCheck = h("input", {
     type: "checkbox",
     class: "tactic-select-all",
-    title: "このクラスターの表示中 finding を全選択 / 解除",
+    title: t("このクラスターの表示中 finding を全選択 / 解除"),
     onclick: (ev) => {
       ev.stopPropagation();
       const checked = ev.target.checked;
@@ -2009,11 +2056,11 @@ function buildClusterGroup(pane, caseID, g, expanded) {
   const header = h("div", { class: "cluster-row" }, [
     groupCheck,
     unc
-      ? h("span", { class: "tactic-toggle warn-ico", title: "MITRE tactic 未割当の finding" }, "⚠")
+      ? h("span", { class: "tactic-toggle warn-ico", title: t("MITRE tactic 未割当の finding") }, "⚠")
       : h("span", { class: "tactic-toggle" }, expanded ? "▾" : "▸"),
     h("span", { class: "name" }, g.tactic),
     h("span", { class: "sev-chips" }, severitySummary(g.findings)),
-    h("span", { class: "count" }, g.findings.length + " 件"),
+    h("span", { class: "count" }, g.findings.length + t(" 件")),
     h("span", { class: "fstatus" }, ""), // text/class filled by refreshClusterHeader
     toggleBtn,
   ]);
@@ -2078,11 +2125,11 @@ function refreshClusterHeader(pane, tactic, groupEl) {
   if (pending > 0) {
     badge.className = "fstatus pending";
     badge.textContent = tactic === "uncategorized" ? t("未割当") : t("要確認");
-    badge.title = pending + " 件が未レビュー";
+    badge.title = pending + t(" 件が未レビュー");
   } else {
     badge.className = "fstatus done";
     badge.textContent = t("確認済");
-    badge.title = "全件レビュー済";
+    badge.title = t("全件レビュー済");
   }
 }
 
@@ -2161,7 +2208,7 @@ function refreshFindingsToolbar(pane) {
   // Row 0: free-text search + sort + expand/collapse-all. Search filters rows
   // live (no re-render → input keeps focus); sort triggers a re-render.
   const sortSelect = h("select", {
-    title: "クラスター内の finding の並び順",
+    title: t("クラスター内の finding の並び順"),
     onchange: (ev) => { state.sort = ev.target.value; renderFindings(pane, state.caseID); },
   }, [
     h("option", { value: "severity" }, "severity"),
@@ -2179,8 +2226,8 @@ function refreshFindingsToolbar(pane) {
     }),
     h("span", { class: "flabel", style: "min-width: 0;" }, t("Sort:")),
     sortSelect,
-    h("button", { class: "fbtn", title: "全クラスターを展開", onclick: () => expandAllGroups(pane, true) }, t("Expand all")),
-    h("button", { class: "fbtn", title: "全クラスターを折り畳む", onclick: () => expandAllGroups(pane, false) }, t("Collapse all")),
+    h("button", { class: "fbtn", title: t("全クラスターを展開"), onclick: () => expandAllGroups(pane, true) }, t("Expand all")),
+    h("button", { class: "fbtn", title: t("全クラスターを折り畳む"), onclick: () => expandAllGroups(pane, false) }, t("Collapse all")),
   ]));
 
   // Row 1: review-state filter + roll-up counts.
@@ -2217,7 +2264,7 @@ function refreshFindingsToolbar(pane) {
     h("span", { class: "spacer" }),
     h("button", {
       class: "fbtn",
-      title: "表示中の finding をすべて承認 (上のフィルタが効きます)",
+      title: t("表示中の finding をすべて承認 (上のフィルタが効きます)"),
       disabled: visibleCount === 0 ? "disabled" : null,
       onclick: async () => {
         if (!confirm(`Approve all ${visibleCount} visible finding(s)?`)) return;
@@ -2232,7 +2279,7 @@ function refreshFindingsToolbar(pane) {
   // Row 3: selection bar — master checkbox + bulk actions on the ticked rows.
   const master = h("input", {
     type: "checkbox",
-    title: "表示中の finding を全選択 / 解除",
+    title: t("表示中の finding を全選択 / 解除"),
     onclick: (ev) => {
       const checked = ev.target.checked;
       for (const f of findings) {
@@ -2302,7 +2349,7 @@ function applyVisibilityFilter(pane) {
     if (more) {
       if (capped.length > 0) {
         const sevs = severitySummary(capped).map((c) => c.textContent).join(" · ");
-        more.textContent = `… ほか ${capped.length} 件` + (sevs ? ` (${sevs})` : "") + " — クリックで表示";
+        more.textContent = `${t("… ほか ")}${capped.length}${t(" 件")}` + (sevs ? ` (${sevs})` : "") + t(" — クリックで表示");
         more.classList.remove("hidden");
       } else {
         more.classList.add("hidden");
@@ -2312,7 +2359,7 @@ function applyVisibilityFilter(pane) {
     group.classList.toggle("group-empty", matchTotal === 0);
     const rowsAll = group.querySelectorAll(".finding").length;
     const cnt = group.querySelector(".cluster-row .count");
-    if (cnt) cnt.textContent = (matchTotal < rowsAll) ? `${matchTotal}/${rowsAll} 件` : `${rowsAll} 件`;
+    if (cnt) cnt.textContent = (matchTotal < rowsAll) ? `${matchTotal}/${rowsAll}${t(" 件")}` : `${rowsAll}${t(" 件")}`;
   }
 
   const showing = pane.querySelector("#fnd-showing");
@@ -2354,7 +2401,7 @@ async function bulkAction(pane, action) {
 function rejectWithModal(pane, ids) {
   if (!ids || ids.length === 0) return;
   const close = modal([
-    h("h3", {}, ids.length === 1 ? t("Finding を却下") : `${ids.length} 件の finding を却下`),
+    h("h3", {}, ids.length === 1 ? t("Finding を却下") : `${ids.length}${t(" 件の finding を却下")}`),
     h("div", { class: "form-row" }, [h("label", {}, t("Reason (optional)")),
       h("input", { id: "rej_reason", placeholder: "why is this not a true positive? (optional)" })]),
     h("div", { class: "actions" }, [
@@ -2460,12 +2507,12 @@ function rebuildActionButtons(pane, f, actions) {
     }, t("承認")));
     actions.appendChild(h("button", {
       class: "fbtn",
-      title: "判断を取り消して severity 既定値に戻す",
+      title: t("判断を取り消して severity 既定値に戻す"),
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
     }, t("リセット")));
   } else {
     const label = f.auto_approved
-      ? "✓ auto 承認 (severity 既定)"
+      ? t("✓ auto 承認 (severity 既定)")
       : t("✓ 承認済") + (f.reviewed_at ? " · " + fmtTS(f.reviewed_at) : "");
     actions.appendChild(h("span", {
       class: "fnd-state ok",
@@ -2477,7 +2524,7 @@ function rebuildActionButtons(pane, f, actions) {
     }, t("却下")));
     actions.appendChild(h("button", {
       class: "fbtn",
-      title: "判断を取り消して severity 既定値に戻す",
+      title: t("判断を取り消して severity 既定値に戻す"),
       onclick: () => runBulk(pane, [f.finding_id], "reset", ""),
     }, t("リセット")));
   }
@@ -2516,15 +2563,15 @@ function findingRow(caseID, f, pane) {
     }),
     h("span", { class: "badge sev-" + sev }, sevLabel),
     h("span", { class: "finding-title", title: f.title || "" }, f.title || f.rule_id || "(untitled)"),
-    ...(f.mitre_techniques || []).slice(0, 3).map((t) =>
+    ...(f.mitre_techniques || []).slice(0, 3).map((tech) =>
       h("a", {
         class: "mitre-link",
-        href: "https://attack.mitre.org/techniques/" + t.replace(/\./g, "/"),
+        href: "https://attack.mitre.org/techniques/" + tech.replace(/\./g, "/"),
         target: "_blank",
         rel: "noopener",
-        title: "attack.mitre.org で " + t + " を開く",
+        title: t("attack.mitre.org で ") + tech + t(" を開く"),
         onclick: (ev) => ev.stopPropagation(),
-      }, [t + " ", h("span", { class: "ext-ico" }, "↗")])
+      }, [tech + " ", h("span", { class: "ext-ico" }, "↗")])
     ),
   ]));
 
@@ -2556,7 +2603,7 @@ function findingRow(caseID, f, pane) {
     });
     if (total > previews.length) {
       evBlock.appendChild(h("div", { class: "muted", style: "font-size: 11px; padding: 2px 4px;" },
-        `preview は先頭 ${previews.length} 件のみ — 全 ${total}${f.truncated ? "+" : ""} 件`));
+        `${t("preview は先頭 ")}${previews.length}${t(" 件のみ — 全 ")}${total}${f.truncated ? "+" : ""}${t(" 件")}`));
     }
   }
 
@@ -2593,7 +2640,7 @@ function findingRow(caseID, f, pane) {
     actions,
     h("button", {
       class: "fbtn fmenu-btn",
-      title: "詳細 (finding_id / rule / source path)",
+      title: t("詳細 (finding_id / rule / source path)"),
       onclick: () => findingDetailsModal(f),
     }, "⋯"),
   ]);
@@ -2601,7 +2648,7 @@ function findingRow(caseID, f, pane) {
 
   // ---- description (2-line clamp, click to expand) -------------------------
   if (f.description) {
-    const desc = h("div", { class: "fnd-desc clamped", title: "クリックで全文表示 / 折り畳み" }, f.description);
+    const desc = h("div", { class: "fnd-desc clamped", title: t("クリックで全文表示 / 折り畳み") }, f.description);
     desc.onclick = () => desc.classList.toggle("clamped");
     row.appendChild(desc);
   }
@@ -2672,13 +2719,13 @@ async function copyText(text, label) {
     document.execCommand("copy");
     ta.remove();
   }
-  toast((label || "value") + " をコピーしました", "success");
+  toast((label || "value") + t(" をコピーしました"), "success");
 }
 
 function copyIcon(text, label) {
   return h("span", {
     class: "copy-ico",
-    title: (label || "") + " をコピー",
+    title: (label || "") + t(" をコピー"),
     onclick: (ev) => { ev.stopPropagation(); copyText(text, label); },
   }, "⧉");
 }
@@ -2695,7 +2742,7 @@ function levelBadge(level) {
 // (時刻 + ホスト + 主要識別子). Click swaps in the full card.
 function evidenceSummaryRow(caseID, f, r, idx, previewCount, total) {
   const ev = r.row;
-  const line = h("div", { class: "evd-summary", title: "クリックで展開" });
+  const line = h("div", { class: "evd-summary", title: t("クリックで展開") });
   line.appendChild(h("span", { class: "evd-tag" }, (ev && ev.artifact_id) || r.pv.artifact_id || "?"));
   if (ev) {
     let p = {};
@@ -2762,7 +2809,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
     h("span", { class: "evd-title" }, headTitle),
     h("span", { class: "spacer" }),
     h("span", { class: "evd-idx" },
-      `#${idx + 1} of ${previewCount}` + (total > previewCount ? ` (全 ${total}${f.truncated ? "+" : ""} 件)` : "")),
+      `#${idx + 1} of ${previewCount}` + (total > previewCount ? ` (${t("全 ")}${total}${f.truncated ? "+" : ""}${t(" 件)")}` : "")),
   ]));
 
   // ---- when / where / who / what / source / audit_id grid -------------------
@@ -2827,7 +2874,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
   if (ev.ts_utc) {
     actionsRow.appendChild(h("button", {
       class: "fbtn",
-      title: "Events タブでこの時刻の前後 ±5 分を表示",
+      title: t("Events タブでこの時刻の前後 ±5 分を表示"),
       onclick: () => {
         const t = new Date(ev.ts_utc).getTime();
         const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
@@ -2844,12 +2891,12 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
     const needle = `"${k}":${JSON.stringify(p[k])}`;
     actionsRow.appendChild(h("button", {
       class: "fbtn",
-      title: "Events タブを contains " + needle + " で絞る",
+      title: t("Events タブを contains ") + needle + " で絞る",
       onclick: () => {
         const q = new URLSearchParams({ contains: needle, artifact: ev.artifact_id || "" });
         navigate(`/cases/${encodeURIComponent(caseID)}?tab=events&${q.toString()}`);
       },
-    }, `EventID ${eventId} で絞る`));
+    }, `EventID ${eventId}${t(" で絞る")}`));
   }
   actionsRow.appendChild(h("button", {
     class: "fbtn",
@@ -2871,7 +2918,7 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
   if (empties.length > 0) {
     const emptyToggle = h("a", {}, t("表示"));
     const note = h("span", { class: "muted", style: "font-size: 11px;" },
-      [`空欄フィールド ${empties.length} 件 非表示 `, emptyToggle]);
+      [`${t("空欄フィールド ")}${empties.length}${t(" 件 非表示 ")}`, emptyToggle]);
     let shown = false;
     emptyToggle.onclick = () => {
       shown = !shown;
@@ -2957,12 +3004,11 @@ function tlReliabilityBanner(unreliable, notes) {
   const body = h("div", { class: "tl-banner-body" });
   body.appendChild(h("div", { class: "tl-banner-title" },
     unreliable
-      ? "タイムライン信頼性: 要再アンカー — システム時刻の後方ジャンプを検出"
-      : "タイムライン補足"));
+      ? t("タイムライン信頼性: 要再アンカー — システム時刻の後方ジャンプを検出")
+      : t("タイムライン補足")));
   if (unreliable) {
     body.appendChild(h("div", { class: "tl-banner-sub" },
-      "記録順とタイムスタンプが乖離するため、下表は表示時刻順ではなく攻撃の論理的順序 (フェーズ) で並べています。" +
-      "改ざんかプロビジョニング補正かは要確認。"));
+t("記録順とタイムスタンプが乖離するため、下表は表示時刻順ではなく攻撃の論理的順序 (フェーズ) で並べています。改ざんかプロビジョニング補正かは要確認。")));
   }
   (notes || []).forEach((n) => body.appendChild(h("div", { class: "tl-banner-note" }, n)));
   box.appendChild(body);
@@ -3053,7 +3099,7 @@ function tlSwimlane(rows, clusters, steps) {
       h("div", { class: "swim-gaptrack" }, [
         h("div", { class: "swim-gap", style: `left:${left}%;width:${width}%;` }),
         h("div", { class: "swim-gaplbl", style: `left:${left + width / 2}%;` },
-          `〜 約${mins}分の無記録 〜`),
+          `${t("〜 約")}${mins}${t("分の無記録 〜")}`),
       ])));
   }
 
@@ -3216,7 +3262,7 @@ function tlPhaseBlock(caseID, opts) {
   const group = h("div", { class: "tl-phase " + (cls || "") });
   const tbl = h("table", { class: "timeline-table tl-phase-table" });
   const body = h("tbody");
-  rows.forEach((t) => tlAppendRow(body, caseID, t, review, unreliable, pane));
+  rows.forEach((entry) => tlAppendRow(body, caseID, entry, review, unreliable, pane));
   tbl.appendChild(body);
 
   if (!opts.flat) {
@@ -3243,12 +3289,12 @@ function tlPhaseBlock(caseID, opts) {
 }
 
 // tlAppendRow appends the (main, detail) row pair for one timeline entry.
-function tlAppendRow(body, caseID, t, review, unreliable, pane) {
-  const aid = t.audit_id || "";
-  const sev = tlSeverity(t.severity);
+function tlAppendRow(body, caseID, entry, review, unreliable, pane) {
+  const aid = entry.audit_id || "";
+  const sev = tlSeverity(entry.severity);
   const rev = (review.reviews && review.reviews[aid]) || { state: "pending" };
   const stateClass = { approved: "approved", rejected: "rejected", skipped: "approved", pending: "pending" }[rev.state] || "pending";
-  const isClock = /time\s*modification|system\s*time|時刻/i.test(t.summary || "");
+  const isClock = /time\s*modification|system\s*time|時刻/i.test(entry.summary || "");
 
   const caret = h("span", { class: "tl-caret" }, "▸");
   const detailCell = h("td", { colspan: 5, class: "tl-detail-cell" });
@@ -3256,19 +3302,19 @@ function tlAppendRow(body, caseID, t, review, unreliable, pane) {
   let built = false;
   const buildDetail = () => {
     if (built) return; built = true;
-    detailCell.appendChild(tlDetailPanel(caseID, t, aid, rev, stateClass, pane));
+    detailCell.appendChild(tlDetailPanel(caseID, entry, aid, rev, stateClass, pane));
   };
 
   const tsCell = h("td", { class: "ts" + (unreliable ? " tl-ts-unreliable" : "") },
-    [...(isClock ? [h("span", { class: "tl-clock-ic" }, "⏰ ")] : []), fmtTS(t.timestamp)]);
-  if (unreliable) tsCell.title = "記録時刻 — 本ケースはクロック巻き戻しを検出、絶対時刻・発生順は不確実";
+    [...(isClock ? [h("span", { class: "tl-clock-ic" }, "⏰ ")] : []), fmtTS(entry.timestamp)]);
+  if (unreliable) tsCell.title = t("記録時刻 — 本ケースはクロック巻き戻しを検出、絶対時刻・発生順は不確実");
 
   const mainRow = h("tr", { class: `timeline-row expandable sevrow-${sev} ${stateClass}` }, [
     h("td", { class: "tl-caret-cell sev-cell" }, caret),
     tsCell,
     h("td", {}, h("span", { class: "badge sev-" + sev }, sev)),
-    h("td", {}, t.tactic ? h("span", { class: "badge tactic" }, t.tactic) : h("span", { class: "muted" }, "—")),
-    h("td", { class: "summary" }, t.summary || ""),
+    h("td", {}, entry.tactic ? h("span", { class: "badge tactic" }, entry.tactic) : h("span", { class: "muted" }, "—")),
+    h("td", { class: "summary" }, entry.summary || ""),
   ]);
   mainRow.onclick = (ev) => {
     if (ev.target.closest("button, input, a")) return;
@@ -3285,14 +3331,14 @@ function tlAppendRow(body, caseID, t, review, unreliable, pane) {
 // tlDetailPanel — the expanded body for a timeline row. Shows the SAME rich
 // evidence card the findings tab uses ("evidence を見る"), plus a compact
 // metadata grid and the per-row Review Gate 2 controls.
-function tlDetailPanel(caseID, t, aid, rev, stateClass, pane) {
+function tlDetailPanel(caseID, entry, aid, rev, stateClass, pane) {
   const panel = h("div", { class: "tl-detail-panel" });
   panel.appendChild(h("div", { class: "tl-detail-meta" }, [
-    kv(t("Tactic"), t.tactic || "—"),
-    kv(t("Technique"), t.technique || "—"),
-    kv(t("Computer"), t.computer || "—"),
-    kv(t("Artifact"), t.artifact || "—"),
-    kv(t("Source"), (t.source || "—") + (t.rule_id ? " · " + t.rule_id : "")),
+    kv(t("Tactic"), entry.tactic || "—"),
+    kv(t("Technique"), entry.technique || "—"),
+    kv(t("Computer"), entry.computer || "—"),
+    kv(t("Artifact"), entry.artifact || "—"),
+    kv(t("Source"), (entry.source || "—") + (entry.rule_id ? " · " + entry.rule_id : "")),
   ]));
 
   panel.appendChild(h("div", { class: "tl-detail-label" }, "Evidence"));
@@ -3314,21 +3360,21 @@ function tlDetailPanel(caseID, t, aid, rev, stateClass, pane) {
         row = (res.events || [])[0] || null;
       } catch (e) { err = String((e && e.message) || e).slice(0, 200); }
       evBlock.innerHTML = "";
-      const pseudoF = { title: t.summary, severity: t.severity, truncated: false, match_count: 1 };
-      const r = { pv: { audit_id: aid, artifact_id: t.artifact }, row, err };
+      const pseudoF = { title: entry.summary, severity: entry.severity, truncated: false, match_count: 1 };
+      const r = { pv: { audit_id: aid, artifact_id: entry.artifact }, row, err };
       evBlock.appendChild(evidenceCard(caseID, pseudoF, r, 0, 1, 1));
     })();
   }
 
   // Review Gate 2 controls for this entry.
   panel.appendChild(h("div", { class: "tl-detail-label" }, "Review Gate 2"));
-  panel.appendChild(tlRowReview(caseID, t, aid, rev, pane));
+  panel.appendChild(tlRowReview(caseID, entry, aid, rev, pane));
   return panel;
 }
 
 // tlRowReview — approve / reject / reset controls for one timeline entry,
 // mirroring the findings review affordance (a decision is never frozen).
-function tlRowReview(caseID, t, aid, rev, pane) {
+function tlRowReview(caseID, entry, aid, rev, pane) {
   const wrap = h("div", { class: "tl-row-review" });
   if (!aid) { wrap.appendChild(h("span", { class: "muted" }, "(no audit_id — not reviewable)")); return wrap; }
   const stateText = { approved: t("✓ 承認済"), rejected: t("✕ 却下"), skipped: "✓ auto", pending: t("未レビュー") }[rev.state] || t("未レビュー");
@@ -3342,14 +3388,14 @@ function tlRowReview(caseID, t, aid, rev, pane) {
     } catch (e) { toast(e.message, "error"); }
   };
   const approve = () => h("button", { class: "fbtn", onclick: (e) => { e.stopPropagation(); post("approve", t("承認")); } }, t("承認"));
-  const reset = () => h("button", { class: "fbtn", title: "判断を取り消して未レビューに戻す", onclick: (e) => { e.stopPropagation(); post("reset", t("リセット")); } }, t("リセット"));
+  const reset = () => h("button", { class: "fbtn", title: t("判断を取り消して未レビューに戻す"), onclick: (e) => { e.stopPropagation(); post("reset", t("リセット")); } }, t("リセット"));
   const reject = () => h("button", {
     class: "fbtn danger",
     onclick: (e) => {
       e.stopPropagation();
       const close = modal([
         h("h3", {}, t("却下 — timeline entry")),
-        h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (t.summary || "").slice(0, 100)),
+        h("div", { class: "muted", style: "font-size: 11px; margin-bottom: 8px;" }, aid.slice(0, 16) + " · " + (entry.summary || "").slice(0, 100)),
         h("div", { class: "form-row" }, [h("label", {}, t("理由")),
           h("input", { id: "tl_reason", value: rev.reason || "", placeholder: "why is this entry not relevant?" })]),
         h("div", { class: "actions" }, [
@@ -3358,7 +3404,7 @@ function tlRowReview(caseID, t, aid, rev, pane) {
             try {
               await api("POST", `/api/cases/${encodeURIComponent(caseID)}/timeline-review/${encodeURIComponent(aid)}/reject`,
                 { reason: $("#tl_reason").value.trim() });
-              close(); toast("却下 " + aid.slice(0, 8), "success");
+              close(); toast(t("却下") + " " + aid.slice(0, 8), "success");
               await renderTimeline(pane, caseID);
             } catch (e) { toast(e.message, "error"); }
           } }, t("却下")),
@@ -3574,7 +3620,7 @@ async function renderAudit(pane, caseID) {
   // Tier filter
   const tiers = ["", "tier0", "tier1", "tier2", "tier3"];
   const filter = h("select", { id: "audit_tier", style: "max-width: 200px;" },
-    tiers.map((t) => h("option", { value: t }, t || t("(all tiers)")))
+    tiers.map((tier) => h("option", { value: tier }, tier || t("(all tiers)")))
   );
   filter.onchange = async () => {
     const v = filter.value;
