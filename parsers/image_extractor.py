@@ -42,13 +42,11 @@ import json
 import os
 import pathlib
 import re
-import shlex
 import subprocess
 import time
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from parsers.base import run_command
-
 
 # Recognised image extensions, in matching priority order. Magic-byte checks
 # further down disambiguate ambiguous extensions (a renamed VHD masquerading
@@ -178,12 +176,12 @@ _PSEUDO_USER_DIRS: frozenset[str] = frozenset({
 class ExtractRecord:
     target: str
     status: str                        # ok / not_found / fail / skip
-    partition: Optional[int] = None
-    inum: Optional[str] = None
-    sha256: Optional[str] = None
+    partition: int | None = None
+    inum: str | None = None
+    sha256: str | None = None
     bytes: int = 0
-    extracted_path: Optional[str] = None
-    error: Optional[str] = None
+    extracted_path: str | None = None
+    error: str | None = None
 
 
 @dataclasses.dataclass
@@ -347,7 +345,7 @@ def extract(
     *,
     target_paths: Iterable[tuple[str, str]] = _TRIAGE_PATHS,
     timeout_seconds: int = 1800,
-    evidence_id: Optional[str] = None,
+    evidence_id: str | None = None,
 ) -> ExtractionResult:
     """Mount + extract a triage subset.
 
@@ -866,8 +864,6 @@ def _icat_to_file_sparse(raw_device: str, offset_bytes: int, attr_spec: str,
     import hashlib as _hashlib
 
     BLOCK = 64 * 1024
-    cmd_str = " ".join(["icat", "-o", str(offset_bytes // 512),
-                        shlex.quote(raw_device), attr_spec])
     try:
         proc = subprocess.Popen(
             ["icat", "-o", str(offset_bytes // 512), raw_device, attr_spec],
@@ -918,7 +914,6 @@ def _icat_to_file_sparse(raw_device: str, offset_bytes: int, attr_spec: str,
 def _icat_to_file(raw_device: str, offset_bytes: int, inum: str,
                   dest: pathlib.Path, label: str, partition: int,
                   timeout: int) -> ExtractRecord:
-    cmd_str = " ".join(["icat", "-o", str(offset_bytes // 512), shlex.quote(raw_device), inum])
     try:
         with dest.open("wb") as out_fh:
             proc = subprocess.run(

@@ -13,9 +13,7 @@ Input: .dmp / .raw / .lime / .vmem file.
 
 from __future__ import annotations
 
-import csv
 import json
-import pathlib
 import shutil
 
 from parsers.base import (
@@ -99,7 +97,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    def _iter() -> "Iterator[dict]":
+    def _iter() -> Iterator[dict]:
         idx = 0
         for plugin, rows in rows_per_plugin.items():
             for row in rows:
@@ -118,7 +116,7 @@ def parse(req: ParseRequest) -> ParseResult:
 
     jsonl_path = req.output_dir / "volatility3.jsonl"
     try:
-        from typing import Iterator  # noqa: F401
+        from collections.abc import Iterator  # noqa: F401
         row_count = write_unified_events(jsonl_path, _iter())
     except Exception as exc:
         return fail(

@@ -2119,8 +2119,8 @@ function refreshClusterHeader(pane, tactic, groupEl) {
   if (!badge) return;
   let pending = 0;
   for (const f of Object.values(state.findingsById)) {
-    const t = (f.mitre_tactics && f.mitre_tactics[0]) || "uncategorized";
-    if (t === tactic && !f.approved && !f.rejected) pending++;
+    const fTactic = (f.mitre_tactics && f.mitre_tactics[0]) || "uncategorized";
+    if (fTactic === tactic && !f.approved && !f.rejected) pending++;
   }
   if (pending > 0) {
     badge.className = "fstatus pending";
@@ -2455,7 +2455,7 @@ async function runBulk(pane, ids, action, reason) {
       const cb = pane.querySelector(`input.row-select[data-fid="${cssEscape(id)}"]`);
       if (cb) cb.checked = false;
     }
-    for (const t of touchedTactics) refreshClusterHeader(pane, t);
+    for (const tactic of touchedTactics) refreshClusterHeader(pane, tactic);
     applyVisibilityFilter(pane);
     refreshFindingsToolbar(pane);
   } catch (e) {
@@ -2876,9 +2876,9 @@ function evidenceCard(caseID, f, r, idx, previewCount, total) {
       class: "fbtn",
       title: t("Events タブでこの時刻の前後 ±5 分を表示"),
       onclick: () => {
-        const t = new Date(ev.ts_utc).getTime();
+        const tMs = new Date(ev.ts_utc).getTime();
         const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
-        const q = new URLSearchParams({ start: iso(t - 300000), end: iso(t + 300000) });
+        const q = new URLSearchParams({ start: iso(tMs - 300000), end: iso(tMs + 300000) });
         if (ev.evidence_id) q.set("evidence", ev.evidence_id);
         navigate(`/cases/${encodeURIComponent(caseID)}?tab=events&${q.toString()}`);
       },
@@ -3031,7 +3031,7 @@ function tlKillChain(steps, unreliable) {
         h("div", { class: "num" }, "STEP " + s.step),
         h("div", { class: "tactic" }, s.label || s.phase || "?"),
         ...(mitre.length ? [h("div", { class: "kc-mitre" },
-          mitre.map((t) => h("span", { class: "kc-chip" }, t)))] : []),
+          mitre.map((tech) => h("span", { class: "kc-chip" }, tech)))] : []),
       ]));
     });
   } else {

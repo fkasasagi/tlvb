@@ -9,6 +9,9 @@ Sigma / Hayabusa / ATT&CK STIX / skills-driven anomaly detection を組み合わ
 Windows のディスクフォレンジック・アーティファクトから攻撃の痕跡を抽出し、
 LLM が攻撃チェーンを再構成して HTML/CSV/JSON レポートまで吐く自律型 IR エージェント。
 
+> 📺 **デモ動画を見る →** <https://youtu.be/ATSJYtP4kCw>
+> Web UI で調査を一通り回す様子を画面ごとに解説。
+
 **スコープ — Windows インシデント対応のディスクフォレンジック。** TLVB が対象とするのは
 **ディスク常駐**の Windows アーティファクト(MFT / EVTX / レジストリ / prefetch / amcache /
 shimcache / shellbags / jumplists / LNK / SRUM / ブラウザ履歴 / Web サーバログ 等)で、
@@ -18,9 +21,10 @@ triage 収集物またはディスクイメージ(E01 / raw / VMDK / VHD / VHDX)
 
 ## 状態
 
-🟢 **v0.1 主要パイプライン (a)-(g) 完走**。実機 Windows 11 トリアージで
+🟢 **v0.1 全パイプライン (a)-(g) 完走**。実機 Windows 11 トリアージで
 攻撃シナリオ 8 step を end-to-end で検出・再構成・レポート出力できることを
-2026-05-29 時点で確認済み。
+2026-05-29 時点で確認済み。システム図は [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、
+ハッカソンの新規実装と流用基盤の差分は [`NEW_CONTRIBUTIONS.md`](NEW_CONTRIBUTIONS.md) を参照。
 
 ```
 INPUT (collector zip / disk image / live triage)
@@ -130,7 +134,46 @@ CLOUD_ML_REGION=global                          # 任意: Vertex リージョン
 # TLVB_VERTEX_MODEL=claude-opus-4-8             # 任意: 自分のリージョンの正確な Vertex publisher model id
 ```
 
-詳細は `docs/DESIGN.md` 参照。
+期待される出力込みの手順は [`docs/QUICKSTART.ja.md`](docs/QUICKSTART.ja.md)、設計全体は [`docs/DESIGN.md`](docs/DESIGN.md) を参照。
+
+## 工夫した点 — なぜこの設計か
+
+**設計思想:再現性はシグネチャ、文脈は LLM。** LLM 単体は非決定的で、同じ証拠でも
+2 回走らせれば 2 通りの物語が出てくる。そこで TLVB はまずシグネチャで再現性のある
+ベースラインを固め(Tier 1A, **runtime LLM ゼロ**)、そのベースラインを *文脈として*
+LLM に渡し、シグネチャでは表現しきれない過検知と見逃しを探させる。AI を持ち込む
+重要な狙いの一つはまさにこの相互補完 — **シグネチャの速度 × LLM の文脈理解** — で、
+見逃しと過検知の双方を同時に押し下げることにある。
+
+**見逃しを減らす。** Tier 1B の異常検知エージェントは Tier 1A のシグネチャ所見を
+文脈として読み込み、シグネチャでは言い表しにくいもの — 業務時間外(オフアワー)の
+実行・不審なパス・稀少なプロセス・近接して起きた事象 — を LLM で抽象パターンとして
+抽出する。必要なら新しい検索クエリを提案する。続く Tier 2 は、あるシグネチャヒットを
+起点に周辺ログを **能動探索 SQL** で深掘りして裏取りし、**痕跡が無ければ別仮説へ
+切り替える**。
+
+**過検知を減らす。** LLM はシグネチャヒットを周辺文脈で評価し、正規運用由来のノイズ
+(プロビジョニング操作の痕跡など)を切り分ける。各所見を **`confirmed`**(シグネチャに
+よる一致)と **`inferred`**(LLM 推論)に区別したうえで、重要度ベースの自動承認と
+人間の Review Gate で誤検知を落とす。
+
+**必要なら実ファイルの中身を見る。** 解析の中でファイルの中身を確認したくなったとき、
+LLM はファイルを名前で要求し、TLVB は Evidence(ディスクイメージ / triage 収集物)を
+**read-only** でマウントして当該ファイルだけを `extractions/on-demand/` に抽出し、
+中身を LLM に戻す — シェルは介さず、元の証拠には一切触れない。
+
+**低コスト設計。** LLM が介在するのは、文脈理解が本当に効く数カ所だけに限定している。
+Tier 1A は runtime で何も払わず(コストは build 時に 1 度だけ)、runtime の LLM 予算は
+異常推論とタイムライン統合にのみ充てる。
+
+**改善につながる Audit ログ。** Audit トレイルにはプロンプトだけでなくエージェントの
+*思考* — 立てた **open questions** とそれに対する **answer** — まで記録する。これにより
+失敗したとき *なぜそう結論したのか* を辿れ、原因を当て推量せずに改善につなげられる。
+
+**ケースをまたいで学習する。** LLM があるケースのために自分で考えたクエリが hit し、
+*かつ* そのケースを越えて一般化できる(ケース特有の情報を除いても効果が残る)とき、
+TLVB はそれを candidate から **canonical なカスタムシグネチャ**へ昇格させ、以降すべての
+ケースで再利用する。
 
 ## 検出能力(2026-05-29 実機検証)
 
@@ -159,10 +202,27 @@ CLOUD_ML_REGION=global                          # 任意: Vertex リージョン
 - **Severity ベース auto-approve**:critical/high はレビュー必須、それ以外は
   自動 approve。手動 override 可
 
+## セキュリティと human-in-the-loop
+
+ガードレールはプロンプトではなくコードで強制している:MCP サーフェスは **read-only**
+(`execute_shell` なし、DB は `access_mode=read_only` でオープン)、active-search の SQL は
+**SELECT のみ / 単一バインド / DDL 禁止**で検証、Tier 1A は **runtime で LLM を呼ばない**、
+元の証拠は決して変更しない。各 Review Gate での承認/却下は**人間のみ**の操作で、
+エージェントに自己承認の能力は無い。詳細は [`docs/SECURITY_GUARDRAILS.md`](docs/SECURITY_GUARDRAILS.md)
+と [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §2-§4 を参照。
+
 ## 主要ドキュメント
 
-- `docs/DESIGN.md` — TLVB v0.1 設計書
-- `docs/QUICKSTART.md` — 詳細な手順(動作確認込み)
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — エンドツーエンドのパイプライン、セキュリティ境界、自己修正(図つき)
+- [`NEW_CONTRIBUTIONS.md`](NEW_CONTRIBUTIONS.md) — ハッカソンの新規実装と流用基盤の差分
+- [`docs/ACCURACY.md`](docs/ACCURACY.md) — 検出精度 / 誤検出 / 見落とし / ハルシネーションの自己評価
+  - [`eval/winrm_spray_accuracy.md`](eval/winrm_spray_accuracy.md) — WinRM-spray データセットのケース別精度自己評価(過剰主張抑止シナリオ: 認証情報窃取が Defender/AMSI に遮断されたケース)
+- [`docs/QUICKSTART.ja.md`](docs/QUICKSTART.ja.md) — 詳細な手順(自分で試す方法込み)
+- [`docs/USER_GUIDE.ja.md`](docs/USER_GUIDE.ja.md) — 初心者向け完全ガイド + 用語集
+- [`docs/EVIDENCE_DATASETS.md`](docs/EVIDENCE_DATASETS.md) — TLVB が何でテストされ、データがどこから来たか
+- [`docs/EXECUTION_LOG.md`](docs/EXECUTION_LOG.md) — エージェント実行ログ & finding のトレーサビリティ
+- [`docs/SECURITY_GUARDRAILS.md`](docs/SECURITY_GUARDRAILS.md) — 強制されるセキュリティ境界
+- [`docs/DESIGN.md`](docs/DESIGN.md) — TLVB v0.1 設計書
 
 ## ライセンス
 

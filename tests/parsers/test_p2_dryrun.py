@@ -9,6 +9,7 @@ tools and are covered by docs/TEST_TIER0.md §11–§13.
 from __future__ import annotations
 
 import pathlib
+import shutil
 
 import pytest
 
@@ -80,6 +81,11 @@ def test_hayabusa_graceful_skip_when_binary_missing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not shutil.which("psteal.py"),
+    reason="Plaso psteal.py not on PATH (clean CI); srum_parser runs psteal "
+    "(primary) before reaching the SrumECmd-DLL fallback this test targets",
+)
 def test_srum_graceful_skip_when_dll_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(srum_parser, "SRUMECMD_DLL", "/does/not/exist.dll")
     fake_srudb = tmp_path / "SRUDB.dat"

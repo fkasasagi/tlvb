@@ -7,6 +7,9 @@
 
 An autonomous IR agent that combines Sigma / Hayabusa / ATT&CK STIX rules with skills-driven anomaly detection to extract traces of an attack from Windows disk-forensic artifacts, then has an LLM reconstruct the attack chain and emit HTML/CSV/JSON reports.
 
+> 📺 **Watch the demo →** <https://youtu.be/ATSJYtP4kCw>
+> A screen-by-screen walkthrough of the Web UI running a full investigation.
+
 **Scope — Windows disk forensics for incident response.** TLVB operates on **disk-resident** Windows artifacts (MFT, EVTX, registry, prefetch, amcache, shimcache, shellbags, jumplists, LNK, SRUM, browser history, web-server logs, …) acquired as a triage collection or disk image (E01 / raw / VMDK / VHD / VHDX). Live **memory forensics** and **network / packet (PCAP) forensics** are out of scope — memory- and Sysmon-dependent rules stay disabled unless those artifacts happen to be present in the evidence.
 
 ## Status
@@ -123,6 +126,52 @@ CLOUD_ML_REGION=global                          # optional: Vertex region; use "
 ```
 
 For a step-by-step walkthrough with expected output, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md); the full design is in [`docs/DESIGN.md`](docs/DESIGN.md).
+
+## Design highlights — why TLVB is built this way
+
+**The core idea: signatures for reproducibility, the LLM for context.** An LLM
+on its own is non-deterministic — run it twice on the same evidence and you get
+two different stories. So TLVB first pins down a reproducible baseline with
+signatures (Tier 1A, **zero runtime LLM**), then hands that baseline to an LLM
+*as context* and asks it to hunt for the false positives and the misses that
+signatures can't express. One of the key reasons for bringing in AI is exactly
+this mutual reinforcement — **the speed of signatures × the context-understanding
+of an LLM** — pushing down both misses and false alarms at once.
+
+**Fewer misses.** Tier 1B's anomaly agent reads Tier 1A's signature findings as
+context, then uses the LLM to extract — as abstract patterns — the things a
+signature struggles to state: off-hours execution, suspicious paths, rare
+processes, temporally adjacent events. It proposes new SQL queries when it needs
+them. Tier 2 then takes a signature hit as a starting point, drills into the
+surrounding logs with **active-search SQL** to corroborate it, and **pivots to a
+different hypothesis when it finds no trace**.
+
+**Fewer false positives.** The LLM judges each signature hit in its surrounding
+context to separate out legitimate-operations noise (e.g. provisioning
+artifacts), labels every finding as **`confirmed`** (a signature match) vs.
+**`inferred`** (LLM reasoning), and lets severity-based auto-approve plus the
+human Review Gates drop the false alarms.
+
+**The agent reads the real files when it needs to.** When the analysis needs to
+know what's actually inside a file, the LLM requests it by name and TLVB mounts
+the evidence (disk image / triage collection) **read-only**, extracts just those
+files into `extractions/on-demand/`, and feeds the contents back in — no shell,
+the original evidence is never touched.
+
+**Cheap by construction.** LLM calls are confined to the few places where
+context-understanding actually pays off. Tier 1A spends nothing at runtime (its
+cost is paid once, at build time); the runtime LLM budget goes only to anomaly
+reasoning and timeline synthesis.
+
+**An audit log built to improve.** The audit trail records not just the prompts
+but the agent's *reasoning* — the **open questions** it raised and the
+**answers** it found — so when a run goes wrong you can see *why* it concluded
+what it did, and fix the cause instead of guessing.
+
+**It learns across cases.** When a query the LLM invented for one case produces
+a hit *and* generalizes beyond it (still useful once the case-specific bits are
+stripped), TLVB promotes it from a candidate to a **canonical custom signature**
+in its cache and reuses it on every later case.
 
 ## Detection capability (real-machine validation, 2026-05-29)
 

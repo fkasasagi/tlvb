@@ -33,7 +33,7 @@ from __future__ import annotations
 import csv
 import datetime
 import pathlib
-from typing import Iterator
+from collections.abc import Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -46,7 +46,6 @@ from parsers.base import (
     tail,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "srum"
 PARSER_VERSION = "srum_parser/2.0.0+plaso-primary"
@@ -343,8 +342,8 @@ def _plaso_dt_to_iso_utc(dt_str: str) -> str:
     except ValueError:
         return ""
     if d.tzinfo is None:
-        d = d.replace(tzinfo=datetime.timezone.utc)
-    d_utc = d.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        d = d.replace(tzinfo=datetime.UTC)
+    d_utc = d.astimezone(datetime.UTC).replace(tzinfo=None)
     return d_utc.isoformat(sep=" ", timespec="seconds")
 
 
