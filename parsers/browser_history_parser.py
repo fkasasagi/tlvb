@@ -35,11 +35,12 @@ Caveats (delivered with every ParseResult):
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import pathlib
 import sqlite3
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -48,8 +49,10 @@ from parsers.base import (
     fail,
     make_unified_event,
     now_iso,
+    tail,
     write_unified_events,
 )
+
 
 ARTIFACT_ID = "browser_history"
 PARSER_VERSION = "browser_history_parser/1.0.0+stdlib-sqlite3"
@@ -101,7 +104,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    started_at_mono = datetime.datetime.now(datetime.UTC)
+    started_at_mono = datetime.datetime.now(datetime.timezone.utc)
     try:
         if kind == "chromium":
             row_count = write_unified_events(
@@ -124,7 +127,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    finished_mono = datetime.datetime.now(datetime.UTC)
+    finished_mono = datetime.datetime.now(datetime.timezone.utc)
     return ParseResult(
         artifact_id=ARTIFACT_ID, success=True,
         command=cmd_str, exit_code=0,
@@ -243,7 +246,7 @@ def _chromium_visits_iter(req: ParseRequest, dbpath: pathlib.Path) -> Iterator[d
         cur = conn.execute(sql)
         cols = [d[0] for d in cur.description]
         for idx, row in enumerate(cur):
-            rec = dict(zip(cols, row, strict=False))
+            rec = dict(zip(cols, row))
             ts = _webkit_to_iso(rec.get("ts_webkit"))
             transition_raw = int(rec.get("transition_raw") or 0)
             transition_core = _CHROMIUM_TRANSITION_CORE.get(
@@ -320,7 +323,7 @@ def _firefox_visits_iter(req: ParseRequest, dbpath: pathlib.Path) -> Iterator[di
         cur = conn.execute(sql)
         cols = [d[0] for d in cur.description]
         for idx, row in enumerate(cur):
-            rec = dict(zip(cols, row, strict=False))
+            rec = dict(zip(cols, row))
             ts = _prtime_to_iso(rec.get("ts_prtime"))
             visit_type = int(rec.get("visit_type") or 0)
             payload: dict[str, Any] = {
@@ -368,7 +371,7 @@ def _webkit_to_iso(us: int | None) -> str:
         return ""
     try:
         return datetime.datetime.fromtimestamp(
-            unix_seconds, tz=datetime.UTC).isoformat()
+            unix_seconds, tz=datetime.timezone.utc).isoformat()
     except (OverflowError, OSError, ValueError):
         return ""
 
@@ -380,7 +383,7 @@ def _prtime_to_iso(us: int | None) -> str:
     unix_seconds = us / 1_000_000.0
     try:
         return datetime.datetime.fromtimestamp(
-            unix_seconds, tz=datetime.UTC).isoformat()
+            unix_seconds, tz=datetime.timezone.utc).isoformat()
     except (OverflowError, OSError, ValueError):
         return ""
 

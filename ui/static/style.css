@@ -90,15 +90,15 @@ input[type="checkbox"] {
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
 }
-.brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 10px; }
 .brand .logo {
   background: var(--accent-hi); padding: 4px 8px; border-radius: 3px;
   font-weight: bold; letter-spacing: 1px;
 }
 .brand .title { font-weight: bold; font-size: 15px; }
-.brand .subtitle { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.brand .subtitle { color: var(--muted); font-size: 11px; }
 
-.crumbs { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumbs { flex: 1; color: var(--muted); font-size: 12px; }
 .crumbs a { color: var(--text); }
 .crumbs .sep { color: var(--muted); padding: 0 6px; }
 

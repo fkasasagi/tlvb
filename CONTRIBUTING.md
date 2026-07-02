@@ -1,7 +1,8 @@
 # Contributing
 
-Thanks for considering a contribution! The scope is intentionally narrow, so
-big changes are best discussed in an issue first.
+Thanks for considering a contribution! This is a hackathon-MVP project, so
+the scope is intentionally narrow. Big changes are best discussed in an
+issue first.
 
 ## Setup
 
@@ -74,7 +75,6 @@ rules:
 - After editing docs, re-read them as a colleague who just `git pull`ed
   with no prior context. If a step requires data, env vars, apt packages,
   or external auth that isn't called out, fix the doc before merging.
-
 
 ## Forensic discipline
 

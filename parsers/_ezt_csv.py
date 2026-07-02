@@ -20,7 +20,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import pathlib
-from collections.abc import Callable, Iterator
+from typing import Callable, Iterator
 
 from parsers.base import (
     ParseRequest,

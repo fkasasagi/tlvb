@@ -33,7 +33,7 @@ from __future__ import annotations
 import datetime
 import pathlib
 import re
-from collections.abc import Iterator
+from typing import Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -141,7 +141,7 @@ def _ts_ncsa(raw: str) -> str:
     """NCSA '10/Oct/2026:13:55:36 +0000' → UTC ISO-8601 with Z."""
     try:
         dt = datetime.datetime.strptime(raw, "%d/%b/%Y:%H:%M:%S %z")
-        return dt.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return ""
 
@@ -170,7 +170,7 @@ def _iter_w3c(path: pathlib.Path, tz: str) -> Iterator[dict]:
                 # Overflow (rare; UA with spaces is normally %20-encoded in W3C)
                 # folds into the last column.
                 parts = parts[:len(fields) - 1] + [" ".join(parts[len(fields) - 1:])]
-            row = dict(zip(fields, parts, strict=False))
+            row = dict(zip(fields, parts))
             row["__ts__"] = _ts_w3c(row.get("date", ""), row.get("time", ""))
             yield row
 
@@ -187,7 +187,7 @@ def _iter_iis_native(path: pathlib.Path, tz: str) -> Iterator[dict]:
             parts = [p.strip() for p in line.split(", ")]
             if len(parts) < len(_IIS_NATIVE_FIELDS):
                 parts += ["-"] * (len(_IIS_NATIVE_FIELDS) - len(parts))
-            row = dict(zip(_IIS_NATIVE_FIELDS, parts, strict=False))
+            row = dict(zip(_IIS_NATIVE_FIELDS, parts))
             row["__ts__"] = _ts_iis_native(row.get("date", ""), row.get("time", ""), tz)
             yield row
 

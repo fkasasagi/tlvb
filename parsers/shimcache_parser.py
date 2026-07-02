@@ -13,6 +13,7 @@ from __future__ import annotations
 from parsers._ezt_csv import EztSpec, run_simple_ezt
 from parsers.base import ParseRequest, ParseResult
 
+
 ARTIFACT_ID = "shimcache"
 PARSER_VERSION = "shimcache_parser/1.0.0+appcompatcacheparser-1.5.1.0"
 

@@ -28,9 +28,8 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Iterator
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -77,7 +76,7 @@ def _ts(v: Any) -> str | None:
     if not isinstance(v, int) or v <= 0:
         return None
     try:
-        return datetime.fromtimestamp(v, tz=UTC).replace(microsecond=0).isoformat()
+        return datetime.fromtimestamp(v, tz=timezone.utc).replace(microsecond=0).isoformat()
     except (OverflowError, OSError, ValueError):
         return None
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from parsers._ezt_csv import EztSpec, run_simple_ezt
 from parsers.base import ParseRequest, ParseResult
 
+
 ARTIFACT_ID = "lnk"
 PARSER_VERSION = "lnk_parser/1.0.0+lecmd-1.5.1.0"
 

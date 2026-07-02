@@ -39,8 +39,9 @@ import csv
 import datetime
 import hashlib
 import pathlib
+import shutil
 import sys
-from collections.abc import Iterator
+from typing import Iterator
 
 # Wave 20d: altpf occasionally emits very wide columns when a process has
 # accumulated a long FilesAccessed list (e.g. svchost.exe service hosting
@@ -50,7 +51,7 @@ from collections.abc import Iterator
 # path. Raise the cap once at module load.
 csv.field_size_limit(sys.maxsize)
 
-from parsers.base import (  # noqa: E402  (import follows the deliberate csv.field_size_limit call)
+from parsers.base import (
     ParseRequest,
     ParseResult,
     audit_id,
@@ -61,6 +62,7 @@ from parsers.base import (  # noqa: E402  (import follows the deliberate csv.fie
     tail,
     write_unified_events,
 )
+
 
 ARTIFACT_ID = "prefetch"
 PARSER_VERSION = "prefetch_parser/3.0.0+altpf-primary"
@@ -456,6 +458,6 @@ def _dynamic_dt_to_iso_utc(dt_str: str) -> str:
     except ValueError:
         return ""
     if d.tzinfo is None:
-        d = d.replace(tzinfo=datetime.UTC)
-    d_utc = d.astimezone(datetime.UTC).replace(tzinfo=None)
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    d_utc = d.astimezone(datetime.timezone.utc).replace(tzinfo=None)
     return d_utc.isoformat(sep=" ", timespec="seconds")

@@ -27,7 +27,7 @@ from __future__ import annotations
 import datetime
 import pathlib
 import re
-from collections.abc import Iterator
+from typing import Iterator
 
 from parsers.base import (
     ParseRequest,

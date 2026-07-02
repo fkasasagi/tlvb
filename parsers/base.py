@@ -22,7 +22,8 @@ import pathlib
 import subprocess
 import time
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
+
 
 # Schema versions are pinned so downstream consumers (UI, Tactic Agents) can
 # detect breaking changes.
@@ -75,7 +76,7 @@ class ParserFn(Protocol):
 
 def now_iso() -> str:
     """ISO8601 UTC timestamp, second precision (parsers can override for ns)."""
-    return datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat()
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def naive_local_to_utc_iso(dt: datetime.datetime, tz_name: str) -> str:
@@ -97,11 +98,11 @@ def naive_local_to_utc_iso(dt: datetime.datetime, tz_name: str) -> str:
         from zoneinfo import ZoneInfo
 
         src: datetime.tzinfo = (
-            ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else datetime.UTC
+            ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else datetime.timezone.utc
         )
     except Exception:
-        src = datetime.UTC
-    return dt.replace(tzinfo=src).astimezone(datetime.UTC).isoformat()
+        src = datetime.timezone.utc
+    return dt.replace(tzinfo=src).astimezone(datetime.timezone.utc).isoformat()
 
 
 def tail(s: str | bytes, max_bytes: int = 4096) -> str:
