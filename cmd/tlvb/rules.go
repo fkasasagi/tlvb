@@ -24,7 +24,7 @@ import (
 // runRules dispatches `tlvb rules ...` subcommands.
 func runRules(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: tlvb rules build|list|export|import|restamp-schema ...")
+		return fmt.Errorf("usage: tlvb rules build|list|export|import ...")
 	}
 	switch args[0] {
 	case "build":
@@ -35,14 +35,12 @@ func runRules(args []string) error {
 		return runRulesExport(args[1:])
 	case "import":
 		return runRulesImport(args[1:])
-	case "restamp-schema":
-		return runRulesRestampSchema(args[1:])
 	case "prune-skills":
 		return runRulesPruneSkills(args[1:])
 	case "revalidate-sql":
 		return runRulesRevalidateSQL(args[1:])
 	default:
-		return fmt.Errorf("unknown rules subcommand %q (want build|list|export|import|restamp-schema|prune-skills|revalidate-sql)", args[0])
+		return fmt.Errorf("unknown rules subcommand %q (want build|list|export|import|prune-skills|revalidate-sql)", args[0])
 	}
 }
 
@@ -53,7 +51,7 @@ func runRulesBuild(args []string) error {
 	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
 		"path to the rule SQL cache DB")
 	source := fs.String("source", "",
-		"restrict to one loader: sigma | hayabusa | stix | custom | lolbas | forensic (default: all)")
+		"restrict to one loader: sigma | hayabusa | stix (default: all)")
 	dryRun := fs.Bool("dry-run", false,
 		"do not call the LLM; just plan + cost estimate")
 	maxRules := fs.Int("max-rules", 0,
@@ -172,13 +170,12 @@ func runRulesBuild(args []string) error {
 	defer compiler.Close()
 
 	pipeline := &rulebuild.Pipeline{
-		Loaders:               loaders,
-		Builder:               builder,
-		RulesDB:               db,
-		Compiler:              compiler,
-		SchemaDoc:             casedb.SchemaDoc(),
-		SchemaVer:             casedb.SchemaVersion(),
-		SchemaVerForArtifacts: casedb.SchemaVersionFor,
+		Loaders:   loaders,
+		Builder:   builder,
+		RulesDB:   db,
+		Compiler:  compiler,
+		SchemaDoc: casedb.SchemaDoc(),
+		SchemaVer: casedb.SchemaVersion(),
 		Rates: rulebuild.Rates{
 			YenPerMInputTokens:     *rateIn,
 			YenPerMOutputTokens:    *rateOut,
@@ -218,7 +215,7 @@ func runRulesList(args []string) error {
 	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
 		"path to the rule SQL cache DB")
 	source := fs.String("source", "",
-		"restrict to one source: sigma | hayabusa | stix | custom | lolbas | forensic (default: all)")
+		"restrict to one source: sigma | hayabusa | stix (default: all)")
 	state := fs.String("state", "",
 		"filter by state: pending | built | failed (default: all)")
 	showSQL := fs.Bool("show-sql", false,
@@ -245,10 +242,9 @@ func runRulesList(args []string) error {
 	}
 
 	counts, _ := db.CountByState(ctx)
-	fmt.Printf("Rule SQL cache  (sigma=%d hayabusa=%d stix=%d custom=%d lolbas=%d forensic=%d)\n",
+	fmt.Printf("Rule SQL cache  (sigma=%d hayabusa=%d stix=%d custom=%d)\n",
 		countBySource(rows, "sigma"), countBySource(rows, "hayabusa"),
-		countBySource(rows, "stix"), countBySource(rows, "custom"),
-		countBySource(rows, "lolbas"), countBySource(rows, "forensic"))
+		countBySource(rows, "stix"), countBySource(rows, "custom"))
 	fmt.Printf("States: built=%d pending=%d failed=%d\n\n",
 		counts[rulesdb.StateBuilt], counts[rulesdb.StatePending], counts[rulesdb.StateFailed])
 
@@ -305,7 +301,7 @@ func runRulesExport(args []string) error {
 	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
 		"path to the rule SQL cache DB")
 	source := fs.String("source", "",
-		"restrict to one source: sigma | hayabusa | stix | custom | lolbas | forensic (default: all)")
+		"restrict to one source: sigma | hayabusa | stix | custom (default: all)")
 	outDir := fs.String("out-dir", "rules/built",
 		"directory to write <source>.sql.jsonl files into")
 	if err := fs.Parse(args); err != nil {
@@ -380,150 +376,6 @@ func runRulesExport(args []string) error {
 	return nil
 }
 
-// runRulesRestampSchema rewrites the schema_version field of the vendored
-// <source>.sql.jsonl snapshot to the per-rule key the running binary now
-// computes (casedb.SchemaVersionFor(prefilter)), WITHOUT regenerating any SQL.
-//
-// This is the one-time migration for the move from a single whole-doc
-// schema_version to per-artifact sectioned keys: it re-stamps the committed
-// source-of-truth so a fresh clone's `rules import` carries the right keys and
-// the next `rules build` treats the rows as cached (no costly LLM rebuild).
-//
-// It operates on the JSONL directly (no DuckDB needed) and rewrites only the
-// schema_version field — every other field is re-encoded byte-identically, so
-// the git diff is limited to schema_version values.
-func runRulesRestampSchema(args []string) error {
-	fs := flag.NewFlagSet("rules restamp-schema", flag.ContinueOnError)
-	inDir := fs.String("in-dir", "rules/built",
-		"directory holding the <source>.sql.jsonl files to restamp")
-	source := fs.String("source", "",
-		"restrict to one source: sigma | hayabusa | stix | custom | lolbas | forensic (default: all *.sql.jsonl)")
-	dryRun := fs.Bool("dry-run", false,
-		"report how many rows would change without writing")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	var files []string
-	if *source != "" {
-		files = []string{filepath.Join(*inDir, *source+".sql.jsonl")}
-	} else {
-		matches, err := filepath.Glob(filepath.Join(*inDir, "*.sql.jsonl"))
-		if err != nil {
-			return fmt.Errorf("glob %s: %w", *inDir, err)
-		}
-		files = matches
-	}
-	sort.Strings(files)
-	if len(files) == 0 {
-		return fmt.Errorf("no *.sql.jsonl found under %s", *inDir)
-	}
-
-	totalChanged, totalRows := 0, 0
-	for _, path := range files {
-		rows, skipped, err := readExportRows(path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		changed := 0
-		for i := range rows {
-			want := casedb.SchemaVersionFor(rows[i].PrefilterArtifacts)
-			if rows[i].SchemaVersion != want {
-				rows[i].SchemaVersion = want
-				changed++
-			}
-		}
-		totalRows += len(rows)
-		totalChanged += changed
-		note := ""
-		if skipped > 0 {
-			note = fmt.Sprintf("  (%d malformed line(s) skipped)", skipped)
-		}
-		if *dryRun {
-			fmt.Printf("would restamp %d/%d rows in %s%s\n", changed, len(rows), path, note)
-			continue
-		}
-		if changed == 0 {
-			fmt.Printf("already current: %s (%d rows)%s\n", path, len(rows), note)
-			continue
-		}
-		if err := writeExportRows(path, rows); err != nil {
-			return fmt.Errorf("rewrite %s: %w", path, err)
-		}
-		fmt.Printf("restamped %d/%d rows in %s%s\n", changed, len(rows), path, note)
-	}
-	verb := "changed"
-	if *dryRun {
-		verb = "would change"
-	}
-	fmt.Printf("restamp-schema: %d/%d rows %s across %d file(s)\n",
-		totalChanged, totalRows, verb, len(files))
-	return nil
-}
-
-// readExportRows decodes a <source>.sql.jsonl into ruleExportRow values,
-// skipping (and counting) malformed lines the same way parseImportFile does.
-func readExportRows(path string) ([]ruleExportRow, int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var out []ruleExportRow
-	skipped, ln := 0, 0
-	for sc.Scan() {
-		ln++
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var er ruleExportRow
-		if err := json.Unmarshal([]byte(line), &er); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: %s:%d: invalid JSON, skipped: %v\n", path, ln, err)
-			skipped++
-			continue
-		}
-		out = append(out, er)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, skipped, fmt.Errorf("scan %s: %w", path, err)
-	}
-	return out, skipped, nil
-}
-
-// writeExportRows atomically rewrites path with rows, using the same encoder
-// settings as `rules export` (SetEscapeHTML(false)) so only changed fields move
-// in the diff. Order is preserved.
-func writeExportRows(path string, rows []ruleExportRow) error {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	w := bufio.NewWriter(f)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	for _, r := range rows {
-		if err := enc.Encode(r); err != nil {
-			f.Close()
-			os.Remove(tmp)
-			return err
-		}
-	}
-	if err := w.Flush(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // buildExportRow maps a cache row to its JSONL projection: the comma-separated
 // prefilter string becomes a real array, and rule_meta is embedded as raw JSON
 // (compacted by the encoder) rather than a JSON-in-string blob. Empty/invalid
@@ -567,7 +419,7 @@ func runRulesImport(args []string) error {
 	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb",
 		"path to the rule SQL cache DB (created if missing)")
 	source := fs.String("source", "",
-		"restrict to one source: sigma | hayabusa | stix | custom | lolbas | forensic (default: all *.sql.jsonl)")
+		"restrict to one source: sigma | hayabusa | stix | custom (default: all *.sql.jsonl)")
 	inDir := fs.String("in-dir", "rules/built",
 		"directory holding the <source>.sql.jsonl files to import")
 	overwrite := fs.Bool("overwrite", false,
@@ -612,16 +464,14 @@ func runRulesImport(args []string) error {
 		return fmt.Errorf("no valid rows parsed from %s", *inDir)
 	}
 
-	// A vendored row is considered current when its stored schema_version equals
-	// the per-rule key the running binary computes from the rule's prefilter
-	// (casedb.SchemaVersionFor). A mismatch means the next `tlvb rules build`
-	// would regenerate that row; warn so a stale snapshot is obvious on import.
-	if n, vers := staleSchemaRows(rows); n > 0 {
+	// The Tier 1A loader only loads rows whose (schema_version, model_id)
+	// match the running binary, so importing a stale vendored JSONL would
+	// otherwise succeed yet silently produce zero hits at runtime.
+	if n, vers := staleSchemaRows(rows, casedb.SchemaVersion()); n > 0 {
 		fmt.Fprintf(os.Stderr,
-			"WARNING: %d/%d rule(s) carry a stale schema_version %s — "+
-				"they will be imported but a `tlvb rules build` will rebuild them. "+
-				"Run `tlvb rules restamp-schema` + re-export if only the schema doc moved.\n",
-			n, len(rows), strings.Join(vers, ","))
+			"WARNING: %d/%d rule(s) have schema_version %s != current %s — "+
+				"they will be imported but IGNORED at Tier 1A runtime until rebuilt (tlvb rules build)\n",
+			n, len(rows), strings.Join(vers, ","), casedb.SchemaVersion())
 	}
 
 	srcs := make([]string, 0, len(perSource))
@@ -681,17 +531,13 @@ func runRulesImport(args []string) error {
 // parseImportFile reads one <source>.sql.jsonl into CacheRows. Malformed lines
 // (bad JSON, or missing rule_id/rule_source/sql) are warned about and skipped
 // so one bad row can't abort a whole import; the count is returned.
-// staleSchemaRows counts rows whose stored schema_version differs from the key
-// the running binary would compute for that rule. The expected key is per-rule:
-// casedb.SchemaVersionFor(prefilter) folds in only the schema-doc sections for
-// the artifacts the rule targets, so an evtx rule stays valid when the
-// prefetch/amcache sections change. Returns the count and the sorted set of
-// (stale) stored versions seen.
-func staleSchemaRows(rows []rulesdb.CacheRow) (int, []string) {
+// staleSchemaRows counts rows whose schema_version differs from the running
+// binary's, returning the count and the sorted set of stale versions seen.
+func staleSchemaRows(rows []rulesdb.CacheRow, current string) (int, []string) {
 	seen := map[string]bool{}
 	n := 0
 	for _, r := range rows {
-		if r.SchemaVersion != casedb.SchemaVersionFor(splitCSV(r.PrefilterArtifacts)) {
+		if r.SchemaVersion != current {
 			n++
 			seen[r.SchemaVersion] = true
 		}
@@ -861,7 +707,7 @@ func runRulesPruneSkills(args []string) error {
 func runRulesRevalidateSQL(args []string) error {
 	fs := flag.NewFlagSet("rules revalidate-sql", flag.ContinueOnError)
 	rulesDBPath := fs.String("rules-db", "outputs/rules.duckdb", "path to the rule SQL cache DB")
-	source := fs.String("source", "", "restrict to one source: sigma | hayabusa | stix | custom | lolbas | forensic (default: all)")
+	source := fs.String("source", "", "restrict to one source: sigma | hayabusa | stix (default: all)")
 	dryRun := fs.Bool("dry-run", false, "report broken rows without marking them failed")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -920,8 +766,8 @@ func runRulesRevalidateSQL(args []string) error {
 	return nil
 }
 
-// buildLoaders constructs the standard Sigma + Hayabusa + STIX + LOLBAS +
-// forensic loader set, optionally narrowed by --source.
+// buildLoaders constructs the standard Sigma + Hayabusa + STIX loader set,
+// optionally narrowed by --source.
 func buildLoaders(rulesRoot, sourceFilter string) ([]rulesrepo.Loader, error) {
 	var out []rulesrepo.Loader
 
@@ -942,8 +788,6 @@ func buildLoaders(rulesRoot, sourceFilter string) ([]rulesrepo.Loader, error) {
 		func(p string) rulesrepo.Loader { return rulesrepo.NewSTIXLoader(p) }, "stix")
 	addIfExists(filepath.Join(rulesRoot, "lolbas", "upstream", "yml"),
 		func(p string) rulesrepo.Loader { return rulesrepo.NewLOLBASLoader(p) }, "lolbas")
-	addIfExists(filepath.Join(rulesRoot, "forensic"),
-		func(p string) rulesrepo.Loader { return rulesrepo.NewForensicLoader(p) }, "forensic")
 	return out, nil
 }
 

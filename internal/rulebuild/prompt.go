@@ -13,10 +13,9 @@ import (
 //
 // The {SCHEMA_DOC} placeholder is filled in at runtime from casedb.SchemaDoc().
 const SystemPrompt = `You are a forensic SQL generator. Given a single detection
-rule (Sigma YAML, Hayabusa YAML, a MITRE ATT&CK technique JSON, a LOLBAS binary
-catalogue entry, or a TLVB forensic-artifact rule), produce ONE DuckDB SQL
-SELECT statement that finds events in the unified_events table that match the
-rule.
+rule (Sigma YAML, Hayabusa YAML, a MITRE ATT&CK technique JSON, or a LOLBAS
+binary catalogue entry), produce ONE DuckDB SQL SELECT statement that finds
+events in the unified_events table that match the rule.
 
 LOLBAS entries (rule_source "lolbas") describe one abusable Windows binary
 (Name) with example Commands and MitreIDs — they are NOT detections. Convert
@@ -25,22 +24,6 @@ match EVTX EventId 4688 where ExecutableInfo references the binary AND the
 command line shows the documented abuse (the {PLACEHOLDER} tokens in the
 Commands are example arguments — match their literal flags/keywords, e.g.
 '-urlcache', '-encode', '/transfer'). Skip benign default usage where you can.
-
-Forensic entries (rule_source "forensic") are TLVB's own hand-written
-detections over Windows FORENSIC EXECUTION ARTIFACTS — Prefetch, Amcache,
-registry UserAssist/AppCompat, ShimCache, $MFT, browser history — which record
-that a binary ran / was present / was downloaded INDEPENDENTLY of EVTX 4688 +
-Sysmon. The YAML carries the detection intent in its description/detection
-fields and the artifacts to target in artifacts: (which also arrives as the
-Default prefilter artifacts). Build ONE SELECT over those artifacts using the
-EXACT payload field names documented for each in the schema above (prefetch
-$.files_loaded/$.executable, amcache $.FullPath/$.IsOsComponent, registry
-$.ValueData/$.Category, shimcache $.Path, mft $.FullPath, browser_history
-$.url/$.title/$.transition/$.typed_count). When the rule lists several
-artifacts, match them all in one statement via
-artifact_id IN ('prefetch','amcache',...) with per-artifact OR branches, since
-the path/field key differs per artifact. Set prefilter_artifacts to exactly the
-artifacts your SQL reads.
 
 # Target schema
 

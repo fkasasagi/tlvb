@@ -39,13 +39,6 @@ type Pipeline struct {
 	SchemaVer string
 	Rates     Rates
 
-	// SchemaVerForArtifacts computes a rule's cache-invalidation key from the
-	// artifacts it targets (its prefilter), so editing the schema doc for one
-	// artifact does not invalidate rules targeting another. Wired to
-	// casedb.SchemaVersionFor from the CLI. When nil, every rule falls back to
-	// the flat SchemaVer (legacy whole-doc behaviour).
-	SchemaVerForArtifacts func(prefilter []string) string
-
 	// Compiler (optional) runtime-validates generated SQL against an empty
 	// unified_events before it is cached as "built". nil disables the gate.
 	Compiler *SQLCompiler
@@ -193,7 +186,7 @@ func (p *Pipeline) Build(ctx context.Context) (*BuildReport, error) {
 			RuleID:        r.RuleID,
 			RuleSource:    r.RuleSource,
 			RuleSHA256:    r.RuleSHA256,
-			SchemaVersion: p.schemaVerFor(r.PrefilterArtifacts),
+			SchemaVersion: p.SchemaVer,
 			ModelID:       p.Builder.ModelID(),
 			RuleMeta:      string(meta),
 		}
@@ -286,16 +279,6 @@ func (p *Pipeline) Build(ctx context.Context) (*BuildReport, error) {
 	return rep, nil
 }
 
-// schemaVerFor returns the cache-invalidation key for a rule targeting the
-// given artifacts. Uses the injected per-artifact function when set, else falls
-// back to the flat SchemaVer (legacy whole-doc behaviour).
-func (p *Pipeline) schemaVerFor(prefilter []string) string {
-	if p.SchemaVerForArtifacts != nil {
-		return p.SchemaVerForArtifacts(prefilter)
-	}
-	return p.SchemaVer
-}
-
 func (p *Pipeline) validate() error {
 	if len(p.Loaders) == 0 {
 		return fmt.Errorf("pipeline: no loaders configured")
@@ -348,7 +331,7 @@ func (p *Pipeline) isAlreadyCached(ctx context.Context, r rulesrepo.RawRule) boo
 	for _, row := range rows {
 		if row.RuleID == r.RuleID &&
 			row.RuleSHA256 == r.RuleSHA256 &&
-			row.SchemaVersion == p.schemaVerFor(r.PrefilterArtifacts) &&
+			row.SchemaVersion == p.SchemaVer &&
 			row.ModelID == p.Builder.ModelID() {
 			return true
 		}
