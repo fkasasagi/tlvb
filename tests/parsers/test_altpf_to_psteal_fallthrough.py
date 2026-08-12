@@ -59,7 +59,7 @@ def _make_psteal_emit_minimal_csv(out_dir: pathlib.Path):
     a captured-cmds list."""
     captured: list[list[str]] = []
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         if cmd and isinstance(cmd[0], str) and cmd[0].endswith("psteal.py"):
             # Write the destination CSV with a single header line so
@@ -85,7 +85,7 @@ def _make_psteal_emit_minimal_csv(out_dir: pathlib.Path):
 def test_altpf_nonzero_exit_falls_through_to_psteal(tmp_path, fake_pf_dir):
     fake_run, captured = _make_psteal_emit_minimal_csv(tmp_path)
 
-    def run_dispatch(cmd, timeout=None):
+    def run_dispatch(cmd, timeout=None, cwd=None):
         if cmd[0] == pp.ALTPF_BIN:
             return (2, "", "boom", 0.01)            # altpf rc=2
         return fake_run(cmd, timeout=timeout)
@@ -114,7 +114,7 @@ def test_altpf_nonzero_exit_falls_through_to_psteal(tmp_path, fake_pf_dir):
 def test_altpf_no_csv_produced_falls_through_to_psteal(tmp_path, fake_pf_dir):
     fake_run, captured = _make_psteal_emit_minimal_csv(tmp_path)
 
-    def run_dispatch(cmd, timeout=None):
+    def run_dispatch(cmd, timeout=None, cwd=None):
         if cmd[0] == pp.ALTPF_BIN:
             # altpf claims success but writes nothing.
             return (0, "altpf processed 0 file(s)", "", 0.01)
@@ -142,7 +142,7 @@ def test_altpf_no_csv_produced_falls_through_to_psteal(tmp_path, fake_pf_dir):
 def test_altpf_empty_csv_falls_through_to_psteal(tmp_path, fake_pf_dir):
     fake_run, captured = _make_psteal_emit_minimal_csv(tmp_path)
 
-    def run_dispatch(cmd, timeout=None):
+    def run_dispatch(cmd, timeout=None, cwd=None):
         if cmd[0] == pp.ALTPF_BIN:
             # altpf writes a CSV with only a header (0 data rows).
             (tmp_path / "20260516120000_altpf_Output.csv").write_text(
@@ -187,7 +187,7 @@ def test_altpf_conversion_exception_falls_through_to_psteal(tmp_path, fake_pf_di
     場面など。テストでは monkey-patch で例外を強制する。"""
     fake_run, captured = _make_psteal_emit_minimal_csv(tmp_path)
 
-    def run_dispatch(cmd, timeout=None):
+    def run_dispatch(cmd, timeout=None, cwd=None):
         if cmd[0] == pp.ALTPF_BIN:
             # altpf "succeeds" with a 1-row CSV.
             (tmp_path / "20260516120000_altpf_Output.csv").write_text(
@@ -244,7 +244,7 @@ def test_altpf_audit_note_always_in_psteal_path(tmp_path, fake_pf_dir):
     altpf did (or didn't do) so the Examiner can audit the choice."""
     fake_run, captured = _make_psteal_emit_minimal_csv(tmp_path)
 
-    def run_dispatch(cmd, timeout=None):
+    def run_dispatch(cmd, timeout=None, cwd=None):
         if cmd[0] == pp.ALTPF_BIN:
             return (137, "", "killed", 0.01)        # rc=137 (OOM-style)
         return fake_run(cmd, timeout=timeout)

@@ -63,7 +63,7 @@ def _capture_psteal_cmd(fake_pf_dir: pathlib.Path, out: pathlib.Path,
     subprocess argv via run_command mock. Return the captured list."""
     captured: list[list[str]] = []
 
-    def fake_run_command(cmd, timeout=None):
+    def fake_run_command(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         # psteal "succeeds" — write a minimal valid CSV so the parser's
         # success-path code is executed. We don't need rich content.
@@ -171,7 +171,7 @@ def test_psteal_fallback_notes_record_engine_choice(tmp_path, fake_pf_dir):
     (forensic 監査: どちらの engine で parse したか後追い可能)。"""
     captured: list[list[str]] = []
 
-    def fake_run_command(cmd, timeout=None):
+    def fake_run_command(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         for c in cmd:
             if isinstance(c, str) and c.endswith("prefetch_plaso.csv"):

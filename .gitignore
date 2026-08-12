@@ -55,6 +55,11 @@ venv/
 # `-w`; interactive srum_parser dev runs at the repo root left 19 of these
 # behind by 2026-05-19 (Wave 20d cleanup). All intermediate, never committable.
 *.plaso
+# psteal also gzips its run log into the CWD as psteal-<TIMESTAMP>.log.gz and
+# has no --logfile flag to redirect it (log2timeline has one, psteal does not).
+# The parsers pin it by running psteal with the case workspace as CWD; this
+# only catches manual psteal runs started from the repo root.
+psteal-*.log.gz
 libSQLite.Interop.so
 /tlvb
 

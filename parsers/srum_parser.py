@@ -91,13 +91,21 @@ def parse(req: ParseRequest) -> ParseResult:
     # up at the repo root by 2026-06-14). Pin it inside the case workspace
     # and delete it after the run — we only ever consume the CSV.
     plaso_storage.unlink(missing_ok=True)
+    # psteal drops its own gzipped run log in the CWD as
+    # psteal-<TIMESTAMP>.log.gz. Unlike the storage file there is no flag to
+    # redirect it — only log2timeline registers --logfile, psteal rejects it
+    # as an unrecognized argument. So run psteal *inside* the case workspace
+    # and let the log land there instead of wherever tlvb was invoked from
+    # (7 of these piled up at the repo root on 2026-08-12, one per pytest
+    # run). Every path below is absolute so the changed CWD can't
+    # reinterpret them.
     psteal_cmd = [
         "psteal.py",
-        "--source", str(req.input_path),
+        "--source", str(req.input_path.resolve()),
         "--parsers", "esedb/srum",
-        "--storage_file", str(plaso_storage),
+        "--storage_file", str(plaso_storage.resolve()),
         "-o", "dynamic",
-        "-w", str(plaso_csv),
+        "-w", str(plaso_csv.resolve()),
         "-q",
     ]
     # Plaso 20240308+ requires the long form `--output_time_zone`; psort/psteal
@@ -107,7 +115,8 @@ def parse(req: ParseRequest) -> ParseResult:
         psteal_cmd += ["--output_time_zone", case_tz]
     cmd_str = " ".join(psteal_cmd)
 
-    rc, stdout, stderr, elapsed = run_command(psteal_cmd, timeout=req.timeout_seconds)
+    rc, stdout, stderr, elapsed = run_command(
+        psteal_cmd, timeout=req.timeout_seconds, cwd=req.output_dir)
     plaso_storage.unlink(missing_ok=True)
     plaso_ok = (
         rc == 0 and plaso_csv.is_file()

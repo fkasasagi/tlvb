@@ -54,7 +54,7 @@ def _make_plaso_emit_csv(out_dir: pathlib.Path, rows: int = 1):
     CSV when psteal is invoked. Returns (stub, captured_cmds_list)."""
     captured: list[list[str]] = []
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         if cmd and isinstance(cmd[0], str) and cmd[0].endswith("psteal.py"):
             csv_path = pathlib.Path(cmd[cmd.index("-w") + 1])
@@ -136,7 +136,7 @@ def test_plaso_nonzero_exit_falls_through_to_srumecmd(fake_srudb, tmp_path):
     ここは ECmd を mock して "success" にして見せる)"""
     plaso_csv_done: list[pathlib.Path] = []
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd and isinstance(cmd[0], str) and cmd[0].endswith("psteal.py"):
             return (2, "", "boom", 0.01)
         if cmd and cmd[0] == "dotnet":
@@ -171,7 +171,7 @@ def test_plaso_nonzero_exit_falls_through_to_srumecmd(fake_srudb, tmp_path):
 
 def test_plaso_empty_csv_falls_through_to_srumecmd(fake_srudb, tmp_path):
     """Plaso rc=0 だが 0 rows → SrumECmd fallback."""
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd[0].endswith("psteal.py"):
             csv_path = pathlib.Path(cmd[cmd.index("-w") + 1])
             csv_path.write_text(
@@ -211,7 +211,7 @@ def test_plaso_empty_csv_falls_through_to_srumecmd(fake_srudb, tmp_path):
 
 def test_both_engines_fail_returns_fail_with_combined_audit(fake_srudb, tmp_path):
     """Plaso rc=2 + SrumECmd Linux 拒否 (rc!=0) → fail() で両方の audit string."""
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd[0].endswith("psteal.py"):
             return (2, "", "esedb plugin not loadable", 0.01)
         if cmd[0] == "dotnet":
@@ -238,7 +238,7 @@ def test_both_engines_fail_returns_fail_with_combined_audit(fake_srudb, tmp_path
 
 def test_plaso_fail_and_srumecmd_not_installed_returns_fail(fake_srudb, tmp_path):
     """Plaso fail + SrumECmd DLL absent → fail() with install hint."""
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd[0].endswith("psteal.py"):
             return (2, "", "", 0.01)
         return (0, "", "", 0.01)
@@ -264,7 +264,7 @@ def test_plaso_fail_and_srumecmd_not_installed_returns_fail(fake_srudb, tmp_path
 
 def test_plaso_conversion_exception_falls_through_to_srumecmd(fake_srudb, tmp_path):
     """psteal が CSV を作っても _convert_plaso が例外 → SrumECmd 試す。"""
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd[0].endswith("psteal.py"):
             csv_path = pathlib.Path(cmd[cmd.index("-w") + 1])
             csv_path.write_text(

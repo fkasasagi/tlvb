@@ -54,7 +54,7 @@ def test_srum_plaso_unlinks_existing_csv_before_psteal(tmp_path):
 
     captured: list[list[str]] = []
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         if cmd[0].endswith("psteal.py"):
             # psteal は -w 既存で本来 rc=1 を返すが、ここではテスト用に
@@ -97,7 +97,7 @@ def test_prefetch_plaso_fallback_unlinks_existing_csv(tmp_path):
 
     captured: list[list[str]] = []
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         captured.append(list(cmd))
         if cmd[0].endswith("psteal.py"):
             csv_path = pathlib.Path(cmd[cmd.index("-w") + 1])
@@ -138,7 +138,7 @@ def test_srum_plaso_skips_unlink_when_csv_absent(tmp_path):
     out_dir.mkdir()
     # 既存 csv 無し
 
-    def fake_run(cmd, timeout=None):
+    def fake_run(cmd, timeout=None, cwd=None):
         if cmd[0].endswith("psteal.py"):
             csv_path = pathlib.Path(cmd[cmd.index("-w") + 1])
             csv_path.write_text(

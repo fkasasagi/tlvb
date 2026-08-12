@@ -201,13 +201,18 @@ def parse(req: ParseRequest) -> ParseResult:
     # PLASO_STORAGE_NAME) and pre-clean it so log2timeline doesn't refuse a
     # stale file from a previous run.
     plaso_storage.unlink(missing_ok=True)
+    # psteal also drops a gzipped run log (psteal-<TIMESTAMP>.log.gz) in the
+    # CWD and offers no flag to redirect it — --logfile exists on
+    # log2timeline only. Run it inside the case workspace so the log stays
+    # with the case. Same fix as srum_parser.py; paths are absolute so the
+    # changed CWD can't reinterpret them.
     psteal_cmd = [
         "psteal.py",
-        "--source", str(req.input_path),
+        "--source", str(req.input_path.resolve()),
         "--parsers", "prefetch",
-        "--storage_file", str(plaso_storage),
+        "--storage_file", str(plaso_storage.resolve()),
         "-o", "dynamic",
-        "-w", str(plaso_csv),
+        "-w", str(plaso_csv.resolve()),
         "-q",
     ]
     # Plaso 20240308+ requires the long form `--output_time_zone`; the
@@ -218,7 +223,8 @@ def parse(req: ParseRequest) -> ParseResult:
         psteal_cmd += ["--output_time_zone", case_tz]
     cmd_str = " ".join(psteal_cmd)
 
-    rc, stdout, stderr, elapsed = run_command(psteal_cmd, timeout=req.timeout_seconds)
+    rc, stdout, stderr, elapsed = run_command(
+        psteal_cmd, timeout=req.timeout_seconds, cwd=req.output_dir)
     plaso_storage.unlink(missing_ok=True)
     plaso_ok = rc == 0 and plaso_csv.exists()
 
