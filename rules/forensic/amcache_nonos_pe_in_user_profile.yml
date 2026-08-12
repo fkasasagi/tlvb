@@ -1,0 +1,21 @@
+id: forensic-amcache-nonos-pe-in-user-profile
+title: "Non-OS PE Recorded in Amcache Under a User Profile"
+level: medium
+artifacts: [amcache]
+mitre:
+  tactics: [execution, persistence]
+  techniques: [T1204.002]
+description: >
+  Amcache.hve records that a portable-executable was present (and usually ran)
+  on the host, with its SHA-1, independently of any event log. A non-OS PE
+  living under \Users\ is a prime "an unexpected binary existed here" signal —
+  legitimate user-profile EXEs are rare and worth an examiner's eyes, and the
+  recorded SHA-1 lets the finding be pivoted against threat intel.
+detection: >
+  Match amcache rows where $.IsPeFile='true' AND $.IsOsComponent='false' AND
+  $.FullPath is under \Users\ (case-insensitive ILIKE '%\Users\%'). Exclude the
+  obvious benign installer/browser dirs only if trivially expressible; otherwise
+  return all and let review triage. Surface $.FullPath, $.SHA1 and
+  $.FileKeyLastWriteTimestamp.
+references:
+  - https://www.ssi.gouv.fr/uploads/2019/01/anssi-coriin_2019-analysis_amcache.pdf

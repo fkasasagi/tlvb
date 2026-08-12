@@ -1,0 +1,22 @@
+id: forensic-registry-defender-tamper
+title: "Windows Defender Disabled via Registry"
+level: high
+artifacts: [registry]
+mitre:
+  tactics: [defense-evasion]
+  techniques: [T1562.001]
+description: >
+  Re-expresses Sigma 'registry_set' (Sysmon EventID 13) Defender-tamper
+  detections against the registry artifact (RECmd decodes the SOFTWARE hive
+  Windows Defender policy keys) — no Sysmon needed. Attackers disable real-time
+  protection / the AV engine before dropping tooling.
+detection: >
+  Match registry rows where KeyPath ILIKE '%\Windows Defender%' (or
+  '%\Microsoft\Windows Defender\%') AND ValueName IN
+  ('DisableAntiSpyware','DisableAntiVirus','DisableRealtimeMonitoring',
+  'DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable',
+  'DisableIOAVProtection','TamperProtection') AND ValueData IN ('1','0x1')
+  (for TamperProtection, value 0 = disabled). Surface KeyPath, ValueName,
+  ValueData.
+references:
+  - https://attack.mitre.org/techniques/T1562/001/

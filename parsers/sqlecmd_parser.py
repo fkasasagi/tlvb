@@ -125,7 +125,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    def _iter() -> "Iterator[dict]":
+    def _iter() -> Iterator[dict]:
         idx = 0
         for csv_path in csvs:
             with csv_path.open("r", encoding="utf-8-sig", newline="") as fh:
@@ -146,7 +146,7 @@ def parse(req: ParseRequest) -> ParseResult:
                     idx += 1
 
     try:
-        from typing import Iterator  # late import for type hint
+        from collections.abc import Iterator  # late import for type hint
         row_count = write_unified_events(jsonl_path, _iter())
     except Exception as exc:
         return fail(

@@ -22,7 +22,8 @@ from __future__ import annotations
 import pathlib
 import re
 import xml.etree.ElementTree as ET
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from parsers.base import (
     ParseRequest,
@@ -33,7 +34,6 @@ from parsers.base import (
     now_iso,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "scheduled_tasks"
 PARSER_VERSION = "scheduled_tasks_parser/1.0.0"

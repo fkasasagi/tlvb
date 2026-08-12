@@ -33,10 +33,9 @@ Input: a single ``applicationHost.config`` file (or a directory containing one).
 from __future__ import annotations
 
 import datetime
-import os
 import pathlib
 import xml.etree.ElementTree as ET
-from typing import Iterator
+from collections.abc import Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -91,7 +90,7 @@ def _file_mtime_iso(path: pathlib.Path) -> str:
     try:
         ts = path.stat().st_mtime
         return (
-            datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+            datetime.datetime.fromtimestamp(ts, tz=datetime.UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )

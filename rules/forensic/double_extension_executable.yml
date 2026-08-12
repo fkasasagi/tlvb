@@ -1,0 +1,23 @@
+id: forensic-double-extension-executable
+title: "Masquerading Double-Extension Executable on Disk or Executed"
+level: high
+artifacts: [mft, amcache, prefetch]
+mitre:
+  tactics: [execution, defense-evasion]
+  techniques: [T1036.007]
+description: >
+  A file whose name carries a deceptive document/image extension immediately
+  before its real executable extension — invoice.pdf.exe, photo.jpg.scr,
+  report.docx.exe, scan.png.com. This double-extension trick relies on Explorer
+  hiding the trailing real extension; its presence on disk (MFT/Amcache) or in
+  execution evidence (Prefetch) is high-confidence social-engineering malware.
+detection: >
+  Match the file-name / path fields (mft $.FullPath, amcache $.FullPath +
+  $.Name, prefetch $.executable) where a benign-looking extension is directly
+  followed by an executable extension. Match (case-insensitively) names
+  containing one of '.pdf.', '.doc.', '.docx.', '.xls.', '.xlsx.', '.jpg.',
+  '.jpeg.', '.png.', '.txt.', '.zip.' AND ending in one of .exe, .scr, .com,
+  .bat, .cmd, .pif, .vbs, .js. Surface the offending file name / path and the
+  source artifact.
+references:
+  - https://attack.mitre.org/techniques/T1036/007/

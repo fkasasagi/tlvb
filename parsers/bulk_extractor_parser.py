@@ -18,7 +18,6 @@ SIFT install: bulk_extractor v1.6.1 already in PATH (`/usr/local/bin`).
 
 from __future__ import annotations
 
-import pathlib
 import shutil
 
 from parsers.base import (
@@ -83,7 +82,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    def _iter() -> "Iterator[dict]":
+    def _iter() -> Iterator[dict]:
         idx = 0
         for fname in IOC_FILES:
             p = work / fname
@@ -121,7 +120,7 @@ def parse(req: ParseRequest) -> ParseResult:
 
     jsonl_path = req.output_dir / "bulk_extractor.jsonl"
     try:
-        from typing import Iterator  # noqa: F401
+        from collections.abc import Iterator  # noqa: F401
         row_count = write_unified_events(jsonl_path, _iter())
     except Exception as exc:
         return fail(

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import pathlib
-from typing import Iterator
+from collections.abc import Iterator
 
 from parsers.base import (
     ParseRequest,
@@ -28,7 +28,6 @@ from parsers.base import (
     tail,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "evtx"
 PARSER_VERSION = "evtx_parser/1.0.0+evtxecmd-1.5.2.0"

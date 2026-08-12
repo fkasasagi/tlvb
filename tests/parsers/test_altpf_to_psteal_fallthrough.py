@@ -24,6 +24,16 @@ import pytest
 from parsers.base import ParseRequest
 from parsers import prefetch_parser as pp
 
+# These tests mock altpf *runs* (rc!=0, empty CSV, conversion errors) to prove
+# the parser falls through to Plaso psteal. They require the real altpf binary:
+# parse() short-circuits to a different "binary not installed" path when
+# ALTPF_BIN is absent (e.g. on a clean CI runner), bypassing the mocked runs.
+pytestmark = pytest.mark.skipif(
+    not pathlib.Path(pp.ALTPF_BIN).is_file(),
+    reason="altpf binary not installed at ALTPF_BIN (clean CI); "
+    "altpf-failure → psteal fallthrough paths need the real binary",
+)
+
 
 @pytest.fixture
 def fake_pf_dir(tmp_path):

@@ -34,9 +34,8 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tempfile
 import zipfile
-from typing import Callable
+from collections.abc import Callable
 
 from parsers import _archive
 from parsers._collector_prefix import (
@@ -48,7 +47,6 @@ from parsers._collector_prefix import (
     USRCLASS_RE,
 )
 from parsers.base import ParseRequest, ParseResult
-
 
 # ---------------------------------------------------------------------------
 # Artifact detection
@@ -479,7 +477,7 @@ def not_present_results(
 
 
 def now_iso_utc() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
 
 def _minimise_dirs(dirs: set[pathlib.Path]) -> set[pathlib.Path]:
@@ -562,7 +560,7 @@ def stage_input(
 def run_parser(det: Detection, req_template: ParseRequest) -> ParseResult:
     """Import the parser module and call its ``parse``."""
     mod = importlib.import_module(det.parser_module)
-    fn = getattr(mod, "parse")
+    fn = mod.parse
     req = dataclasses.replace(req_template, input_path=det.input_path)
     return fn(req)
 
@@ -601,7 +599,7 @@ def persist(
                 events_inserted += _bulk_insert_unified_events(
                     con, case_id, evidence_id, pathlib.Path(r.output_jsonl),
                 )
-        for aid, group in by_artifact.items():
+        for _aid, group in by_artifact.items():
             merged = _merge_parse_results(group) if len(group) > 1 else group[0]
             _upsert_parse_result(con, case_id, evidence_id, merged)
         return {"parse_results": len(by_artifact), "unified_events": events_inserted}
@@ -999,7 +997,7 @@ def run(
     timeout_seconds: int = 600,
     timezone: str = "UTC",
     only: list[str] | None = None,
-    progress_emit: "Callable[[dict], None] | None" = None,
+    progress_emit: Callable[[dict], None] | None = None,
     input_mode: str = "auto",
     image_format: str = "auto",
 ) -> OrchestratorReport:
@@ -1217,7 +1215,7 @@ def run(
     for r in results:
         by_artifact.setdefault(r.artifact_id, []).append(r)
     artifact_failed = 0
-    for aid, group in by_artifact.items():
+    for _aid, group in by_artifact.items():
         merged = _merge_parse_results(group) if len(group) > 1 else group[0]
         if not merged.success:
             artifact_failed += 1

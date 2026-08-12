@@ -15,7 +15,6 @@ from __future__ import annotations
 from parsers._ezt_csv import EztSpec, run_simple_ezt
 from parsers.base import ParseRequest, ParseResult
 
-
 ARTIFACT_ID = "mft"
 PARSER_VERSION = "mft_parser/1.0.0+mftecmd-1.3.0.0"
 

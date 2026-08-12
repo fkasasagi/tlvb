@@ -28,8 +28,7 @@ import csv
 import pathlib
 import re
 import shutil
-from typing import Iterator
-
+from collections.abc import Iterator
 
 # Wave 20d-2: Hayabusa CSV emits timestamps as "YYYY-MM-DD HH:MM:SS.ms +00:00"
 # with a space before the timezone offset (the format chrono::DateTime uses
@@ -51,7 +50,7 @@ def _normalise_hayabusa_ts(ts: str) -> str:
     """
     return _TZ_SPACE.sub(r"\1", ts) if ts else ts
 
-from parsers.base import (
+from parsers.base import (  # noqa: E402  (import follows a deliberate module-level helper)
     ParseRequest,
     ParseResult,
     audit_id,
@@ -62,7 +61,6 @@ from parsers.base import (
     tail,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "hayabusa"
 PARSER_VERSION = "hayabusa_parser/1.0.0+optional"

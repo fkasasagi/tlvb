@@ -65,9 +65,13 @@ verify-all: verify ## Run verify.sh (8/8) + pytest (53/53) for full coverage
 	@echo "TLVB verify-all complete."
 
 .PHONY: lint
-lint: ## Run go vet + ruff (Python) if available
+lint: lint-ui ## Run go vet + ruff (Python) + UI i18n shadow guard
 	go vet ./...
 	@if command -v ruff >/dev/null 2>&1; then ruff check parsers/; else echo "ruff not installed; skipping"; fi
+
+.PHONY: lint-ui
+lint-ui: ## Guard ui/static/app.js against shadowing the i18n t() function
+	@bash scripts/check-i18n-shadow.sh
 
 .PHONY: fmt
 fmt: ## Format Go and Python sources

@@ -30,9 +30,9 @@ https://github.com/tadmaddad/Washizukami-Collector#output-structure
 from __future__ import annotations
 
 import datetime
-import pathlib
 import re
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from parsers.base import (
     ParseRequest,
@@ -43,7 +43,6 @@ from parsers.base import (
     now_iso,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "washizukami_audit"
 PARSER_VERSION = "washizukami_audit_parser/1.0.0"
@@ -95,7 +94,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    started_mono = datetime.datetime.now(datetime.timezone.utc)
+    started_mono = datetime.datetime.now(datetime.UTC)
     try:
         row_count = write_unified_events(jsonl_path, _iter_events(req))
     except Exception as exc:  # noqa: BLE001
@@ -104,7 +103,7 @@ def parse(req: ParseRequest) -> ParseResult:
             error=f"parse failed: {exc!r}",
             parser_version=PARSER_VERSION,
         )
-    finished_mono = datetime.datetime.now(datetime.timezone.utc)
+    finished_mono = datetime.datetime.now(datetime.UTC)
 
     return ParseResult(
         artifact_id=ARTIFACT_ID, success=True,
@@ -227,7 +226,7 @@ def _normalise_ts(ts_raw: str) -> str:
     try:
         dt = datetime.datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        return dt.astimezone(datetime.timezone.utc).isoformat()
+            dt = dt.replace(tzinfo=datetime.UTC)
+        return dt.astimezone(datetime.UTC).isoformat()
     except (ValueError, TypeError):
         return ts_raw

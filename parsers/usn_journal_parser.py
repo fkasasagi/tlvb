@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import csv
 import pathlib
-from typing import Iterator
+from collections.abc import Iterator
 
 from parsers._collector_prefix import MFT_RE
 from parsers.base import (
@@ -31,7 +31,6 @@ from parsers.base import (
     tail,
     write_unified_events,
 )
-
 
 ARTIFACT_ID = "usn_journal"
 PARSER_VERSION = "usn_journal_parser/1.0.0+mftecmd-1.3.0.0"

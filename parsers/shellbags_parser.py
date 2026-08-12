@@ -14,7 +14,6 @@ from __future__ import annotations
 from parsers._ezt_csv import EztSpec, run_simple_ezt
 from parsers.base import ParseRequest, ParseResult
 
-
 ARTIFACT_ID = "shellbags"
 PARSER_VERSION = "shellbags_parser/1.0.0+sbecmd-2.1.0.0"
 

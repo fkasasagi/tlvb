@@ -4,27 +4,26 @@
 
 This document states, precisely, **what in this repository is substantially new
 work created during the hackathon window (15 Apr – 15 Jun 2026)**, what is reused
-foundation, and how TLVB differs from the author's related submission. It exists
-to satisfy the rule that submissions be *"substantially new work created during
-the hackathon period"* with *"the novel contribution clearly documented,"* and
-that, where an entrant submits more than one project, each be *"unique and
-substantially different from each of the Entrant's other Submissions."*
+foundation, and how TLVB differs from the author's related (non-submitted)
+sibling project. It exists to satisfy the rule that submissions be
+*"substantially new work created during the hackathon period"* with *"the novel
+contribution clearly documented."*
 
 ---
 
-## 1. Two related submissions, one author
+## 1. One submission, plus a related sibling project
 
-The author is submitting **two distinct projects: `moai` and `TLVB`.** Both
-are the author's own work, both were private until submission, and **both were
-built during the hackathon window** — `moai` is *not* a pre-existing
-third-party project. They were developed in parallel and share a common
-forensic-parsing/storage foundation, but they implement **fundamentally
-different agent architectures.** The rest of this document focuses on TLVB's
-novel contribution and its distinction from `moai`.
+**TLVB is the author's single FIND EVIL! submission.** The author also built a
+related project, `moai`, in parallel during the same window, but **`moai` was
+ultimately not entered into the hackathon.** It is disclosed here only for
+transparency: `moai` is the author's own work (*not* a pre-existing third-party
+project), and it shares a common forensic-parsing/storage foundation with TLVB,
+but the two implement **fundamentally different agent architectures.** The rest
+of this document focuses on TLVB's novel contribution and how it differs from
+that sibling project.
 
-> If only one of the two is reviewed, TLVB stands on its own: every component in
-> §4 was authored during the window, on top of the openly-disclosed foundation
-> in §3.
+> TLVB stands on its own: every component in §4 was authored during the window,
+> on top of the openly-disclosed foundation in §3.
 
 ---
 
@@ -33,7 +32,7 @@ novel contribution and its distinction from `moai`.
 The two projects answer "how should an LLM drive a Windows IR investigation?"
 in two genuinely different ways.
 
-| | **moai** (sibling submission) | **TLVB** (this repo) |
+| | **moai** (sibling project, not submitted) | **TLVB** (this repo) |
 |---|---|---|
 | Organising idea | **Tactic agents** — one LLM agent per MITRE tactic | **Tiers** — signature → anomaly → timeline, separated by *when the LLM runs* |
 | Where the LLM runs | At **runtime**, repeatedly: each tactic agent sweeps a sliding window of events (`internal/agents/`), then a synthesiser reconciles them (`internal/synthesizer/`, consistency rules R1–R4) | **Split by design**: Tier 1A runs the LLM **only at build time** to pre-bake rules into SQL, and is **LLM-zero at runtime**; LLM reasoning is concentrated in Tier 1B (anomaly) and Tier 2 (timeline) |
@@ -151,8 +150,9 @@ runtime**.
 
 ## 6. Summary
 
-`moai` and `TLVB` are two of the author's own projects, both built in the
-window, sharing a parsing/storage base but realising **different agent
-architectures** — tactic-agents vs. tiered build-time pre-bake with a learning
-SQL cache and runtime self-correction. The components in §4 constitute TLVB's
-new, documented contribution on top of the openly-disclosed foundation in §3.
+TLVB is the author's FIND EVIL! submission. It and the author's sibling project
+`moai` (built in the same window but **not submitted**) share a parsing/storage
+base while realising **different agent architectures** — tactic-agents vs.
+tiered build-time pre-bake with a learning SQL cache and runtime self-correction.
+The components in §4 constitute TLVB's new, documented contribution on top of the
+openly-disclosed foundation in §3.

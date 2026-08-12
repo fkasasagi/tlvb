@@ -46,7 +46,6 @@ import zipfile
 from collections.abc import Callable
 from typing import Any
 
-
 # py7zr is optional. Import lazily and remember the failure so we can
 # emit a clean skip reason instead of crashing.
 try:
@@ -683,7 +682,7 @@ def _record(
     if audit_emit is not None:
         try:
             audit_emit({
-                "ts": datetime.datetime.now(datetime.timezone.utc)
+                "ts": datetime.datetime.now(datetime.UTC)
                     .isoformat(timespec="seconds"),
                 "actor": "tier0-stage",
                 "kind": "nested_extract",

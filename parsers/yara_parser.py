@@ -93,7 +93,7 @@ def parse(req: ParseRequest) -> ParseResult:
             parser_version=PARSER_VERSION,
         )
 
-    def _iter() -> "Iterator[dict]":
+    def _iter() -> Iterator[dict]:
         idx = 0
         for line in stdout.splitlines():
             line = line.strip()
@@ -121,7 +121,7 @@ def parse(req: ParseRequest) -> ParseResult:
 
     jsonl_path = req.output_dir / "yara.jsonl"
     try:
-        from typing import Iterator  # noqa: F401
+        from collections.abc import Iterator  # noqa: F401
         row_count = write_unified_events(jsonl_path, _iter())
     except Exception as exc:
         return fail(
