@@ -42,6 +42,14 @@ type Finding struct {
 	MITRETactic     string
 	Evidence        []FindingEvidence
 	OriginPath      string // file path the finding came from (for audit)
+	// Review Gate 1A/1B state as recorded on disk (internal/tier1a/finding.go).
+	// The loader reports it verbatim; the policy of what to do with it lives in
+	// the runner, which drops Rejected findings before clustering. Approved is
+	// NOT a filter: AutoApproveByLevel deliberately leaves critical/high at
+	// false until an examiner looks, so requiring it would silently delete the
+	// most serious detections.
+	Approved bool
+	Rejected bool
 }
 
 // FindingEvidence is one unified_events row that supports a Finding.
@@ -83,7 +91,30 @@ type Cluster struct {
 	MITRETechniques    []string // union of finding-level + LLM-added
 	OpenQuestions      []string
 	AttackPhase        string          // e.g. "initial-access", "execution", "impact"
-	RawTimelineExcerpt []TimelineEvent // ±N min around the cluster (raw events)
+	RawTimelineExcerpt []TimelineEvent // raw events inside [WindowStart, WindowEnd]
+	// WindowStart / WindowEnd are the bounds the excerpt was actually sampled
+	// from. They start at ±TimelineWindow around the hull and move outward as
+	// the chase loop follows attacker activity past it (see chase.go).
+	WindowStart time.Time
+	WindowEnd   time.Time
+	// ChaseRounds is how many times the window was extended and re-analysed.
+	// 0 = the trail ended inside the initial window.
+	ChaseRounds int
+	// ChaseAnchors are timestamps the LLM asked to see more around. They join
+	// the finding evidence as proximity-sampling anchors so the span a chase
+	// round opened actually gets sampled.
+	ChaseAnchors []time.Time
+	// FollowUpRefs are raw events the analysis asked to see the surroundings of —
+	// possible attacker activity, or activity it could not attribute yet. They
+	// drive the chase loop, and record which undetected material the narrative
+	// actually leaned on. NOT a claim that each one is attacker activity.
+	FollowUpRefs []FollowUpEventRef
+	// ContinuesIntoNext / ContinuesFromPrev are set when the window was clamped
+	// at a neighbouring cluster — i.e. this cluster's activity runs continuously
+	// into it rather than stopping. Reported so a dwell period between two
+	// clusters isn't narrated as a quiet gap.
+	ContinuesIntoNext bool
+	ContinuesFromPrev bool
 	// ActiveSearch holds wide-range hypothesis-driven query results.
 	// Populated only when --active-search is enabled. Each entry pairs an
 	// open question with the SQL that tried to answer it.
@@ -135,6 +166,12 @@ type TimelineEvent struct {
 	ArtifactID string
 	EventType  string
 	Excerpt    map[string]any // shrunken payload (artifact-aware)
+	// Detected marks a row that is already evidence for one of the cluster's
+	// Tier 1 findings. Without it the analysis cannot tell which rows a
+	// signature already caught — the finding summaries it is shown carry no
+	// audit_ids — so any instruction phrased in terms of "already covered"
+	// would be unfollowable.
+	Detected bool `json:",omitempty"`
 }
 
 // CaseSynthesis is the final Tier 2 output. Serialised to synthesis.json.
@@ -242,9 +279,33 @@ type SynthCluster struct {
 	MITREUnconfirmed []string             `json:"mitre_unconfirmed,omitempty"`
 	OpenQuestions    []string             `json:"open_questions,omitempty"`
 	ActiveSearch     []ActiveSearchResult `json:"active_search,omitempty"`
+	// WindowStart / WindowEnd are the raw-timeline span the narrative was
+	// written from — wider than [StartTS, EndTS] whenever the chase loop
+	// followed activity past the detections. ContinuesIntoNext /
+	// ContinuesFromPrev mean the window was clamped at the neighbouring
+	// cluster: the activity did not stop, it ran into the next episode.
+	WindowStart time.Time `json:"window_start,omitempty"`
+	WindowEnd   time.Time `json:"window_end,omitempty"`
+	ChaseRounds int       `json:"chase_rounds,omitempty"`
+	// FollowUpEvents are the raw events the analysis relied on that NO signature
+	// caught — the undetected half of the story, kept as evidence.
+	FollowUpEvents    []FollowUpEventRef `json:"follow_up_events,omitempty"`
+	ContinuesIntoNext bool               `json:"continues_into_next,omitempty"`
+	ContinuesFromPrev bool               `json:"continues_from_prev,omitempty"`
 	// EvidenceFetches surfaces, per cluster, which files the agent read from the
 	// disk image to reach its narrative (audit trail for Review Gate 2 / Web).
 	EvidenceFetches []evidencex.FetchSummary `json:"evidence_fetches,omitempty"`
+}
+
+// FollowUpEventRef is a compact reference to one raw event the Tier 2 analysis
+// judged to be attacker activity without any Tier 1 signature having fired on
+// it. Deliberately narrower than TimelineEvent — no payload excerpt — so
+// synthesis.json stays small.
+type FollowUpEventRef struct {
+	AuditID    string    `json:"audit_id"`
+	TsUTC      time.Time `json:"ts_utc"`
+	ArtifactID string    `json:"artifact_id,omitempty"`
+	EventType  string    `json:"event_type,omitempty"`
 }
 
 // FindingRef is a compact reference to a Tier 1 finding inside a cluster.
@@ -326,6 +387,30 @@ type SynthAudit struct {
 	// pivot also found nothing. An honest-negative signal, not a failure.
 	ActiveSQLNoEvidence int    `json:"active_sql_no_evidence,omitempty"`
 	SkillSHA256         string `json:"skill_sha256,omitempty"`
+
+	// FindingsRejectedSkipped counts findings dropped because an examiner
+	// rejected them at Review Gate 1A/1B — recorded so a thin synthesis can be
+	// explained by review decisions rather than looking like a Tier 1 miss.
+	FindingsRejectedSkipped int `json:"findings_rejected_skipped,omitempty"`
+
+	// Chase loop accounting (see chase.go).
+	// ChaseRoundsTotal is the number of window extensions across all clusters
+	// (= the extra LLM calls the loop cost). ChaseClustersExtended is how many
+	// distinct clusters grew at least once. ChaseRoundsCapped counts clusters
+	// still finding attacker activity when the round budget ran out — those
+	// spans are NOT fully explored, which the report must not paper over.
+	ChaseRoundsTotal      int `json:"chase_rounds_total,omitempty"`
+	ChaseClustersExtended int `json:"chase_extended_clusters,omitempty"`
+	ChaseRoundsCapped     int `json:"chase_rounds_capped,omitempty"`
+	// ChaseEventsFlagged / ChaseEventsUnresolved make a zero-round result
+	// diagnosable: flagged=0 means the analysis asked to look further nowhere at
+	// all (suspect the prompt — this is how the first version of it failed),
+	// flagged>0 with no rounds means everything it wanted was already inside the
+	// detections (the honest "nothing beyond the alerts" answer). Unresolved
+	// counts ids absent from the excerpt — a persistently non-zero value means
+	// the model is inventing them.
+	ChaseEventsFlagged    int `json:"chase_events_flagged,omitempty"`
+	ChaseEventsUnresolved int `json:"chase_events_unresolved,omitempty"`
 
 	// On-demand evidence extraction accounting (across all clusters).
 	EvidenceRounds       int `json:"evidence_rounds,omitempty"`

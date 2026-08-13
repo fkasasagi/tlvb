@@ -23,9 +23,9 @@ func TestLoadFindingsFromBothSources(t *testing.T) {
 	dir := t.TempDir()
 	// Tier 1A finding under by-rule/sigma/
 	t1a := map[string]any{
-		"finding_id": "f-1a-1",
-		"case_id":    "C1",
-		"rule_id":    "sigma-1",
+		"finding_id":  "f-1a-1",
+		"case_id":     "C1",
+		"rule_id":     "sigma-1",
 		"rule_source": "sigma",
 		"rule_meta": map[string]any{
 			"title":            "Encoded PowerShell",
@@ -42,9 +42,9 @@ func TestLoadFindingsFromBothSources(t *testing.T) {
 
 	// Tier 1A Hayabusa pass-through under by-rule/hayabusa/
 	t1aHaya := map[string]any{
-		"finding_id": "f-1a-2",
-		"case_id":    "C1",
-		"rule_id":    "haya-1",
+		"finding_id":  "f-1a-2",
+		"case_id":     "C1",
+		"rule_id":     "haya-1",
 		"rule_source": "hayabusa",
 		"rule_meta": map[string]any{
 			"title": "Mimikatz Execution",
@@ -125,10 +125,10 @@ func TestLoadFindingsFromBothSources(t *testing.T) {
 func TestMergeHayabusaIntoSigma(t *testing.T) {
 	in := []Finding{
 		{Source: "sigma", RuleID: "s1", Title: "Antivirus Password Dumper Detection"},
-		{Source: "hayabusa", RuleID: "h1", Title: "Antivirus Password Dumper Detection"}, // dup of s1
+		{Source: "hayabusa", RuleID: "h1", Title: "Antivirus Password Dumper Detection"},    // dup of s1
 		{Source: "hayabusa", RuleID: "h2", Title: "  antivirus password dumper detection "}, // dup (case/space)
 		{Source: "sigma", RuleID: "s2", Title: "Encoded PowerShell"},
-		{Source: "hayabusa", RuleID: "h3", Title: "Suspicious Service Path"},               // native, no sigma twin → keep
+		{Source: "hayabusa", RuleID: "h3", Title: "Suspicious Service Path"},                   // native, no sigma twin → keep
 		{Source: "anomaly_hunter", RuleID: "A5", Title: "Antivirus Password Dumper Detection"}, // other source → keep
 	}
 	got := mergeHayabusaIntoSigma(in)
@@ -179,5 +179,59 @@ func TestFirstTimestamp(t *testing.T) {
 	}
 	if got := (Finding{}).FirstTimestamp(); !got.IsZero() {
 		t.Errorf("empty finding should return zero time, got %v", got)
+	}
+}
+
+// TestDropRejected pins the Review Gate contract: an examiner's reject removes
+// a finding from Tier 2 entirely, but a finding merely awaiting review must
+// survive — AutoApproveByLevel leaves critical/high at Approved=false, so
+// filtering on Approved would delete exactly the findings that matter most.
+func TestDropRejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        []Finding
+		wantIDs   []string
+		wantCount int
+	}{
+		{name: "empty input", in: nil, wantIDs: nil, wantCount: 0},
+		{
+			name: "rejected findings are dropped",
+			in: []Finding{
+				{FindingID: "keep", Approved: true},
+				{FindingID: "drop", Rejected: true},
+			},
+			wantIDs: []string{"keep"}, wantCount: 1,
+		},
+		{
+			name: "unreviewed critical findings survive",
+			in: []Finding{
+				{FindingID: "unreviewed-critical", Severity: "critical", Approved: false},
+			},
+			wantIDs: []string{"unreviewed-critical"}, wantCount: 0,
+		},
+		{
+			name: "all rejected leaves nothing",
+			in: []Finding{
+				{FindingID: "a", Rejected: true},
+				{FindingID: "b", Rejected: true},
+			},
+			wantIDs: nil, wantCount: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, n := dropRejected(tc.in)
+			if n != tc.wantCount {
+				t.Errorf("skipped count: got %d, want %d", n, tc.wantCount)
+			}
+			if len(got) != len(tc.wantIDs) {
+				t.Fatalf("kept %d findings, want %d", len(got), len(tc.wantIDs))
+			}
+			for i, id := range tc.wantIDs {
+				if got[i].FindingID != id {
+					t.Errorf("[%d]: got %q, want %q", i, got[i].FindingID, id)
+				}
+			}
+		})
 	}
 }

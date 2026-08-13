@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,8 +41,14 @@ type Config struct {
 	Model             string        // empty = CLI default
 	Language          string        // "ja" | "en"  (default: "ja")
 	ClusterGap        time.Duration // default 30 min
-	TimelineWindow    time.Duration // default 5 min
+	TimelineWindow    time.Duration // default 30 min (DefaultTimelineWindow)
 	MaxRowsPerCluster int           // default 300
+	// MaxChaseRounds bounds the chase loop (chase.go): how many times a
+	// cluster's window may be extended and re-analysed after the analysis
+	// reports attacker activity beyond the hull. Each round costs one extra
+	// LLM call per cluster. 0 = default 2; <0 disables (single-pass, the
+	// pre-chase behaviour).
+	MaxChaseRounds    int
 	PerClusterTimeout time.Duration // default 5 min
 	ActiveSearch      bool          // enable hypothesis-driven SQL pass per cluster
 	MaxSelfCorrect    int           // active-search SQL self-correction rounds (0 = default 2; <0 disables)
@@ -137,10 +144,16 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		cfg.ClusterGap = 30 * time.Minute
 	}
 	if cfg.TimelineWindow <= 0 {
-		cfg.TimelineWindow = 5 * time.Minute
+		cfg.TimelineWindow = DefaultTimelineWindow
 	}
 	if cfg.MaxRowsPerCluster <= 0 {
 		cfg.MaxRowsPerCluster = 300
+	}
+	switch {
+	case cfg.MaxChaseRounds == 0:
+		cfg.MaxChaseRounds = DefaultMaxChaseRounds
+	case cfg.MaxChaseRounds < 0:
+		cfg.MaxChaseRounds = 0 // explicitly disabled
 	}
 	if cfg.PerClusterTimeout <= 0 {
 		cfg.PerClusterTimeout = 5 * time.Minute
@@ -160,8 +173,20 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load findings: %w", err)
 	}
+	// Review Gate 1A/1B runs BEFORE Tier 2, so a finding an examiner rejected is
+	// a decided false positive: it must not seed a cluster, anchor a window, or
+	// end up in an attack narrative.
+	findings, rejectedSkipped := dropRejected(findings)
+	if rejectedSkipped > 0 {
+		emit(cfg, Event{Phase: "loading", Message: fmt.Sprintf(
+			"skipped %d finding(s) rejected at Review Gate", rejectedSkipped)})
+	}
 	rep.TotalFindings = len(findings)
 	if len(findings) == 0 {
+		if rejectedSkipped > 0 {
+			return rep, fmt.Errorf("all %d finding(s) under %s were rejected at Review Gate — nothing to synthesise",
+				rejectedSkipped, cfg.FindingsBaseDir)
+		}
 		return rep, fmt.Errorf("no findings under %s (run Tier 1A / 1B first)", cfg.FindingsBaseDir)
 	}
 
@@ -229,12 +254,26 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	emit(cfg, Event{Phase: "clustering",
 		Message: fmt.Sprintf("formed %d clusters", len(clusters))})
 
-	emit(cfg, Event{Phase: "timeline", Message: "fetching ±N min raw timeline per cluster"})
+	emit(cfg, Event{Phase: "timeline", Message: fmt.Sprintf(
+		"fetching ±%d min raw timeline per cluster", int(cfg.TimelineWindow.Minutes()))})
 	for i := range clusters {
-		if err := FetchClusterTimeline(ctx, db, cfg.CaseID, &clusters[i],
-			cfg.TimelineWindow, cfg.MaxRowsPerCluster); err != nil {
-			return rep, fmt.Errorf("cluster %d timeline: %w", clusters[i].ID, err)
+		c := &clusters[i]
+		if c.StartTS.IsZero() {
+			continue // undated bucket has no window
 		}
+		// Clamp the FIRST fetch at the shared boundaries too, not just the chase
+		// re-fetches: at ±30 min any two clusters less than an hour apart would
+		// otherwise overlap before a single chase round has run, and the same
+		// events would be analysed by both.
+		prevBound, nextBound := clusterBoundaries(clusters, i)
+		lo, hi := clusterWindow(c.StartTS, c.EndTS, cfg.TimelineWindow, prevBound, nextBound)
+		if err := FetchClusterTimelineRange(ctx, db, cfg.CaseID, c, lo, hi,
+			cfg.MaxRowsPerCluster); err != nil {
+			return rep, fmt.Errorf("cluster %d timeline: %w", c.ID, err)
+		}
+		emit(cfg, Event{Phase: "timeline", Message: fmt.Sprintf(
+			"cluster %d window %s..%s", c.ID,
+			lo.UTC().Format(time.RFC3339), hi.UTC().Format(time.RFC3339))})
 	}
 
 	// Load skill prompt.
@@ -256,14 +295,36 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	emit(cfg, Event{Phase: "llm",
 		Message: fmt.Sprintf("calling claude for %d clusters", len(clusters))})
 
-	audit := SynthAudit{ClustersAnalysed: 0, SkillSHA256: skillSHAHex}
+	audit := SynthAudit{ClustersAnalysed: 0, SkillSHA256: skillSHAHex,
+		FindingsRejectedSkipped: rejectedSkipped}
 	for i := range clusters {
-		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit, db, gctx.ClockReversed); err != nil {
+		prevBound, nextBound := clusterBoundaries(clusters, i)
+		winLo, winHi := clusters[i].WindowStart, clusters[i].WindowEnd
+		if err := analyseClusterLLM(ctx, cfg, &clusters[i], string(skillBytes), &audit, db,
+			gctx.ClockReversed, prevBound, nextBound); err != nil {
 			// graceful: skip the cluster but keep going
 			audit.ClustersSkippedNoLLM++
 			emit(cfg, Event{Phase: "llm",
 				Message: fmt.Sprintf("cluster %d skipped: %v", clusters[i].ID, err)})
 			continue
+		}
+		if cc := &clusters[i]; cc.ChaseRounds > 0 {
+			// A round can move the window, or — when the clamp at a neighbouring
+			// cluster was already binding — re-sample the same span with the
+			// flagged events added as anchors. Both are useful; only the first is
+			// an "extension", and saying so when the bounds did not move would
+			// misreport how far the analysis actually reached.
+			switch {
+			case cc.WindowEnd.After(winHi) || cc.WindowStart.Before(winLo):
+				emit(cfg, Event{Phase: "llm", Message: fmt.Sprintf(
+					"cluster %d: window extended %d× to %s..%s (activity continued past the detections)",
+					cc.ID, cc.ChaseRounds,
+					cc.WindowStart.UTC().Format(time.RFC3339), cc.WindowEnd.UTC().Format(time.RFC3339))})
+			default:
+				emit(cfg, Event{Phase: "llm", Message: fmt.Sprintf(
+					"cluster %d: re-sampled %d× around %d flagged event(s); window unchanged (already at its limit)",
+					cc.ID, cc.ChaseRounds, len(cc.FollowUpRefs))})
+			}
 		}
 		audit.ClustersAnalysed++
 		emit(cfg, Event{Phase: "llm",
@@ -482,85 +543,58 @@ func RegenerateOverall(ctx context.Context, cfg Config) (*OverallRegenReport, er
 // LLM per-cluster analysis
 // ----------------------------------------------------------------------------
 
+// analyseClusterLLM produces a cluster's narrative, chasing the window outward
+// for as long as the analysis keeps finding attacker activity beyond the hull.
+//
+// prevBound / nextBound bound that chase at the boundaries shared with the
+// neighbouring clusters (clusterBoundaries).
 func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt string,
-	audit *SynthAudit, db *sql.DB, clockReversed bool) error {
+	audit *SynthAudit, db *sql.DB, clockReversed bool, prevBound, nextBound time.Time) error {
 
 	evidenceEnabled := cfg.EvidenceFetch && db != nil
-	userMsg, err := buildClusterUserMessage(c, cfg.Language, cfg.CaseBackground, evidenceEnabled, clockReversed)
-	if err != nil {
-		return err
+	// The evidence budget is shared across chase rounds rather than reset per
+	// round, so the two loops add up instead of multiplying: a cluster costs at
+	// most (chase rounds + 1) analyses + MaxEvidenceRounds follow-ups.
+	evidenceBudget := cfg.MaxEvidenceRounds
+	if evidenceBudget <= 0 {
+		evidenceBudget = 1
 	}
 
-	resp, err := clusterPass(ctx, cfg, c, systemPrompt, userMsg, audit, true)
-	if err != nil {
-		return err
+	passN := 0
+	deps := chaseDeps{
+		analyse: func(ctx context.Context, cl *Cluster) (*clusterAnalysisResp, error) {
+			passN++
+			kind := passInitial
+			if passN > 1 {
+				kind = passChase
+			}
+			userMsg, err := buildClusterUserMessage(cl, cfg.Language, cfg.CaseBackground,
+				evidenceEnabled, clockReversed, cfg.TimelineWindow)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := clusterPass(ctx, cfg, cl, systemPrompt, userMsg, audit, kind)
+			if err != nil {
+				return nil, err
+			}
+			if evidenceEnabled && evidenceBudget > 0 && len(resp.RequestedFiles) > 0 {
+				resp = runEvidenceRounds(ctx, cfg, cl, systemPrompt, userMsg, resp,
+					audit, db, &evidenceBudget)
+			}
+			return resp, nil
+		},
+		refetch: func(ctx context.Context, cl *Cluster, lo, hi time.Time) error {
+			if db == nil {
+				return errors.New("no db handle for timeline re-fetch")
+			}
+			return FetchClusterTimelineRange(ctx, db, cfg.CaseID, cl, lo, hi, cfg.MaxRowsPerCluster)
+		},
 	}
 
-	// --- On-demand evidence extraction (agent-driven file fetch) ---
-	// If the analysis asked to read specific files, extract them read-only from
-	// the case's disk image and re-analyse this cluster with their contents so
-	// the narrative is grounded in what the files contain. Bounded by
-	// MaxEvidenceRounds; every step degrades gracefully (CLAUDE.md #4).
-	if evidenceEnabled && len(resp.RequestedFiles) > 0 {
-		maxRounds := cfg.MaxEvidenceRounds
-		if maxRounds <= 0 {
-			maxRounds = 1
-		}
-		evTimeout := cfg.EvidenceTimeout
-		if evTimeout <= 0 {
-			evTimeout = 10 * time.Minute
-		}
-		rc := evidencex.RoundConfig{
-			Config: evidencex.Config{
-				PythonBin: cfg.PythonBin, RepoDir: cfg.RepoDir, Timeout: evTimeout,
-			},
-			CaseID:     cfg.CaseID,
-			OutBaseDir: filepath.Join(filepath.Dir(cfg.FindingsBaseDir), "extractions", "on-demand"),
-			MaxFiles:   cfg.MaxEvidenceFiles,
-		}
-		curUserMsg := userMsg
-		requested := resp.RequestedFiles
-		rounds := 0
-		for rounds < maxRounds && len(requested) > 0 {
-			audit.EvidenceFilesRequest += len(requested)
-			round, rerr := evidencex.RunRound(ctx, db, rc, requested)
-			if rerr != nil {
-				emit(cfg, Event{Phase: "evidence",
-					Message: fmt.Sprintf("cluster %d fetch failed: %v", c.ID, rerr)})
-				break
-			}
-			if !round.Available {
-				emit(cfg, Event{Phase: "evidence",
-					Message: "no mountable disk image in this case — skipping file fetch"})
-				break
-			}
-			summaries := round.Summaries()
-			c.EvidenceFetches = append(c.EvidenceFetches, summaries...)
-			for _, s := range summaries {
-				ok := s.Status == "ok"
-				if ok {
-					audit.EvidenceFilesGot++
-				}
-				cfg.al.Append(auditlog.Action{Actor: "tier2", Kind: "evidence_fetch",
-					Detail: s.Target, Success: auditlog.BoolPtr(ok), Error: s.Error})
-			}
-			remaining := maxRounds - rounds - 1
-			curUserMsg = curUserMsg + "\n\n" + round.PreviewBlock + clusterFinalizeNote(remaining)
-			emit(cfg, Event{Phase: "evidence",
-				Message: fmt.Sprintf("cluster %d: extracted %d/%d file(s), re-analysing",
-					c.ID, countOKSummaries(summaries), len(summaries))})
-
-			resp2, perr := clusterPass(ctx, cfg, c, systemPrompt, curUserMsg, audit, false)
-			if perr != nil {
-				emit(cfg, Event{Phase: "evidence",
-					Message: fmt.Sprintf("cluster %d re-analysis failed, keeping prior: %v", c.ID, perr)})
-				break
-			}
-			resp = resp2
-			requested = resp2.RequestedFiles
-			rounds++
-			audit.EvidenceRounds++
-		}
+	resp, err := runChase(ctx, c, cfg.TimelineWindow, cfg.MaxChaseRounds,
+		prevBound, nextBound, deps, audit)
+	if err != nil {
+		return err
 	}
 
 	c.Narrative = resp.Narrative
@@ -570,12 +604,108 @@ func analyseClusterLLM(ctx context.Context, cfg Config, c *Cluster, systemPrompt
 	return nil
 }
 
-// clusterPass runs one cluster LLM call + parse + audit. On a parse error
-// during the FIRST pass it persists the raw output and sets a degraded
-// narrative so the operator still gets something; on a follow-up (evidence)
-// pass it returns the error and lets the caller keep the prior response.
+// runEvidenceRounds performs the on-demand file fetch + re-analysis loop for
+// one cluster: extract the files the analysis asked for read-only from the
+// case's disk image, then re-analyse with their contents so the narrative is
+// grounded in what the files actually contain.
+//
+// budget is the cluster's REMAINING fetch rounds and is decremented in place —
+// it is shared with the chase loop so repeated window extensions cannot
+// multiply the fetch cost.
+//
+// Every step degrades gracefully (CLAUDE.md #4): on any failure the best
+// response so far is returned.
+func runEvidenceRounds(ctx context.Context, cfg Config, c *Cluster, systemPrompt, userMsg string,
+	resp *clusterAnalysisResp, audit *SynthAudit, db *sql.DB, budget *int) *clusterAnalysisResp {
+
+	evTimeout := cfg.EvidenceTimeout
+	if evTimeout <= 0 {
+		evTimeout = 10 * time.Minute
+	}
+	rc := evidencex.RoundConfig{
+		Config: evidencex.Config{
+			PythonBin: cfg.PythonBin, RepoDir: cfg.RepoDir, Timeout: evTimeout,
+		},
+		CaseID:     cfg.CaseID,
+		OutBaseDir: filepath.Join(filepath.Dir(cfg.FindingsBaseDir), "extractions", "on-demand"),
+		MaxFiles:   cfg.MaxEvidenceFiles,
+	}
+	curUserMsg := userMsg
+	requested := resp.RequestedFiles
+	for *budget > 0 && len(requested) > 0 {
+		audit.EvidenceFilesRequest += len(requested)
+		round, rerr := evidencex.RunRound(ctx, db, rc, requested)
+		if rerr != nil {
+			emit(cfg, Event{Phase: "evidence",
+				Message: fmt.Sprintf("cluster %d fetch failed: %v", c.ID, rerr)})
+			return resp
+		}
+		if !round.Available {
+			emit(cfg, Event{Phase: "evidence",
+				Message: "no mountable disk image in this case — skipping file fetch"})
+			return resp
+		}
+		summaries := round.Summaries()
+		c.EvidenceFetches = append(c.EvidenceFetches, summaries...)
+		for _, s := range summaries {
+			ok := s.Status == "ok"
+			if ok {
+				audit.EvidenceFilesGot++
+			}
+			cfg.al.Append(auditlog.Action{Actor: "tier2", Kind: "evidence_fetch",
+				Detail: s.Target, Success: auditlog.BoolPtr(ok), Error: s.Error})
+		}
+		*budget--
+		curUserMsg = curUserMsg + "\n\n" + round.PreviewBlock + clusterFinalizeNote(*budget)
+		emit(cfg, Event{Phase: "evidence",
+			Message: fmt.Sprintf("cluster %d: extracted %d/%d file(s), re-analysing",
+				c.ID, countOKSummaries(summaries), len(summaries))})
+
+		resp2, perr := clusterPass(ctx, cfg, c, systemPrompt, curUserMsg, audit, passEvidence)
+		if perr != nil {
+			emit(cfg, Event{Phase: "evidence",
+				Message: fmt.Sprintf("cluster %d re-analysis failed, keeping prior: %v", c.ID, perr)})
+			return resp
+		}
+		resp = resp2
+		requested = resp2.RequestedFiles
+		audit.EvidenceRounds++
+	}
+	return resp
+}
+
+// clusterPassKind distinguishes the three reasons a cluster gets sent to the
+// model. It carries both the audit label and the parse-failure policy so the
+// two cannot drift apart at a call site: only the FIRST pass may fall back to
+// dumping raw output as the narrative — for any follow-up there is already a
+// narrative worth more than the failure.
+type clusterPassKind int
+
+const (
+	passInitial clusterPassKind = iota
+	passEvidence
+	passChase
+)
+
+func (k clusterPassKind) auditLabel() string {
+	switch k {
+	case passEvidence:
+		return "cluster_analysis_evidence"
+	case passChase:
+		return "cluster_analysis_chase"
+	default:
+		return "cluster_analysis"
+	}
+}
+
+// degradesOnParseError reports whether a non-JSON reply should be persisted as
+// the cluster's narrative rather than discarded.
+func (k clusterPassKind) degradesOnParseError() bool { return k == passInitial }
+
+// clusterPass runs one cluster LLM call + parse + audit.
 func clusterPass(ctx context.Context, cfg Config, c *Cluster, systemPrompt, userMsg string,
-	audit *SynthAudit, first bool) (*clusterAnalysisResp, error) {
+	audit *SynthAudit, kind clusterPassKind) (*clusterAnalysisResp, error) {
+	label := kind.auditLabel()
 	subCtx, cancel := context.WithTimeout(ctx, cfg.PerClusterTimeout)
 	defer cancel()
 
@@ -584,10 +714,6 @@ func clusterPass(ctx context.Context, cfg Config, c *Cluster, systemPrompt, user
 	dur := time.Since(startedAt)
 	audit.LLMDurationS += dur.Seconds()
 	audit.LLMCallsTotal++
-	label := "cluster_analysis"
-	if !first {
-		label = "cluster_analysis_evidence"
-	}
 	auditLLMCall(cfg, label, c.ID, dur, out, err)
 	if err != nil {
 		return nil, err
@@ -597,7 +723,7 @@ func clusterPass(ctx context.Context, cfg Config, c *Cluster, systemPrompt, user
 	resp, perr := parseClusterAnalysis(out.Result)
 	if perr != nil {
 		dumpRawResponse(cfg, c.ID, label, out.Result)
-		if first {
+		if kind.degradesOnParseError() {
 			c.Narrative = "(LLM returned non-JSON output; raw text follows)\n\n" +
 				strings.TrimSpace(out.Result)
 		}
@@ -982,6 +1108,10 @@ type clusterAnalysisResp struct {
 	MITRETechniques []string                  `json:"mitre_techniques"`
 	OpenQuestions   []string                  `json:"open_questions"`
 	RequestedFiles  []evidencex.RequestedFile `json:"requested_files,omitempty"`
+	// FollowUpEvents are audit_ids from raw_timeline_events the analysis judged
+	// to be attacker activity. Any that fall outside the cluster hull drive the
+	// chase loop (chase.go) to extend the window and re-analyse.
+	FollowUpEvents []string `json:"follow_up_events,omitempty"`
 }
 
 func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
@@ -992,7 +1122,12 @@ func parseClusterAnalysis(text string) (*clusterAnalysisResp, error) {
 	return &out, nil
 }
 
-func buildClusterUserMessage(c *Cluster, lang, background string, evidenceEnabled, clockReversed bool) (string, error) {
+func buildClusterUserMessage(c *Cluster, lang, background string, evidenceEnabled, clockReversed bool,
+	window time.Duration) (string, error) {
+	windowMinutes := int(window.Minutes())
+	if windowMinutes <= 0 {
+		windowMinutes = int(DefaultTimelineWindow.Minutes())
+	}
 	type fLite struct {
 		Source          string   `json:"source"`
 		RuleID          string   `json:"rule_id"`
@@ -1022,24 +1157,40 @@ func buildClusterUserMessage(c *Cluster, lang, background string, evidenceEnable
 		fls = append(fls, fl)
 	}
 	type ctx struct {
-		ClusterID          int                     `json:"cluster_id"`
+		ClusterID int `json:"cluster_id"`
+		// DetectionSpan is the hull the Tier 1 findings themselves cover;
+		// Window is the wider span raw_timeline_events was sampled from.
+		// Events outside the detection span are undetected context — the
+		// material the chase loop exists to reach.
+		DetectionSpanStart string                  `json:"detection_span_start,omitempty"`
+		DetectionSpanEnd   string                  `json:"detection_span_end,omitempty"`
 		WindowStart        string                  `json:"window_start,omitempty"`
 		WindowEnd          string                  `json:"window_end,omitempty"`
+		ContinuesFromPrev  bool                    `json:"attacker_activity_traced_toward_previous_cluster,omitempty"`
+		ContinuesIntoNext  bool                    `json:"attacker_activity_traced_toward_next_cluster,omitempty"`
 		ExaminerBackground *common.ExaminerContext `json:"examiner_background,omitempty"`
 		Findings           []fLite                 `json:"findings"`
 		RawTimelineEvents  []TimelineEvent         `json:"raw_timeline_events"`
 	}
 	pkt := ctx{
 		ClusterID:          c.ID,
+		ContinuesFromPrev:  c.ContinuesFromPrev,
+		ContinuesIntoNext:  c.ContinuesIntoNext,
 		ExaminerBackground: common.NewExaminerContext(background),
 		Findings:           fls,
 		RawTimelineEvents:  c.RawTimelineExcerpt,
 	}
 	if !c.StartTS.IsZero() {
-		pkt.WindowStart = c.StartTS.Format(time.RFC3339)
+		pkt.DetectionSpanStart = c.StartTS.Format(time.RFC3339)
 	}
 	if !c.EndTS.IsZero() {
-		pkt.WindowEnd = c.EndTS.Format(time.RFC3339)
+		pkt.DetectionSpanEnd = c.EndTS.Format(time.RFC3339)
+	}
+	if !c.WindowStart.IsZero() {
+		pkt.WindowStart = c.WindowStart.Format(time.RFC3339)
+	}
+	if !c.WindowEnd.IsZero() {
+		pkt.WindowEnd = c.WindowEnd.Format(time.RFC3339)
 	}
 	body, err := json.MarshalIndent(pkt, "", "  ")
 	if err != nil {
@@ -1071,12 +1222,16 @@ requested_files (OPTIONAL — use [] or omit if no file's contents are needed):
   narrative in what the file actually contains instead of inferring.
 - Request only the few most decision-relevant files.`
 	}
-	prelude := `Below is one TEMPORAL CLUSTER of Tier 1 findings from a Windows
-forensic case, plus the raw timeline events from unified_events that fall
-in the same ±5 min window. Reconstruct the attack-chain story for this
+	prelude := fmt.Sprintf(`Below is one TEMPORAL CLUSTER of Tier 1 findings from a Windows
+forensic case, plus the raw timeline events from unified_events sampled from
+the surrounding ±%d min window. Reconstruct the attack-chain story for this
 cluster.
 
-` + langInst + `
+The findings cover detection_span_start..detection_span_end. Events in
+raw_timeline_events OUTSIDE that span are activity NO signature fired on —
+that is where undetected attacker work shows up.
+
+`, windowMinutes) + langInst + `
 
 Return ONLY a single JSON object:
 
@@ -1087,7 +1242,8 @@ Return ONLY a single JSON object:
     "open_questions": [
       "(specific evidence gap or unresolved question — same language as narrative)",
       ...
-    ]` + reqFilesKey + `
+    ],
+    "follow_up_events": ["<audit_id from raw_timeline_events>", ...]` + reqFilesKey + `
   }
 
 No markdown fences, no text outside the JSON.
@@ -1095,7 +1251,17 @@ No markdown fences, no text outside the JSON.
 COVERAGE REQUIREMENT (account for every significant finding — do not silently drop detected attacker activity):
 - Every critical/high finding in this cluster MUST be reflected in the narrative prose, whatever its tactic (discovery, credential-access, execution, persistence, lateral-movement, collection, exfiltration, command-and-control, impact, ...). Do NOT omit a detected attacker action just because the dominant event in the cluster is something else.
 - If a finding is itself a DETECTION or BLOCK by a security control (antivirus / EDR / Microsoft Defender / AMSI / AppLocker — e.g. a quarantine of a credential-dumping tool), narrate it as an ATTEMPTED action that the control detected and, where the evidence shows it, blocked: state that the attempt occurred AND that it was caught, so the underlying action did NOT succeed. Do not omit it, and do not describe a blocked action as having succeeded.
-- This does NOT license over-claiming: never assert a tool, technique, or successful outcome the findings do not support. "Attempted but detected/blocked" and "evidence does not show success" are the correct framings; the absence of a finding is never evidence that something succeeded.` + reqFilesRule + clusterTimelineWarning(clockReversed) + `
+- This does NOT license over-claiming: never assert a tool, technique, or successful outcome the findings do not support. "Attempted but detected/blocked" and "evidence does not show success" are the correct framings; the absence of a finding is never evidence that something succeeded.
+
+follow_up_events (REQUIRED — [] only if nothing in this window is worth a second look):
+- This list does NOT go in the report and asserts NOTHING. It decides one thing: which parts of the timeline get looked at again with a wider window. Listing an event costs one more query; omitting one can end the investigation early.
+- List the audit_id of any raw event whose SURROUNDINGS you want to see — anything that may be attacker activity, and anything you could not attribute either way from this window alone.
+- **Being unsure is a REASON TO LIST IT, not to leave it out.** "Cleanup by the intruder or routine administration, cannot tell from this data" is precisely the case a wider window can settle — say so in the narrative AND list the event here. Your prose stays as careful as ever; this field is where the uncertainty gets acted on.
+- Rows already marked "Detected": true are inside this cluster's detections and add nothing. Everything else is the undetected material: a process someone ran, a file written or deleted, a logon or logoff, a session ending, a service or task installed, a reboot.
+- Do skip what is plainly routine system background with no bearing on the story.
+- Copy audit_ids verbatim from raw_timeline_events; an id not in that list is discarded.
+- Events falling outside detection_span_start..detection_span_end re-open the window around themselves and you will analyse this cluster again with the wider timeline. That is how the investigation follows the intruder past the last alert — and how an "I cannot tell yet" becomes answerable.
+- attacker_activity_traced_toward_next_cluster (and ..._previous_cluster) is set when something you listed in an EARLIER pass turned out closer to the adjacent cluster than to this one — evidence that this episode runs into that one. When it is set, do not narrate the period in between as quiet or the attacker as dormant. When it is NOT set, say nothing either way about that period: no evidence of activity there is not evidence of absence.` + reqFilesRule + clusterTimelineWarning(clockReversed) + `
 
 ClusterContext:
 `
@@ -1284,8 +1450,19 @@ func callClaudeCLI(ctx context.Context, cfg Config, sysPrompt, userMsg string) (
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	startedAt := time.Now()
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exec: %w (stderr: %s)", err, truncate(stderr.String(), 200))
+		// Report stdout and how long the CLI lasted, not just the exit code.
+		// The CLI reports most refusals as JSON on STDOUT with an empty stderr,
+		// so "exit status 1 (stderr: )" — all the operator used to get — says
+		// nothing about whether the model refused, the prompt was rejected, or
+		// the request never left the machine. Duration separates those: a
+		// usage/rate rejection fails in a couple of seconds, whereas a real
+		// analysis of this size runs for minutes.
+		return nil, fmt.Errorf("exec: %w after %.0fs (stdout: %s) (stderr: %s)",
+			err, time.Since(startedAt).Seconds(),
+			truncate(strings.TrimSpace(stdout.String()), 300),
+			truncate(strings.TrimSpace(stderr.String()), 200))
 	}
 	var out claudeOutput
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
@@ -1341,6 +1518,13 @@ func buildCaseSynthesis(caseID string, findings []Finding, clusters []Cluster,
 			OpenQuestions:    c.OpenQuestions,
 			ActiveSearch:     c.ActiveSearch,
 			EvidenceFetches:  c.EvidenceFetches,
+
+			WindowStart:       c.WindowStart,
+			WindowEnd:         c.WindowEnd,
+			ChaseRounds:       c.ChaseRounds,
+			FollowUpEvents:    c.FollowUpRefs,
+			ContinuesIntoNext: c.ContinuesIntoNext,
+			ContinuesFromPrev: c.ContinuesFromPrev,
 		}
 		for _, f := range c.Findings {
 			prov, conf := ProvenanceForSource(f.Source)

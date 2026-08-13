@@ -12,6 +12,18 @@ import (
 	"github.com/tlvb/tlvb/internal/tier2"
 )
 
+// roundBudget converts a CLI round-count flag to the tier2.Config convention.
+// On the command line 0 means "turn this loop off"; in Config a zero value means
+// "use the package default" and a negative one means disabled. Every bounded-round
+// flag (--max-self-correct, --max-reframe, --timeline-chase-rounds) needs the
+// same translation, so it lives here once.
+func roundBudget(flagValue int) int {
+	if flagValue <= 0 {
+		return -1
+	}
+	return flagValue
+}
+
 func runSynthesizeTier2(caseID string, args []string) error {
 	fs := flag.NewFlagSet("synthesize --tier 2", flag.ContinueOnError)
 	dbPath := fs.String("db", "outputs/cases.duckdb", "case DuckDB path")
@@ -25,8 +37,12 @@ func runSynthesizeTier2(caseID string, args []string) error {
 	model := fs.String("model", "", "model id (empty = let claude CLI default)")
 	language := fs.String("language", "ja", "output language for narratives / summary: ja | en")
 	gapMinutes := fs.Int("cluster-gap-minutes", 30, "cluster gap threshold")
-	windowMinutes := fs.Int("timeline-window-minutes", 5,
+	windowMinutes := fs.Int("timeline-window-minutes", 30,
 		"±N min raw timeline window around each cluster")
+	chaseRounds := fs.Int("timeline-chase-rounds", tier2.DefaultMaxChaseRounds,
+		"chase rounds per cluster: when the analysis flags attacker activity beyond the cluster's "+
+			"detections, re-open the window ±N min around it and analyse again, following the trail "+
+			"until it stops (0 = disable; costs one extra LLM call per round per cluster)")
 	maxRowsPerCluster := fs.Int("max-rows-per-cluster", 300,
 		"raw timeline rows per cluster (stratified across artifacts)")
 	timeoutMinutes := fs.Int("timeout-minutes", 5, "per-LLM-call timeout in minutes")
@@ -66,18 +82,6 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		*outPath = filepath.Join("outputs", "cases", caseID, "synthesis.json")
 	}
 
-	// CLI semantics: 0 (or less) disables self-correction. tier2 treats a zero
-	// value as "use default" and a negative value as "disabled", so map here.
-	msc := *maxSelfCorrect
-	if msc <= 0 {
-		msc = -1
-	}
-	// Same mapping for the reframe (investigative-pivot) budget.
-	mrf := *maxReframe
-	if mrf <= 0 {
-		mrf = -1
-	}
-
 	cfg := tier2.Config{
 		CaseID:            caseID,
 		FindingsBaseDir:   *findingsBase,
@@ -89,11 +93,12 @@ func runSynthesizeTier2(caseID string, args []string) error {
 		Language:          *language,
 		ClusterGap:        time.Duration(*gapMinutes) * time.Minute,
 		TimelineWindow:    time.Duration(*windowMinutes) * time.Minute,
+		MaxChaseRounds:    roundBudget(*chaseRounds),
 		MaxRowsPerCluster: *maxRowsPerCluster,
 		PerClusterTimeout: time.Duration(*timeoutMinutes) * time.Minute,
 		ActiveSearch:      *activeSearch,
-		MaxSelfCorrect:    msc,
-		MaxReframe:        mrf,
+		MaxSelfCorrect:    roundBudget(*maxSelfCorrect),
+		MaxReframe:        roundBudget(*maxReframe),
 		ReproduceLLMFault: *reproduceLLMFault,
 		DryRun:            *dryRun,
 		EvidenceFetch:     *evidenceFetch,

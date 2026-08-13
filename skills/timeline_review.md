@@ -271,6 +271,59 @@ its own.
 
 ---
 
+## Following the trail past the window (`follow_up_events`)
+
+When you are analysing a single temporal **cluster**, the request also asks for
+`follow_up_events`: the `audit_id`s of raw timeline events whose **surroundings
+you want to see**. It is not part of the report and it asserts nothing. It
+decides one thing — which parts of the timeline get looked at again with a wider
+window.
+
+Any listed event lying outside the cluster's `detection_span` causes the raw
+timeline window to re-open around it and this cluster to be analysed again with
+the wider span. That is the mechanism by which activity **no signature caught**
+gets pulled into the story: the signatures mark where the attacker was seen,
+this list is how you go and check where they went next.
+
+**This is the one field where uncertainty means speak up, not stay quiet.**
+Everywhere else in this skill an unsupported claim is the failure mode and
+silence is the safe answer. Here it is reversed: listing an event costs one more
+query, while omitting one can end the investigation at the last alert. "Cleanup
+by the intruder, or routine administration — cannot tell from this data" is
+exactly what a wider window is for. Write the hedge in the narrative *and* list
+the event.
+
+What belongs there:
+
+- Anything that may be attacker activity, and anything you could not attribute
+  either way from this window alone — a process someone ran, a file written or
+  deleted, a logon or logoff, a session ending, a service or scheduled task
+  installed, a reboot.
+- In particular, the edge cases the perspectives above keep running into:
+  **#6 lateral movement** — the hop lands outside the window, so the
+  destination-side activity is missing; **#13 credential staging** — the dump
+  is detected but the archive/exfil that follows it is not; **#9
+  defense-evasion bookends** — the cleanup happens after the last alert.
+
+What does not:
+
+- Rows marked `"Detected": true`. A signature already fired on those, and the
+  detection span already covers them.
+- Plainly routine system background with no bearing on the story.
+
+If the context sets `attacker_activity_traced_toward_next_cluster` (or
+`..._previous_cluster`), activity flagged in an earlier pass was found closer to
+the adjacent cluster than to this one — the trail runs into that episode. Do not
+then describe the period in between as quiet or the attacker as dormant: for
+that span the gap between the two clusters is a gap in *detection*, not in
+activity.
+
+The converse does not hold. When the flag is absent it means only that nothing
+was traced that far — not that the period was idle. Say nothing about it either
+way.
+
+---
+
 ## Investigation procedure
 
 1. **Skim first**: read the high-level keys (`window`, `host_count`,

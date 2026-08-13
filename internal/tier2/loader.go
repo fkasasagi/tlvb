@@ -40,6 +40,22 @@ func LoadFindings(findingsBase string) ([]Finding, error) {
 	return mergeHayabusaIntoSigma(out), nil
 }
 
+// dropRejected removes findings an examiner rejected at Review Gate 1A/1B and
+// reports how many went. Approved is deliberately NOT required:
+// tier1a.AutoApproveByLevel leaves critical/high at Approved=false until a
+// human looks at them, so gating on it would silently delete exactly the
+// findings that matter most.
+func dropRejected(in []Finding) ([]Finding, int) {
+	out := make([]Finding, 0, len(in))
+	for _, f := range in {
+		if f.Rejected {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, len(in) - len(out)
+}
+
 // mergeHayabusaIntoSigma drops Hayabusa pass-through findings that duplicate a
 // Sigma signature finding. Hayabusa runs the SigmaHQ ruleset internally, so the
 // SAME rule fires in both engines and lands as two findings (rule_source
@@ -105,11 +121,13 @@ func loadByRuleDir(root string) ([]Finding, error) {
 				MITRETechniques []string `json:"mitre_techniques"`
 				MITRETactics    []string `json:"mitre_tactics"`
 			} `json:"rule_meta"`
+			Approved bool `json:"approved"`
+			Rejected bool `json:"rejected"`
 			Evidence []struct {
-				AuditID    string    `json:"audit_id"`
-				TsUTC      time.Time `json:"ts_utc"`
-				ArtifactID string    `json:"artifact_id"`
-				EventType  string    `json:"event_type"`
+				AuditID    string         `json:"audit_id"`
+				TsUTC      time.Time      `json:"ts_utc"`
+				ArtifactID string         `json:"artifact_id"`
+				EventType  string         `json:"event_type"`
 				Extra      map[string]any `json:"extra"`
 			} `json:"evidence"`
 		}
@@ -127,6 +145,8 @@ func loadByRuleDir(root string) ([]Finding, error) {
 			Severity:        f1a.RuleMeta.Level,
 			MITRETechniques: f1a.RuleMeta.MITRETechniques,
 			OriginPath:      path,
+			Approved:        f1a.Approved,
+			Rejected:        f1a.Rejected,
 		}
 		if len(f1a.RuleMeta.MITRETactics) > 0 {
 			f.MITRETactic = f1a.RuleMeta.MITRETactics[0]
@@ -178,6 +198,8 @@ func loadBySkillDir(root string) ([]Finding, error) {
 				AuditIDs    []string `json:"audit_ids"`
 				TechniqueID string   `json:"technique_id"`
 				Tactic      string   `json:"tactic"`
+				Approved    bool     `json:"approved"`
+				Rejected    bool     `json:"rejected"`
 			} `json:"findings"`
 		}
 		if err := json.Unmarshal(body, &rep); err != nil {
@@ -193,6 +215,8 @@ func loadBySkillDir(root string) ([]Finding, error) {
 				Severity:    af.Severity,
 				MITRETactic: af.Tactic,
 				OriginPath:  path,
+				Approved:    af.Approved,
+				Rejected:    af.Rejected,
 			}
 			if af.TechniqueID != "" {
 				f.MITRETechniques = []string{af.TechniqueID}

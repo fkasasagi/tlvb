@@ -259,15 +259,134 @@ active_search / json_lenient)
 
 `findings/by-rule/` と `findings/by-skill/` 全体を時間軸で cluster
 (default 30 分 gap):
-1. `LoadFindings` で by-rule/** + by-skill/* を統一 Finding 配列に
+1. `LoadFindings` で by-rule/** + by-skill/* を統一 Finding 配列に。
+   **Review Gate 1A/1B で `rejected` になった finding はここで除外**
+   (Gate は Tier 2 の前に回る運用。examiner が誤検知と判断したものを
+   ストーリーの起点にしない)。除外件数は `SynthAudit` に残す
 2. `EnrichTimestamps` で Tier 1B audit_id → ts_utc を bulk lookup
 3. `ClusterFindings` で時間軸ソート + gap 閾値内を merge
-4. 各 cluster について `FetchClusterTimeline` で ±5 分の raw events を
+4. 各 cluster について `FetchClusterTimeline` で **±30 分** の raw events を
    stratified サンプリング (per-artifact、EVTX ノイズ EID 除外)
 5. per-cluster LLM call: skill (`skills/timeline_review.md`) + cluster
    context (findings + raw timeline) → JSON {narrative, attack_phase,
-   mitre_techniques, open_questions}
-6. overall LLM call: per-cluster narratives → case-wide story
+   mitre_techniques, open_questions, **follow_up_events**}
+6. **追跡ループ (§5.1.1)**: 5 で LLM が攻撃と判定したイベントが窓の芯より
+   外にあれば、窓を伸ばして 4→5 をやり直す
+7. overall LLM call: per-cluster narratives → case-wide story
+
+窓幅の既定を 30 分にしたのは cluster gap と揃えるため。findings が 30 分以内
+なら同一エピソードとして merge される以上、その同じスパン内の raw events は
+分析が当然見てよい文脈である。窓を広げてもコストはほぼ増えない — サンプラは
+「検知への近接順・アーティファクト毎に上限」で選ぶので、密なアーティファクト
+(EVTX/MFT) が返す行は窓幅によらずほぼ同じ。文脈が増えるのは疎な
+アーティファクト (lnk / prefetch / browser_history) の側。
+
+#### 5.1.1 追跡ループ (chase loop)
+
+**問題**: 従来は 1 クラスタ 1 回の LLM 呼び出しで打ち切っていた。攻撃活動が
+窓の外に続いていても Tier 2 はそこを見に行かないため、「dwell 期間は静か
+だった」という誤った所見が残る。
+
+findings レベルの連鎖は既に存在する (30 分 gap の `ClusterFindings`、および
+Hayabusa passthrough が medium 以上を全部 finding 化する)。**抜けているのは
+「シグネチャは鳴らなかったが Tier 2 の LLM が攻撃と判断したイベント」の先**で、
+そこが追跡の切れ目になっていた。
+
+**発火条件** = Tier 1 のシグネチャ検知 (= cluster の findings) と Tier 2 LLM が
+「もっと周りを見たい」と挙げたイベント (= `follow_up_events`) の和集合のうち、
+Review Gate で reject されていないもの。判定の主体は既存の verdict であって、
+新しいヒューリスティックを足すわけではない。
+
+**`follow_up_events` は主張ではなく要求**である点が要。ここに挙げることは
+「これは攻撃だ」という断定ではなく「この周辺をもう一度見せてくれ」という
+依頼で、**判断がつかないイベントほど挙げるべき**。窓を広げることこそが
+その不確実性を解消する手段だから。初版では逆に「不確実なら挙げるな」と
+指示してしまい、実ケース `winrm_spray_case` で機能が完全に不発になった —
+モデルは検知スパンの 6 分後のログオフと再起動を narrative の根拠に使い、
+「攻撃者のクリーンアップか正規の作業か本データでは断定できない」と正しく
+書いた上で、指示どおり `attack_events` を空で返した。最も追跡すべき場面で
+必ず止まる設計だった。
+
+あわせて、prompt 内の findings には audit_id が入っていないため「findings が
+既にカバーしているものは挙げるな」は**モデルには追従不能な指示**だった。
+timeline の各行に `Detected: true` を付けて判定可能にしてある。
+
+**ループ**: 各 cluster について
+
+```
+hull   = [StartTS, EndTS]                 // findings 由来の芯
+window = [hull.lo - W, hull.hi + W]       // W = TimelineWindow (30 分)
+
+for round := 0; ; round++ {
+    resp := onePass(window)                    // LLM 1 call
+    confirmed := resolveTS(resp.follow_up_events) // 窓内イベントの ts
+
+    grew := hull を confirmed の min/max まで拡張できたか
+    if !grew || round >= MaxChaseRounds { break }
+
+    window = clampToNeighbours(hull.lo-W, hull.hi+W)
+    ChaseAnchors += confirmed
+    FetchClusterTimelineRange(window)           // 再取得 (excerpt は作り直し)
+}
+```
+
+窓の伸ばし幅は機械的に `+W` (30 分) で、「どこまで伸ばすか」に追加の LLM
+判断は挟まない。判断は「そのイベントは攻撃か」だけで、それは per-cluster
+分析が既に下している。
+
+**anchor の伝播が要**: サンプラは anchor への近接順で行を選ぶ。窓を伸ばした
+先には findings 由来の anchor が無いので、`ChaseAnchors` (LLM が攻撃と判定した
+イベントの ts) を anchor に混ぜないと新領域の行がほとんど選ばれず、窓を
+広げた意味が消える。
+
+**隣接クラスタでの clamp — 隙間の中点で分ける**: 窓は隣接クラスタとの境界で
+止める。追跡した攻撃活動が境界を越えた場合は、hull もそこで止め (越えた先は
+隣のクラスタが説明すべき領分)、`ContinuesIntoNext` / `ContinuesFromPrev` を
+立てる。
+
+**フラグは「窓が境界に届いた」ではなく「追跡した活動が境界を越えた」で立てる**
+— ここは証拠に基づく主張だから。窓は隙間の半分より広ければ必ず境界に届く
+ので、既定 (cluster gap 30 分 / 窓 30 分) では **gap が 31〜59 分の隣接ペアは
+追跡ゼロ・flag ゼロでも必ず境界に届く**。それでフラグを立てると、最頻出の帯域
+で根拠のない連続性を毎回 LLM に教え込むことになり、「finding は必ず evidence で
+裏付ける」という本システムの原則に反する。prompt 側のキー名も
+`attacker_activity_traced_toward_next_cluster` とし、フラグが**無い**ことは
+「そこまで追跡が届かなかった」だけで「活動が無かった」ではない、と明示する。
+
+境界は**隣接クラスタとの隙間の中点** (`clusterBoundaries`)。隣人の hull の端
+を境界にすると、クラスタ i-1 が前方へ、クラスタ i が後方へ、**同じ隙間を
+両方が解析してしまう** (どちらも隣人の hull までは伸ばせるため)。中点なら
+両クラスタが同じ 1 本の境界を見るので重複が原理的に起きない。さらに中点は
+必ず両者の hull の外側にあるため、`clampWindow` の「自 hull は削らない」
+規則と衝突しない (hull の端を境界にすると、この 2 つは両立しない)。
+
+**この clamp は追跡ループだけでなく初回 fetch にも適用する。** 窓が ±30 分に
+なったことで、hull 間隔が 60 分未満の隣接クラスタは**追跡を 1 度もしなくても
+初回の窓が重なる**。実際 `winrm_spray_case` の実走では、clamp 前の実装で
+クラスタ 1 の窓終端 (10:25:02) とクラスタ 2 の窓開始 (10:09:37) が 15 分 24 秒
+重複し、同じ raw timeline が両方の LLM パスに渡っていた。
+
+merge はしない — クラスタ ID / 件数が変わると Review Gate 2 UI・
+synthesis.json 消費側・Tier 3 への波及が大きいため。連続性の事実はフラグ
+として prompt と synthesis.json に載せ、「30 分 gap で別エピソードに見えた
+が実際は活動が途切れていなかった」を overall pass と Tier 3 が拾えるように
+する。これは dwell 期間の解釈を変える所見なのでレポートに残す価値がある。
+
+**コスト制御** (エージェントの暴走防止 — 反復回数・タイムアウトには必ず上限を置く):
+- 1 ラウンド = クラスタあたり LLM 1 call 追加。`--timeline-chase-rounds`
+  (既定 2、0 で無効)
+- on-demand evidence fetch の予算 (`--max-evidence-rounds`) は**ラウンド毎に
+  リセットせず、クラスタ単位で共有**する。両ループが掛け算にならず、
+  1 クラスタのコストは `(chase rounds + 1) 回の分析 + evidence rounds` に
+  収まる。「最終パスでのみ fetch」も検討したが、どのパスが最終かは実行前に
+  判らず +1 call になるため採らなかった
+- ラウンドが失敗したら直前のラウンドの結果を採用してループを抜ける
+  (graceful degradation — 1 エージェントが失敗してもケース全体は完走させる)。
+  追加ラウンドの LLM 応答が
+  parse 不能でも、既に出来ている narrative は上書きしない
+- 上限に達してもまだ攻撃イベントが出続けている場合は
+  `SynthAudit.chase_rounds_capped` に記録する。「その区間は探索し切った」と
+  レポートに誤読させないため
 
 LLM 出力の JSON parse は `json_lenient.go` の `decodeFirstJSON` で 3 段リカバリ:
 markdown fence / prose preamble / 末尾 trailing junk / double `}}` / 期待型と
@@ -282,6 +401,7 @@ overall LLM は retry + fallback 戦略:
 
 CLI: `tlvb synthesize CASE_ID --tier 2 [--cluster-gap-minutes N]
                                        [--timeline-window-minutes N]
+                                       [--timeline-chase-rounds N]
                                        [--active-search] [--dry-run]`
 
 ### 5.2 能動モード (★実装済)
@@ -307,7 +427,9 @@ report 品質の補強として機能。
 `synthesis.json` に CaseSynthesis = (clusters + overall_story +
 mitre_mapping + open_questions + audit) を出力。
 SynthCluster は (id, start_ts, end_ts, attack_phase, narrative,
-finding_refs, mitre_techniques, open_questions, active_search) を含む。
+finding_refs, mitre_techniques, open_questions, active_search) に加え、
+追跡ループの結果 (window_start / window_end / chase_rounds /
+continues_into_next / continues_from_prev) を含む。
 Tier 3 はこれだけ読めばよい。
 
 ## 6. Tier 3 — Reporter (TLVB v0.1 新規実装)

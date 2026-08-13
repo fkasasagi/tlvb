@@ -12,7 +12,7 @@ func TestBuildersInjectExaminerBackground(t *testing.T) {
 	const bg = "WS01 is the public-facing web server; brute force suspected."
 	c := &Cluster{ID: 1, AttackPhase: "initial-access"}
 
-	cm, err := buildClusterUserMessage(c, "en", bg, false, false)
+	cm, err := buildClusterUserMessage(c, "en", bg, false, false, DefaultTimelineWindow)
 	if err != nil {
 		t.Fatalf("cluster: %v", err)
 	}
@@ -22,7 +22,7 @@ func TestBuildersInjectExaminerBackground(t *testing.T) {
 	if !strings.Contains(cm, "examiner_background") || !strings.Contains(cm, "NOT evidence") {
 		t.Error("cluster message must label background as non-evidence context")
 	}
-	if cmEmpty, _ := buildClusterUserMessage(c, "en", "", false, false); strings.Contains(cmEmpty, "examiner_background") {
+	if cmEmpty, _ := buildClusterUserMessage(c, "en", "", false, false, DefaultTimelineWindow); strings.Contains(cmEmpty, "examiner_background") {
 		t.Error("empty background must not add the examiner_background field")
 	}
 
