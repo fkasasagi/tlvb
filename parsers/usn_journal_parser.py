@@ -34,6 +34,12 @@ from parsers.base import (
 
 ARTIFACT_ID = "usn_journal"
 PARSER_VERSION = "usn_journal_parser/1.0.0+mftecmd-1.3.0.0"
+
+# On a real NTFS volume the journal is `$Extend\$UsnJrnl:$J`, so a collector
+# that preserves the tree puts `$MFT` in the *parent* of `$Extend`. That
+# directory name is the only signal we ascend on — searching upwards
+# unconditionally would pair a `$J` with some unrelated volume's `$MFT`.
+_EXTEND_DIR_NAME = "$extend"
 MFTECMD_DLL = "/opt/zimmermantools/MFTECmd.dll"
 DEFAULT_CSV_NAME = "usn_journal.csv"
 DEFAULT_JSONL_NAME = "usn_journal.jsonl"
@@ -129,9 +135,25 @@ def parse(req: ParseRequest) -> ParseResult:
 def _sibling_mft(j_path: pathlib.Path) -> pathlib.Path | None:
     # Wave 15: match prefix-tolerant `[<drive>_]$MFT` so TANAKA / KAPE-NTFS
     # flatten layouts (`C_$MFT` next to `C_$UsnJrnl-$J`) still resolve.
-    for p in j_path.parent.iterdir():
-        if p.is_file() and MFT_RE.fullmatch(p.name):
-            return p
+    #
+    # Collectors that preserve the real NTFS tree put the journal one level
+    # deeper than the MFT — Velociraptor's `ntfs` accessor yields
+    # `<device>/$MFT` but `<device>/$Extend/$UsnJrnl%3A$J`. Ascend exactly one
+    # level, and only out of a directory actually named `$Extend`, so a `$J`
+    # can never be paired with an unrelated volume's `$MFT`. Without this
+    # MFTECmd runs without `-m` and every USN record carries a bare
+    # FileReference instead of a resolved path.
+    bases = [j_path.parent]
+    if j_path.parent.name.lower() == _EXTEND_DIR_NAME:
+        bases.append(j_path.parent.parent)
+    for base in bases:
+        try:
+            entries = sorted(base.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if p.is_file() and MFT_RE.fullmatch(p.name):
+                return p
     return None
 
 

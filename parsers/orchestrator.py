@@ -43,8 +43,8 @@ from parsers._collector_prefix import (
     MFT_RE,
     NTUSER_RE,
     PLACES_SQLITE_RE,
-    USN_J_RE,
     USRCLASS_RE,
+    is_usn_journal,
 )
 from parsers.base import ParseRequest, ParseResult
 
@@ -248,7 +248,10 @@ def detect(root: pathlib.Path) -> list[Detection]:
             shellbag_dirs.add(p.parent)
         elif MFT_RE.fullmatch(name):
             mft_files.append(p)
-        elif USN_J_RE.fullmatch(name):
+        elif is_usn_journal(name):
+            # Predicate, not a bare regex: the journal is the one artefact
+            # whose real name carries a `:`, so containers escape it (see
+            # `_collector_prefix.is_usn_journal`).
             usn_files.append(p)
         elif CHROMIUM_HIST_RE.fullmatch(name) or PLACES_SQLITE_RE.fullmatch(name):
             browser_files.append(p)
